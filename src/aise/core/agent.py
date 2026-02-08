@@ -5,7 +5,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
+from ..config import ModelConfig
 from .artifact import Artifact, ArtifactStore
+from .llm import LLMClient
 from .message import Message, MessageBus, MessageType
 from .skill import Skill, SkillContext
 
@@ -33,11 +35,14 @@ class Agent:
         role: AgentRole,
         message_bus: MessageBus,
         artifact_store: ArtifactStore,
+        model_config: ModelConfig | None = None,
     ) -> None:
         self.name = name
         self.role = role
         self.message_bus = message_bus
         self.artifact_store = artifact_store
+        self.model_config = model_config or ModelConfig()
+        self.llm_client = LLMClient(self.model_config)
         self._skills: dict[str, Skill] = {}
 
         self.message_bus.subscribe(self.name, self.handle_message)
@@ -80,6 +85,8 @@ class Agent:
             artifact_store=self.artifact_store,
             project_name=project_name,
             parameters=parameters or {},
+            model_config=self.model_config,
+            llm_client=self.llm_client,
         )
 
         artifact = skill.execute(input_data, context)
@@ -142,4 +149,8 @@ class Agent:
         )
 
     def __repr__(self) -> str:
-        return f"Agent(name={self.name!r}, role={self.role.value}, skills={self.skill_names})"
+        return (
+            f"Agent(name={self.name!r}, role={self.role.value}, "
+            f"skills={self.skill_names}, "
+            f"model={self.model_config.provider}/{self.model_config.model})"
+        )

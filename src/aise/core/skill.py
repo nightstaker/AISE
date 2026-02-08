@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .artifact import Artifact, ArtifactStore
+
+if TYPE_CHECKING:
+    from ..config import ModelConfig
+    from .llm import LLMClient
 
 
 @dataclass
@@ -16,6 +20,8 @@ class SkillContext:
     artifact_store: ArtifactStore
     project_name: str = ""
     parameters: dict[str, Any] = field(default_factory=dict)
+    model_config: ModelConfig | None = None
+    llm_client: LLMClient | None = None
 
 
 class Skill(ABC):
@@ -47,7 +53,7 @@ class Skill(ABC):
 
         Args:
             input_data: Input payload (e.g., raw requirements text, code to review).
-            context: Runtime context with access to artifact store and config.
+            context: Runtime context with access to artifact store, config, and LLM client.
 
         Returns:
             The produced artifact.

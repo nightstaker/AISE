@@ -30,11 +30,11 @@ def create_team(config: ProjectConfig | None = None) -> Orchestrator:
     store = orchestrator.artifact_store
 
     agents = [
-        ProductManagerAgent(bus, store),
-        ArchitectAgent(bus, store),
-        DeveloperAgent(bus, store),
-        QAEngineerAgent(bus, store),
-        TeamLeadAgent(bus, store),
+        ProductManagerAgent(bus, store, config.get_model_config("product_manager")),
+        ArchitectAgent(bus, store, config.get_model_config("architect")),
+        DeveloperAgent(bus, store, config.get_model_config("developer")),
+        QAEngineerAgent(bus, store, config.get_model_config("qa_engineer")),
+        TeamLeadAgent(bus, store, config.get_model_config("team_lead")),
     ]
 
     for agent in agents:
