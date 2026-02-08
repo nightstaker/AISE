@@ -15,6 +15,7 @@ from .agents import (
 )
 from .config import ProjectConfig
 from .core.orchestrator import Orchestrator
+from .core.session import OnDemandSession
 
 
 def create_team(config: ProjectConfig | None = None) -> Orchestrator:
@@ -62,6 +63,19 @@ def run_project(requirements: str, project_name: str = "My Project") -> list[dic
     )
 
 
+def start_demand_session(project_name: str = "My Project") -> OnDemandSession:
+    """Create and return an on-demand interactive session.
+
+    Args:
+        project_name: Name of the project.
+
+    Returns:
+        A configured OnDemandSession ready to start.
+    """
+    orchestrator = create_team()
+    return OnDemandSession(orchestrator, project_name)
+
+
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -74,6 +88,17 @@ def main() -> None:
     run_parser.add_argument("--requirements", "-r", required=True, help="Requirements text or file path")
     run_parser.add_argument("--project-name", "-p", default="My Project", help="Project name")
     run_parser.add_argument("--output", "-o", help="Output file for results (JSON)")
+
+    # demand command
+    demand_parser = subparsers.add_parser(
+        "demand",
+        help="Start an interactive on-demand session",
+    )
+    demand_parser.add_argument("--project-name", "-p", default="My Project", help="Project name")
+    demand_parser.add_argument(
+        "--requirements", "-r",
+        help="Optional initial requirements to seed the session",
+    )
 
     # team command
     team_parser = subparsers.add_parser("team", help="Show team information")
@@ -104,6 +129,22 @@ def main() -> None:
                 tasks = result.get("tasks", {})
                 for task_key, task_result in tasks.items():
                     print(f"  {task_key}: {task_result.get('status', 'unknown')}")
+
+    elif args.command == "demand":
+        session = start_demand_session(args.project_name)
+
+        # Seed with initial requirements if provided
+        if args.requirements:
+            reqs = args.requirements
+            try:
+                with open(reqs) as f:
+                    reqs = f.read()
+            except (FileNotFoundError, IsADirectoryError, PermissionError):
+                pass
+            result = session.handle_input(f"add {reqs}")
+            print(result.get("output", ""))
+
+        session.start()
 
     elif args.command == "team":
         orchestrator = create_team()
