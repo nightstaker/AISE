@@ -17,6 +17,7 @@ class MessageType(Enum):
     REVIEW = "review"
     NOTIFICATION = "notification"
     REVISION = "revision"
+    USER_INPUT = "user_input"
 
 
 @dataclass
