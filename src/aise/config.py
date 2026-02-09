@@ -41,6 +41,22 @@ class WorkflowConfig:
 
 
 @dataclass
+class WhatsAppConfig:
+    """Configuration for WhatsApp Business API integration."""
+
+    phone_number_id: str = ""
+    access_token: str = ""
+    verify_token: str = ""
+    business_account_id: str = ""
+    webhook_port: int = 8080
+    webhook_path: str = "/webhook"
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.phone_number_id and self.access_token)
+
+
+@dataclass
 class ProjectConfig:
     """Top-level project configuration."""
 
@@ -54,6 +70,7 @@ class ProjectConfig:
         "team_lead": AgentConfig(name="team_lead"),
     })
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
+    whatsapp: WhatsAppConfig = field(default_factory=WhatsAppConfig)
 
     def get_model_config(self, agent_name: str) -> ModelConfig:
         """Return the effective model config for an agent.
