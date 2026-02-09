@@ -31,14 +31,14 @@ class TestCaseDesignSkill(Skill):
         for ep in endpoints:
             method = ep.get("method", "GET")
             path = ep.get("path", "/unknown")
-            path.split("/")[-1].rstrip("s").replace("{id}", "")
+            resource = path.split("/")[-1].rstrip("s").replace("{id}", "") or "resource"
 
             # Happy path
             test_cases.append(
                 {
                     "id": f"TC-API-{len(test_cases) + 1:03d}",
                     "type": "integration",
-                    "name": f"{method} {path} - success",
+                    "name": f"{method} {path} - {resource} success",
                     "preconditions": ["Service is running", "Database is seeded"],
                     "steps": [
                         f"Send {method} request to {path}",

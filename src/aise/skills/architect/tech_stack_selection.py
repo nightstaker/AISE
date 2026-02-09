@@ -86,12 +86,7 @@ class TechStackSelectionSkill(Skill):
                 "justification": "Industry-standard caching and session store",
             },
             "infrastructure": infrastructure,
-            "testing": {
-                "unit": "pytest",
-                "integration": "pytest + httpx",
-                "e2e": "Playwright",
-                "justification": "Comprehensive Python testing ecosystem",
-            },
+            "testing": self._select_testing_tools(backend["language"]),
             "ci_cd": {
                 "platform": "GitHub Actions",
                 "justification": "Integrated with source control",
@@ -104,3 +99,21 @@ class TechStackSelectionSkill(Skill):
             producer="architect",
             metadata={"project_name": context.project_name},
         )
+
+    @staticmethod
+    def _select_testing_tools(language: str) -> dict:
+        """Select testing tools appropriate for the backend language."""
+        if language == "Go":
+            return {
+                "unit": "go test",
+                "integration": "testify",
+                "e2e": "go test + net/http/httptest",
+                "justification": "Go-native testing tools for idiomatic test suites",
+            }
+        # Default to Python ecosystem
+        return {
+            "unit": "pytest",
+            "integration": "pytest + httpx",
+            "e2e": "Playwright",
+            "justification": "Comprehensive Python testing ecosystem",
+        }

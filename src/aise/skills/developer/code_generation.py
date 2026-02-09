@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ...core.artifact import Artifact, ArtifactType
@@ -18,6 +19,21 @@ class CodeGenerationSkill(Skill):
     @property
     def description(self) -> str:
         return "Generate source code from architecture design and API contracts"
+
+    @staticmethod
+    def _sanitize_identifier(name: str) -> str:
+        """Sanitize a string to be a valid Python/Go identifier.
+
+        Strips non-alphanumeric characters (except underscores), ensures the
+        result is a valid identifier, and falls back to 'unnamed' if empty.
+        """
+        sanitized = re.sub(r"[^a-zA-Z0-9_]", "", name)
+        if not sanitized or not sanitized.isidentifier():
+            # Strip leading digits if present
+            sanitized = re.sub(r"^[0-9]+", "", sanitized)
+        if not sanitized or not sanitized.isidentifier():
+            sanitized = "unnamed"
+        return sanitized
 
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         store = context.artifact_store
@@ -171,8 +187,8 @@ class CodeGenerationSkill(Skill):
             )
         return "package main\n\nfunc main() {\n}\n"
 
-    @staticmethod
-    def _to_module_name(component_name: str) -> str:
+    @classmethod
+    def _to_module_name(cls, component_name: str) -> str:
         """Convert PascalCase component name to snake_case module name."""
         name = component_name.replace("Service", "")
         result = []
@@ -180,4 +196,4 @@ class CodeGenerationSkill(Skill):
             if ch.isupper() and i > 0:
                 result.append("_")
             result.append(ch.lower())
-        return "".join(result)
+        return cls._sanitize_identifier("".join(result))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from .agents import (
@@ -166,18 +167,18 @@ def main() -> None:
     )
     wa_parser.add_argument(
         "--phone-number-id",
-        default="",
-        help="WhatsApp Business phone number ID",
+        default=os.environ.get("WHATSAPP_PHONE_NUMBER_ID", ""),
+        help="WhatsApp Business phone number ID (env: WHATSAPP_PHONE_NUMBER_ID)",
     )
     wa_parser.add_argument(
         "--access-token",
-        default="",
-        help="WhatsApp Business API access token",
+        default=os.environ.get("WHATSAPP_ACCESS_TOKEN", ""),
+        help="WhatsApp Business API access token (env: WHATSAPP_ACCESS_TOKEN)",
     )
     wa_parser.add_argument(
         "--verify-token",
-        default="",
-        help="Webhook verification token",
+        default=os.environ.get("WHATSAPP_VERIFY_TOKEN", ""),
+        help="Webhook verification token (env: WHATSAPP_VERIFY_TOKEN)",
     )
     wa_parser.add_argument(
         "--requirements",

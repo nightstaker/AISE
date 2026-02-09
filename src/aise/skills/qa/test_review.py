@@ -120,7 +120,8 @@ class TestReviewSkill(Skill):
         approved = all(i["severity"] not in ("critical", "high") for i in issues) if issues else True
 
         if automated:
-            automated.status = ArtifactStatus.APPROVED if approved else ArtifactStatus.REJECTED
+            new_status = ArtifactStatus.APPROVED if approved else ArtifactStatus.REJECTED
+            context.artifact_store.update_status(automated.id, new_status)
 
         return Artifact(
             artifact_type=ArtifactType.REVIEW_FEEDBACK,

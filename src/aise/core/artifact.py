@@ -108,6 +108,16 @@ class ArtifactStore:
         """Return all stored artifacts."""
         return list(self._artifacts.values())
 
+    def update_status(self, artifact_id: str, new_status: ArtifactStatus) -> None:
+        """Update the status of an artifact by ID.
+
+        Centralizes status transitions so that indexing, caching, or
+        notification logic can be added in one place.
+        """
+        artifact = self._artifacts.get(artifact_id)
+        if artifact is not None:
+            artifact.status = new_status
+
     def clear(self) -> None:
         """Clear all artifacts."""
         self._artifacts.clear()

@@ -33,7 +33,9 @@ class CodeReviewSkill(Skill):
                 for file_info in module.get("files", []):
                     content = file_info.get("content", "")
 
-                    # Security checks
+                    # Security checks (heuristic — not a substitute for a full security audit)
+                    content_lower = content.lower()
+
                     if "eval(" in content or "exec(" in content:
                         categories["security"].append(
                             {
@@ -43,7 +45,7 @@ class CodeReviewSkill(Skill):
                             }
                         )
 
-                    if "password" in content.lower() and "hardcoded" not in content.lower():
+                    if "password" in content_lower and "hardcoded" not in content_lower:
                         categories["security"].append(
                             {
                                 "file": file_info["path"],
@@ -51,6 +53,47 @@ class CodeReviewSkill(Skill):
                                 "severity": "high",
                             }
                         )
+
+                    # SQL injection indicators
+                    if "execute(" in content and ("%" in content or "format(" in content or 'f"' in content):
+                        categories["security"].append(
+                            {
+                                "file": file_info["path"],
+                                "issue": "Potential SQL injection - string formatting in query execution",
+                                "severity": "critical",
+                            }
+                        )
+
+                    # Command injection
+                    if "os.system(" in content or ("subprocess.call(" in content and "shell=True" in content):
+                        categories["security"].append(
+                            {
+                                "file": file_info["path"],
+                                "issue": "Potential command injection via shell execution",
+                                "severity": "critical",
+                            }
+                        )
+
+                    # Unsafe deserialization
+                    if "pickle.loads(" in content or "yaml.load(" in content:
+                        categories["security"].append(
+                            {
+                                "file": file_info["path"],
+                                "issue": "Unsafe deserialization detected",
+                                "severity": "high",
+                            }
+                        )
+
+                    # Hardcoded secrets patterns
+                    for keyword in ("api_key", "secret_key", "private_key", "token"):
+                        if f'{keyword} = "' in content_lower or f"{keyword} = '" in content_lower:
+                            categories["security"].append(
+                                {
+                                    "file": file_info["path"],
+                                    "issue": f"Potential hardcoded secret ({keyword})",
+                                    "severity": "high",
+                                }
+                            )
 
                     # Style checks
                     lines = content.split("\n")
@@ -98,7 +141,8 @@ class CodeReviewSkill(Skill):
         approved = len(critical_or_high) == 0
 
         if code:
-            code.status = ArtifactStatus.APPROVED if approved else ArtifactStatus.REJECTED
+            new_status = ArtifactStatus.APPROVED if approved else ArtifactStatus.REJECTED
+            context.artifact_store.update_status(code.id, new_status)
 
         return Artifact(
             artifact_type=ArtifactType.REVIEW_FEEDBACK,
@@ -108,7 +152,8 @@ class CodeReviewSkill(Skill):
                 "findings_by_category": {k: len(v) for k, v in categories.items()},
                 "findings": findings,
                 "summary": f"Code review: {'Approved' if approved else 'Needs revision'}, "
-                f"{len(findings)} findings ({len(critical_or_high)} critical/high).",
+                f"{len(findings)} findings ({len(critical_or_high)} critical/high). "
+                "Note: these checks are heuristic and do not replace a comprehensive security audit.",
             },
             producer="developer",
             metadata={
