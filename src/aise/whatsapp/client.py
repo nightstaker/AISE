@@ -12,7 +12,7 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -177,10 +177,9 @@ class WhatsAppClient:
                         extracted["body"] = msg.get("text", {}).get("body", "")
                     elif msg.get("type") == "interactive":
                         interactive = msg.get("interactive", {})
-                        extracted["body"] = (
-                            interactive.get("button_reply", {}).get("title", "")
-                            or interactive.get("list_reply", {}).get("title", "")
-                        )
+                        extracted["body"] = interactive.get("button_reply", {}).get(
+                            "title", ""
+                        ) or interactive.get("list_reply", {}).get("title", "")
                     messages.append(extracted)
 
                     # Notify registered callbacks

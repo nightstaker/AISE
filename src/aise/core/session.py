@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import shlex
 from enum import Enum
-from typing import Any, Callable, TextIO
+from typing import Any, Callable
 
-from .artifact import ArtifactStore, ArtifactType
-from .message import MessageBus, MessageType
+from .artifact import ArtifactType
+from .message import MessageType
 from .orchestrator import Orchestrator
 from .workflow import WorkflowEngine
 
@@ -169,7 +168,10 @@ class OnDemandSession:
 
     def _handle_add_requirement(self, text: str) -> dict[str, Any]:
         if not text.strip():
-            return {"status": "error", "output": "Please provide a requirement. Usage: add <requirement text>"}
+            return {
+                "status": "error",
+                "output": "Please provide a requirement. Usage: add <requirement text>",
+            }
 
         try:
             # Run the requirement through the PM agent pipeline
@@ -223,10 +225,13 @@ class OnDemandSession:
 
     def _handle_bug(self, text: str) -> dict[str, Any]:
         if not text.strip():
-            return {"status": "error", "output": "Please describe the bug. Usage: bug <description>"}
+            return {
+                "status": "error",
+                "output": "Please describe the bug. Usage: bug <description>",
+            }
 
         try:
-            bug_reports = [{"id": f"BUG-USER", "description": text}]
+            bug_reports = [{"id": "BUG-USER", "description": text}]
             artifact_id = self.orchestrator.execute_task(
                 "developer",
                 "bug_fix",
@@ -273,7 +278,9 @@ class OnDemandSession:
         lines.append(f"\nArtifacts: {len(all_artifacts)}")
         type_counts: dict[str, int] = {}
         for a in all_artifacts:
-            type_counts[a.artifact_type.value] = type_counts.get(a.artifact_type.value, 0) + 1
+            type_counts[a.artifact_type.value] = (
+                type_counts.get(a.artifact_type.value, 0) + 1
+            )
         for atype, count in sorted(type_counts.items()):
             lines.append(f"  {atype:25s}  {count}")
 
@@ -331,10 +338,13 @@ class OnDemandSession:
 
         if target_phase is None:
             available = ", ".join(p.name for p in workflow.phases)
-            return {"status": "error", "output": f"Unknown phase '{phase_name}'. Available: {available}"}
+            return {
+                "status": "error",
+                "output": f"Unknown phase '{phase_name}'. Available: {available}",
+            }
 
         # Build a single-phase workflow to execute
-        from .workflow import Workflow, Phase
+        from .workflow import Workflow
 
         single = Workflow(name=f"on_demand_{phase_name}")
         single.add_phase(target_phase)
@@ -354,7 +364,9 @@ class OnDemandSession:
                     lines.append(f"    {tkey}: {tres.get('status', '?')}")
                 review = r.get("review")
                 if review:
-                    lines.append(f"  Review: {'approved' if review.get('approved') else 'rejected'}")
+                    lines.append(
+                        f"  Review: {'approved' if review.get('approved') else 'rejected'}"
+                    )
 
             return {"status": "ok", "output": "\n".join(lines)}
 
@@ -364,7 +376,10 @@ class OnDemandSession:
     def _handle_run_workflow(self, text: str) -> dict[str, Any]:
         reqs = self._gather_requirements()
         if not reqs:
-            return {"status": "error", "output": "No requirements found. Add requirements first with: add <text>"}
+            return {
+                "status": "error",
+                "output": "No requirements found. Add requirements first with: add <text>",
+            }
 
         try:
             results = self.orchestrator.run_default_workflow(
@@ -402,11 +417,17 @@ class OnDemandSession:
 
             lines = [f"Team Lead decomposed your request into {len(tasks)} tasks:"]
             for t in tasks[:10]:  # Show at most 10
-                lines.append(f"  [{t.get('id')}] {t.get('agent'):20s} {t.get('description', '')}")
+                lines.append(
+                    f"  [{t.get('id')}] {t.get('agent'):20s} {t.get('description', '')}"
+                )
             if len(tasks) > 10:
                 lines.append(f"  ... and {len(tasks) - 10} more")
 
-            return {"status": "ok", "artifact_id": artifact_id, "output": "\n".join(lines)}
+            return {
+                "status": "ok",
+                "artifact_id": artifact_id,
+                "output": "\n".join(lines),
+            }
 
         except Exception as e:
             return {"status": "error", "output": f"Failed: {e}"}
@@ -440,6 +461,7 @@ class OnDemandSession:
 # ------------------------------------------------------------------
 # Module-level helpers
 # ------------------------------------------------------------------
+
 
 def _make_notification(sender: str, receiver: str, text: str):
     """Create a notification Message without importing at module level."""

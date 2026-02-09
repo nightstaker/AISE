@@ -37,30 +37,56 @@ class RequirementAnalysisSkill(Skill):
             lines = [line.strip() for line in raw.strip().split("\n") if line.strip()]
             for i, line in enumerate(lines, 1):
                 line_lower = line.lower()
-                if any(kw in line_lower for kw in ["performance", "security", "scalab", "reliab", "maintain"]):
-                    non_functional.append({
-                        "id": f"NFR-{len(non_functional) + 1:03d}",
-                        "description": line,
-                        "priority": "high",
-                    })
-                elif any(kw in line_lower for kw in ["constraint", "must use", "limited to", "budget", "deadline"]):
-                    constraints.append({
-                        "id": f"CON-{len(constraints) + 1:03d}",
-                        "description": line,
-                    })
+                if any(
+                    kw in line_lower
+                    for kw in [
+                        "performance",
+                        "security",
+                        "scalab",
+                        "reliab",
+                        "maintain",
+                    ]
+                ):
+                    non_functional.append(
+                        {
+                            "id": f"NFR-{len(non_functional) + 1:03d}",
+                            "description": line,
+                            "priority": "high",
+                        }
+                    )
+                elif any(
+                    kw in line_lower
+                    for kw in [
+                        "constraint",
+                        "must use",
+                        "limited to",
+                        "budget",
+                        "deadline",
+                    ]
+                ):
+                    constraints.append(
+                        {
+                            "id": f"CON-{len(constraints) + 1:03d}",
+                            "description": line,
+                        }
+                    )
                 else:
-                    functional.append({
-                        "id": f"FR-{len(functional) + 1:03d}",
-                        "description": line,
-                        "priority": "medium",
-                    })
+                    functional.append(
+                        {
+                            "id": f"FR-{len(functional) + 1:03d}",
+                            "description": line,
+                            "priority": "medium",
+                        }
+                    )
         elif isinstance(raw, list):
             for i, item in enumerate(raw, 1):
-                functional.append({
-                    "id": f"FR-{i:03d}",
-                    "description": str(item),
-                    "priority": "medium",
-                })
+                functional.append(
+                    {
+                        "id": f"FR-{i:03d}",
+                        "description": str(item),
+                        "priority": "medium",
+                    }
+                )
 
         return Artifact(
             artifact_type=ArtifactType.REQUIREMENTS,

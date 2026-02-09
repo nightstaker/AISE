@@ -32,7 +32,9 @@ class Message:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
-    def reply(self, content: dict[str, Any], msg_type: MessageType | None = None) -> Message:
+    def reply(
+        self, content: dict[str, Any], msg_type: MessageType | None = None
+    ) -> Message:
         """Create a reply to this message."""
         return Message(
             sender=self.receiver,

@@ -38,11 +38,13 @@ class TestAutomationSkill(Skill):
                 }
 
             script = self._generate_test_script(tc, framework)
-            test_files[tc_type]["scripts"].append({
-                "file": file_key,
-                "test_case_id": tc["id"],
-                "content": script,
-            })
+            test_files[tc_type]["scripts"].append(
+                {
+                    "file": file_key,
+                    "test_case_id": tc["id"],
+                    "content": script,
+                }
+            )
 
         # Generate conftest.py
         conftest = self._generate_conftest(framework)
@@ -74,7 +76,13 @@ class TestAutomationSkill(Skill):
     def _generate_test_script(test_case: dict, framework: str) -> str:
         """Generate a pytest test script from a test case."""
         tc_id = test_case["id"]
-        tc_name = test_case["name"].lower().replace(" ", "_").replace("-", "_").replace("/", "_")
+        tc_name = (
+            test_case["name"]
+            .lower()
+            .replace(" ", "_")
+            .replace("-", "_")
+            .replace("/", "_")
+        )
         tc_type = test_case["type"]
         steps = test_case.get("steps", [])
         expected = test_case.get("expected_result", "")

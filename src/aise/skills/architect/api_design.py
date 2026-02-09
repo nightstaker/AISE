@@ -20,7 +20,9 @@ class APIDesignSkill(Skill):
         return "Design API contracts (endpoints, request/response schemas, error codes)"
 
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
-        components = context.artifact_store.get_content(ArtifactType.ARCHITECTURE_DESIGN, "components", [])
+        components = context.artifact_store.get_content(
+            ArtifactType.ARCHITECTURE_DESIGN, "components", []
+        )
 
         endpoints = []
         schemas = {}
@@ -33,44 +35,54 @@ class APIDesignSkill(Skill):
             resource_plural = resource + "s"
 
             # CRUD endpoints for each service
-            endpoints.extend([
-                {
-                    "method": "GET",
-                    "path": f"/api/v1/{resource_plural}",
-                    "description": f"List all {resource_plural}",
-                    "response_schema": f"{resource}_list",
-                    "status_codes": {"200": "Success", "401": "Unauthorized"},
-                },
-                {
-                    "method": "POST",
-                    "path": f"/api/v1/{resource_plural}",
-                    "description": f"Create a new {resource}",
-                    "request_schema": f"{resource}_create",
-                    "response_schema": f"{resource}_detail",
-                    "status_codes": {"201": "Created", "400": "Bad Request", "401": "Unauthorized"},
-                },
-                {
-                    "method": "GET",
-                    "path": f"/api/v1/{resource_plural}/{{id}}",
-                    "description": f"Get {resource} by ID",
-                    "response_schema": f"{resource}_detail",
-                    "status_codes": {"200": "Success", "404": "Not Found"},
-                },
-                {
-                    "method": "PUT",
-                    "path": f"/api/v1/{resource_plural}/{{id}}",
-                    "description": f"Update {resource}",
-                    "request_schema": f"{resource}_update",
-                    "response_schema": f"{resource}_detail",
-                    "status_codes": {"200": "Success", "400": "Bad Request", "404": "Not Found"},
-                },
-                {
-                    "method": "DELETE",
-                    "path": f"/api/v1/{resource_plural}/{{id}}",
-                    "description": f"Delete {resource}",
-                    "status_codes": {"204": "No Content", "404": "Not Found"},
-                },
-            ])
+            endpoints.extend(
+                [
+                    {
+                        "method": "GET",
+                        "path": f"/api/v1/{resource_plural}",
+                        "description": f"List all {resource_plural}",
+                        "response_schema": f"{resource}_list",
+                        "status_codes": {"200": "Success", "401": "Unauthorized"},
+                    },
+                    {
+                        "method": "POST",
+                        "path": f"/api/v1/{resource_plural}",
+                        "description": f"Create a new {resource}",
+                        "request_schema": f"{resource}_create",
+                        "response_schema": f"{resource}_detail",
+                        "status_codes": {
+                            "201": "Created",
+                            "400": "Bad Request",
+                            "401": "Unauthorized",
+                        },
+                    },
+                    {
+                        "method": "GET",
+                        "path": f"/api/v1/{resource_plural}/{{id}}",
+                        "description": f"Get {resource} by ID",
+                        "response_schema": f"{resource}_detail",
+                        "status_codes": {"200": "Success", "404": "Not Found"},
+                    },
+                    {
+                        "method": "PUT",
+                        "path": f"/api/v1/{resource_plural}/{{id}}",
+                        "description": f"Update {resource}",
+                        "request_schema": f"{resource}_update",
+                        "response_schema": f"{resource}_detail",
+                        "status_codes": {
+                            "200": "Success",
+                            "400": "Bad Request",
+                            "404": "Not Found",
+                        },
+                    },
+                    {
+                        "method": "DELETE",
+                        "path": f"/api/v1/{resource_plural}/{{id}}",
+                        "description": f"Delete {resource}",
+                        "status_codes": {"204": "No Content", "404": "Not Found"},
+                    },
+                ]
+            )
 
             # Schemas
             schemas[f"{resource}_detail"] = {
@@ -93,7 +105,10 @@ class APIDesignSkill(Skill):
             schemas[f"{resource}_list"] = {
                 "type": "object",
                 "properties": {
-                    "items": {"type": "array", "items": {"$ref": f"#/schemas/{resource}_detail"}},
+                    "items": {
+                        "type": "array",
+                        "items": {"$ref": f"#/schemas/{resource}_detail"},
+                    },
                     "total": {"type": "integer"},
                     "page": {"type": "integer"},
                     "page_size": {"type": "integer"},
@@ -113,7 +128,10 @@ class APIDesignSkill(Skill):
 
         contract = {
             "openapi": "3.0.0",
-            "info": {"title": f"{context.project_name or 'Project'} API", "version": "1.0.0"},
+            "info": {
+                "title": f"{context.project_name or 'Project'} API",
+                "version": "1.0.0",
+            },
             "endpoints": endpoints,
             "schemas": schemas,
             "authentication": {"type": "bearer", "scheme": "JWT"},

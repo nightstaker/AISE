@@ -73,7 +73,9 @@ class BugFixSkill(Skill):
                 "fixes": fixes,
                 "total_bugs": len(bug_reports) + len(failing_tests),
                 "fixed_count": sum(1 for f in fixes if f["status"] == "fixed"),
-                "needs_investigation": sum(1 for f in fixes if f["status"] == "needs_investigation"),
+                "needs_investigation": sum(
+                    1 for f in fixes if f["status"] == "needs_investigation"
+                ),
             },
             producer="developer",
             metadata={"project_name": context.project_name},

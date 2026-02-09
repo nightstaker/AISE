@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from ..core.message import Message, MessageBus, MessageType
 from ..core.orchestrator import Orchestrator
 from ..core.session import OnDemandSession
 from .bridge import WhatsAppBridge
@@ -314,7 +313,9 @@ class WhatsAppGroupSession:
 
         elif cmd == "/phase":
             if len(parts) < 2:
-                self._print("Usage: /phase <requirements|design|implementation|testing>")
+                self._print(
+                    "Usage: /phase <requirements|design|implementation|testing>"
+                )
                 return
             phase_name = parts[1]
             result = self._session.handle_input(f"phase {phase_name}")
@@ -328,15 +329,15 @@ class WhatsAppGroupSession:
 
         else:
             self._print(f"Unknown command: {cmd}")
-            self._print("Available: /join /invite /members /history /status /workflow /phase /quit")
+            self._print(
+                "Available: /join /invite /members /history /status /workflow /phase /quit"
+            )
 
     # ------------------------------------------------------------------
     # Callbacks
     # ------------------------------------------------------------------
 
-    def _handle_human_command(
-        self, message: GroupMessage, member: GroupMember
-    ) -> bool:
+    def _handle_human_command(self, message: GroupMessage, member: GroupMember) -> bool:
         """Custom handler for human messages in the bridge.
 
         Returns True if the message was handled as a command,

@@ -35,37 +35,48 @@ class CodeReviewSkill(Skill):
 
                     # Security checks
                     if "eval(" in content or "exec(" in content:
-                        categories["security"].append({
-                            "file": file_info["path"],
-                            "issue": "Use of eval/exec detected - potential code injection",
-                            "severity": "critical",
-                        })
+                        categories["security"].append(
+                            {
+                                "file": file_info["path"],
+                                "issue": "Use of eval/exec detected - potential code injection",
+                                "severity": "critical",
+                            }
+                        )
 
-                    if "password" in content.lower() and "hardcoded" not in content.lower():
-                        categories["security"].append({
-                            "file": file_info["path"],
-                            "issue": "Potential hardcoded credential",
-                            "severity": "high",
-                        })
+                    if (
+                        "password" in content.lower()
+                        and "hardcoded" not in content.lower()
+                    ):
+                        categories["security"].append(
+                            {
+                                "file": file_info["path"],
+                                "issue": "Potential hardcoded credential",
+                                "severity": "high",
+                            }
+                        )
 
                     # Style checks
                     lines = content.split("\n")
                     for i, line in enumerate(lines, 1):
                         if len(line) > 120:
-                            categories["style"].append({
-                                "file": file_info["path"],
-                                "line": i,
-                                "issue": "Line exceeds 120 characters",
-                                "severity": "low",
-                            })
+                            categories["style"].append(
+                                {
+                                    "file": file_info["path"],
+                                    "line": i,
+                                    "issue": "Line exceeds 120 characters",
+                                    "severity": "low",
+                                }
+                            )
 
                     # Correctness: check for empty except blocks
                     if "except:" in content and "pass" in content:
-                        categories["correctness"].append({
-                            "file": file_info["path"],
-                            "issue": "Bare except with pass - errors may be silently swallowed",
-                            "severity": "medium",
-                        })
+                        categories["correctness"].append(
+                            {
+                                "file": file_info["path"],
+                                "issue": "Bare except with pass - errors may be silently swallowed",
+                                "severity": "medium",
+                            }
+                        )
 
             # Check test coverage
             if tests:
@@ -73,22 +84,28 @@ class CodeReviewSkill(Skill):
                 tested_modules = {s["module"] for s in test_suites}
                 for module in modules:
                     if module["name"] != "app" and module["name"] not in tested_modules:
-                        categories["correctness"].append({
-                            "file": f"app/{module['name']}/",
-                            "issue": f"Module '{module['name']}' has no unit tests",
-                            "severity": "high",
-                        })
+                        categories["correctness"].append(
+                            {
+                                "file": f"app/{module['name']}/",
+                                "issue": f"Module '{module['name']}' has no unit tests",
+                                "severity": "high",
+                            }
+                        )
 
         for category, items in categories.items():
             for item in items:
                 item["category"] = category
                 findings.append(item)
 
-        critical_or_high = [f for f in findings if f["severity"] in ("critical", "high")]
+        critical_or_high = [
+            f for f in findings if f["severity"] in ("critical", "high")
+        ]
         approved = len(critical_or_high) == 0
 
         if code:
-            code.status = ArtifactStatus.APPROVED if approved else ArtifactStatus.REJECTED
+            code.status = (
+                ArtifactStatus.APPROVED if approved else ArtifactStatus.REJECTED
+            )
 
         return Artifact(
             artifact_type=ArtifactType.REVIEW_FEEDBACK,
@@ -98,8 +115,11 @@ class CodeReviewSkill(Skill):
                 "findings_by_category": {k: len(v) for k, v in categories.items()},
                 "findings": findings,
                 "summary": f"Code review: {'Approved' if approved else 'Needs revision'}, "
-                           f"{len(findings)} findings ({len(critical_or_high)} critical/high).",
+                f"{len(findings)} findings ({len(critical_or_high)} critical/high).",
             },
             producer="developer",
-            metadata={"review_target": "source_code", "project_name": context.project_name},
+            metadata={
+                "review_target": "source_code",
+                "project_name": context.project_name,
+            },
         )

@@ -2,7 +2,6 @@
 
 from aise.config import ProjectConfig
 from aise.main import create_team
-from aise.whatsapp.client import WhatsAppConfig
 from aise.whatsapp.session import WhatsAppGroupSession
 
 
@@ -25,7 +24,6 @@ class TestWhatsAppGroupSession:
 
     def test_agents_registered_in_group(self):
         session = _make_session()
-        members = session.group_chat.members
         agent_names = {m.name for m in session.group_chat.agent_members}
         assert "product_manager" in agent_names
         assert "architect" in agent_names

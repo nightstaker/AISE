@@ -34,11 +34,13 @@ class TestReviewSkill(Skill):
             subsystems = test_plan.content.get("subsystem_plans", [])
             metrics["planned_subsystems"] = len(subsystems)
         else:
-            issues.append({
-                "type": "missing_artifact",
-                "severity": "high",
-                "description": "No test plan found",
-            })
+            issues.append(
+                {
+                    "type": "missing_artifact",
+                    "severity": "high",
+                    "description": "No test plan found",
+                }
+            )
 
         # Check test case coverage against API endpoints
         if test_cases and api:
@@ -53,62 +55,82 @@ class TestReviewSkill(Skill):
 
             total_endpoints = len(endpoints)
             covered = len(tested_paths)
-            metrics["endpoint_coverage"] = round(covered / total_endpoints * 100, 1) if total_endpoints > 0 else 0
+            metrics["endpoint_coverage"] = (
+                round(covered / total_endpoints * 100, 1) if total_endpoints > 0 else 0
+            )
             metrics["total_endpoints"] = total_endpoints
             metrics["covered_endpoints"] = covered
 
             if metrics["endpoint_coverage"] < 70:
-                issues.append({
-                    "type": "low_coverage",
-                    "severity": "medium",
-                    "description": f"Endpoint test coverage is {metrics['endpoint_coverage']}% (target: 70%)",
-                })
+                issues.append(
+                    {
+                        "type": "low_coverage",
+                        "severity": "medium",
+                        "description": f"Endpoint test coverage is {metrics['endpoint_coverage']}% (target: 70%)",
+                    }
+                )
 
         # Check automation coverage
         if automated and test_cases:
             total_cases = test_cases.content.get("total_count", 0)
             total_scripts = automated.content.get("total_scripts", 0)
-            metrics["automation_rate"] = round(total_scripts / total_cases * 100, 1) if total_cases > 0 else 0
+            metrics["automation_rate"] = (
+                round(total_scripts / total_cases * 100, 1) if total_cases > 0 else 0
+            )
             metrics["total_test_cases"] = total_cases
             metrics["automated_scripts"] = total_scripts
 
             if metrics["automation_rate"] < 60:
-                issues.append({
-                    "type": "low_automation",
-                    "severity": "medium",
-                    "description": f"Test automation rate is {metrics['automation_rate']}% (target: 60%)",
-                })
+                issues.append(
+                    {
+                        "type": "low_automation",
+                        "severity": "medium",
+                        "description": f"Test automation rate is {metrics['automation_rate']}% (target: 60%)",
+                    }
+                )
 
         # Check unit test coverage
         if unit_tests:
             metrics["unit_test_count"] = unit_tests.content.get("total_test_cases", 0)
         else:
-            issues.append({
-                "type": "missing_artifact",
-                "severity": "high",
-                "description": "No unit tests found",
-            })
+            issues.append(
+                {
+                    "type": "missing_artifact",
+                    "severity": "high",
+                    "description": "No unit tests found",
+                }
+            )
 
         # Check for test types balance
         if test_cases:
             by_type = test_cases.content.get("by_type", {})
             if by_type.get("e2e", 0) == 0:
-                issues.append({
-                    "type": "missing_test_type",
-                    "severity": "medium",
-                    "description": "No E2E test cases defined",
-                })
+                issues.append(
+                    {
+                        "type": "missing_test_type",
+                        "severity": "medium",
+                        "description": "No E2E test cases defined",
+                    }
+                )
             if by_type.get("regression", 0) == 0:
-                issues.append({
-                    "type": "missing_test_type",
-                    "severity": "low",
-                    "description": "No regression test cases defined",
-                })
+                issues.append(
+                    {
+                        "type": "missing_test_type",
+                        "severity": "low",
+                        "description": "No regression test cases defined",
+                    }
+                )
 
-        approved = all(i["severity"] not in ("critical", "high") for i in issues) if issues else True
+        approved = (
+            all(i["severity"] not in ("critical", "high") for i in issues)
+            if issues
+            else True
+        )
 
         if automated:
-            automated.status = ArtifactStatus.APPROVED if approved else ArtifactStatus.REJECTED
+            automated.status = (
+                ArtifactStatus.APPROVED if approved else ArtifactStatus.REJECTED
+            )
 
         return Artifact(
             artifact_type=ArtifactType.REVIEW_FEEDBACK,
@@ -117,7 +139,7 @@ class TestReviewSkill(Skill):
                 "metrics": metrics,
                 "issues": issues,
                 "summary": f"Test review: {'Approved' if approved else 'Needs revision'}, "
-                           f"{len(issues)} issues found.",
+                f"{len(issues)} issues found.",
             },
             producer="qa_engineer",
             metadata={"review_target": "testing", "project_name": context.project_name},

@@ -11,9 +11,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..core.agent import AgentRole
 from ..core.message import Message, MessageBus, MessageType
-from .client import WhatsAppClient, WhatsAppConfig
+from .client import WhatsAppClient
 from .group import GroupChat, GroupMember, GroupMessage, MemberRole
 
 logger = logging.getLogger(__name__)
@@ -145,12 +144,14 @@ class WhatsAppBridge:
         # Also send via WhatsApp API if configured
         if self.whatsapp_client and self.whatsapp_client.config.is_configured:
             role_tag = _ROLE_EMOJI.get(sender, "")
-            wa_text = f"{role_tag} {sender}:\n{content}" if role_tag else f"{sender}:\n{content}"
+            wa_text = (
+                f"{role_tag} {sender}:\n{content}"
+                if role_tag
+                else f"{sender}:\n{content}"
+            )
             for member in self.group_chat.human_members:
                 if member.phone_number:
-                    self.whatsapp_client.send_text_message(
-                        member.phone_number, wa_text
-                    )
+                    self.whatsapp_client.send_text_message(member.phone_number, wa_text)
 
     def _format_internal_message(self, message: Message) -> str:
         """Format an internal message for display in the group chat."""
@@ -213,9 +214,7 @@ class WhatsAppBridge:
         # Process human message
         self._route_human_message(message, member)
 
-    def _route_human_message(
-        self, message: GroupMessage, member: GroupMember
-    ) -> None:
+    def _route_human_message(self, message: GroupMessage, member: GroupMember) -> None:
         """Route a human's group message to the appropriate agent(s).
 
         Supports command prefixes for directing messages:
@@ -292,7 +291,7 @@ class WhatsAppBridge:
         lower = text.lower()
         for prefix, agent_name in mention_map.items():
             if lower.startswith(prefix + " ") or lower.startswith(prefix + "\n"):
-                body = text[len(prefix):].strip()
+                body = text[len(prefix) :].strip()
                 return agent_name, body
             if lower == prefix:
                 return agent_name, ""
@@ -327,9 +326,7 @@ class WhatsAppBridge:
         )
         self.group_chat.add_member(member)
         self._human_phone_map[phone_number] = name
-        self.group_chat._post_system_message(
-            f"{member.display_name} joined the group"
-        )
+        self.group_chat._post_system_message(f"{member.display_name} joined the group")
         return member
 
     def handle_incoming_whatsapp(
@@ -348,9 +345,7 @@ class WhatsAppBridge:
         """
         member_name = self._human_phone_map.get(sender_phone)
         if member_name is None:
-            logger.warning(
-                "Message from unregistered phone %s ignored", sender_phone
-            )
+            logger.warning("Message from unregistered phone %s ignored", sender_phone)
             return
 
         self.group_chat.post_message(

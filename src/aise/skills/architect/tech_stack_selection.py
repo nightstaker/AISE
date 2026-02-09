@@ -21,26 +21,57 @@ class TechStackSelectionSkill(Skill):
 
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         store = context.artifact_store
-        non_functional = store.get_content(ArtifactType.REQUIREMENTS, "non_functional_requirements", [])
-        arch_style = store.get_content(ArtifactType.ARCHITECTURE_DESIGN, "architecture_style", "monolith")
+        non_functional = store.get_content(
+            ArtifactType.REQUIREMENTS, "non_functional_requirements", []
+        )
+        arch_style = store.get_content(
+            ArtifactType.ARCHITECTURE_DESIGN, "architecture_style", "monolith"
+        )
 
-        nfr_text = " ".join(nfr.get("description", "").lower() for nfr in non_functional)
+        nfr_text = " ".join(
+            nfr.get("description", "").lower() for nfr in non_functional
+        )
 
         # Select backend based on requirements
         if "performance" in nfr_text or "high throughput" in nfr_text:
-            backend = {"language": "Go", "framework": "Gin", "justification": "High performance requirements favor Go"}
+            backend = {
+                "language": "Go",
+                "framework": "Gin",
+                "justification": "High performance requirements favor Go",
+            }
         elif "rapid development" in nfr_text or "prototype" in nfr_text:
-            backend = {"language": "Python", "framework": "FastAPI", "justification": "Rapid development favors Python/FastAPI"}
+            backend = {
+                "language": "Python",
+                "framework": "FastAPI",
+                "justification": "Rapid development favors Python/FastAPI",
+            }
         else:
-            backend = {"language": "Python", "framework": "FastAPI", "justification": "General-purpose, well-supported stack"}
+            backend = {
+                "language": "Python",
+                "framework": "FastAPI",
+                "justification": "General-purpose, well-supported stack",
+            }
 
         # Select database
-        if "relational" in nfr_text or "consistency" in nfr_text or "transaction" in nfr_text:
-            database = {"type": "PostgreSQL", "justification": "ACID compliance for data consistency"}
+        if (
+            "relational" in nfr_text
+            or "consistency" in nfr_text
+            or "transaction" in nfr_text
+        ):
+            database = {
+                "type": "PostgreSQL",
+                "justification": "ACID compliance for data consistency",
+            }
         elif "document" in nfr_text or "flexible schema" in nfr_text:
-            database = {"type": "MongoDB", "justification": "Flexible schema for evolving data models"}
+            database = {
+                "type": "MongoDB",
+                "justification": "Flexible schema for evolving data models",
+            }
         else:
-            database = {"type": "PostgreSQL", "justification": "Reliable default for most workloads"}
+            database = {
+                "type": "PostgreSQL",
+                "justification": "Reliable default for most workloads",
+            }
 
         # Infrastructure
         if arch_style == "microservices":
@@ -60,7 +91,10 @@ class TechStackSelectionSkill(Skill):
         stack = {
             "backend": backend,
             "database": database,
-            "cache": {"type": "Redis", "justification": "Industry-standard caching and session store"},
+            "cache": {
+                "type": "Redis",
+                "justification": "Industry-standard caching and session store",
+            },
             "infrastructure": infrastructure,
             "testing": {
                 "unit": "pytest",
@@ -68,7 +102,10 @@ class TechStackSelectionSkill(Skill):
                 "e2e": "Playwright",
                 "justification": "Comprehensive Python testing ecosystem",
             },
-            "ci_cd": {"platform": "GitHub Actions", "justification": "Integrated with source control"},
+            "ci_cd": {
+                "platform": "GitHub Actions",
+                "justification": "Integrated with source control",
+            },
         }
 
         return Artifact(

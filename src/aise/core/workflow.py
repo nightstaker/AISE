@@ -52,7 +52,9 @@ class Phase:
     review_gate: ReviewGate | None = None
     status: PhaseStatus = PhaseStatus.PENDING
 
-    def add_task(self, agent: str, skill: str, input_data: dict[str, Any] | None = None) -> Task:
+    def add_task(
+        self, agent: str, skill: str, input_data: dict[str, Any] | None = None
+    ) -> Task:
         task = Task(agent=agent, skill=skill, input_data=input_data or {})
         self.tasks.append(task)
         return task
@@ -148,9 +150,13 @@ class WorkflowEngine:
 
         gate = phase.review_gate
         try:
-            artifact_id = executor(gate.reviewer_agent, gate.review_skill, {
-                "target_artifact_type": gate.target_artifact_type,
-            })
+            artifact_id = executor(
+                gate.reviewer_agent,
+                gate.review_skill,
+                {
+                    "target_artifact_type": gate.target_artifact_type,
+                },
+            )
             phase.status = PhaseStatus.COMPLETED
             return {"approved": True, "artifact_id": artifact_id}
         except Exception as e:

@@ -62,13 +62,15 @@ class ProjectConfig:
 
     project_name: str = "Untitled Project"
     default_model: ModelConfig = field(default_factory=ModelConfig)
-    agents: dict[str, AgentConfig] = field(default_factory=lambda: {
-        "product_manager": AgentConfig(name="product_manager"),
-        "architect": AgentConfig(name="architect"),
-        "developer": AgentConfig(name="developer"),
-        "qa_engineer": AgentConfig(name="qa_engineer"),
-        "team_lead": AgentConfig(name="team_lead"),
-    })
+    agents: dict[str, AgentConfig] = field(
+        default_factory=lambda: {
+            "product_manager": AgentConfig(name="product_manager"),
+            "architect": AgentConfig(name="architect"),
+            "developer": AgentConfig(name="developer"),
+            "qa_engineer": AgentConfig(name="qa_engineer"),
+            "team_lead": AgentConfig(name="team_lead"),
+        }
+    )
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     whatsapp: WhatsAppConfig = field(default_factory=WhatsAppConfig)
 

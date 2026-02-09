@@ -21,36 +21,49 @@ class ProductDesignSkill(Skill):
 
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         store = context.artifact_store
-        functional_reqs = store.get_content(ArtifactType.REQUIREMENTS, "functional_requirements", [])
-        non_functional_reqs = store.get_content(ArtifactType.REQUIREMENTS, "non_functional_requirements", [])
+        functional_reqs = store.get_content(
+            ArtifactType.REQUIREMENTS, "functional_requirements", []
+        )
+        non_functional_reqs = store.get_content(
+            ArtifactType.REQUIREMENTS, "non_functional_requirements", []
+        )
         user_stories = store.get_content(ArtifactType.USER_STORIES, "user_stories", [])
 
         # Build feature list from requirements
         features = []
         for req in functional_reqs:
-            features.append({
-                "name": req["description"][:60],
-                "description": req["description"],
-                "priority": req.get("priority", "medium"),
-                "user_stories": [s["id"] for s in user_stories if s.get("source_requirement") == req["id"]],
-            })
+            features.append(
+                {
+                    "name": req["description"][:60],
+                    "description": req["description"],
+                    "priority": req.get("priority", "medium"),
+                    "user_stories": [
+                        s["id"]
+                        for s in user_stories
+                        if s.get("source_requirement") == req["id"]
+                    ],
+                }
+            )
 
         # Build user flows
         user_flows = []
         for i, feature in enumerate(features, 1):
-            user_flows.append({
-                "id": f"UF-{i:03d}",
-                "name": f"Flow for: {feature['name'][:40]}",
-                "steps": [
-                    "User initiates action",
-                    f"System processes: {feature['description'][:50]}",
-                    "System returns result",
-                    "User sees confirmation",
-                ],
-            })
+            user_flows.append(
+                {
+                    "id": f"UF-{i:03d}",
+                    "name": f"Flow for: {feature['name'][:40]}",
+                    "steps": [
+                        "User initiates action",
+                        f"System processes: {feature['description'][:50]}",
+                        "System returns result",
+                        "User sees confirmation",
+                    ],
+                }
+            )
 
         prd = {
-            "project_name": context.project_name or input_data.get("project_name", "Untitled"),
+            "project_name": context.project_name
+            or input_data.get("project_name", "Untitled"),
             "overview": f"Product with {len(features)} features derived from {len(functional_reqs)} requirements.",
             "features": features,
             "user_flows": user_flows,

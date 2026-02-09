@@ -97,9 +97,6 @@ class TestWhatsAppBridge:
 
         bridge.start()
 
-        # Capture bus messages
-        bus_messages = []
-        original = bus.publish
         # Bridge already intercepts publish, so we track history
         group.post_message("Alice", "Add a login page")
 
@@ -189,7 +186,7 @@ class TestWhatsAppBridge:
 
     def test_no_forward_when_inactive(self):
         group, bus = _make_group_with_agents()
-        bridge = WhatsAppBridge(bus, group, forward_all_internal=True)
+        WhatsAppBridge(bus, group, forward_all_internal=True)
         # Don't start bridge
 
         initial_count = group.message_count

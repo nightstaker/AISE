@@ -21,7 +21,9 @@ class CodeGenerationSkill(Skill):
 
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         store = context.artifact_store
-        components = store.get_content(ArtifactType.ARCHITECTURE_DESIGN, "components", [])
+        components = store.get_content(
+            ArtifactType.ARCHITECTURE_DESIGN, "components", []
+        )
         endpoints = store.get_content(ArtifactType.API_CONTRACT, "endpoints", [])
         backend = store.get_content(ArtifactType.TECH_STACK, "backend", {})
         language = backend.get("language", "Python")
@@ -36,8 +38,7 @@ class CodeGenerationSkill(Skill):
 
             module_name = self._to_module_name(comp["name"])
             related_endpoints = [
-                ep for ep in endpoints
-                if module_name in ep.get("path", "").lower()
+                ep for ep in endpoints if module_name in ep.get("path", "").lower()
             ]
 
             module = {
@@ -45,22 +46,30 @@ class CodeGenerationSkill(Skill):
                 "component_id": comp["id"],
                 "language": language,
                 "framework": framework,
-                "files": self._generate_module_files(module_name, comp, related_endpoints, language),
+                "files": self._generate_module_files(
+                    module_name, comp, related_endpoints, language
+                ),
             }
             modules.append(module)
 
         # Generate main app entry point
-        modules.append({
-            "name": "app",
-            "component_id": "COMP-API",
-            "language": language,
-            "framework": framework,
-            "files": [{
-                "path": f"app/main.{'py' if language == 'Python' else 'go'}",
-                "description": "Application entry point",
-                "content": self._generate_app_entry(modules, language, framework),
-            }],
-        })
+        modules.append(
+            {
+                "name": "app",
+                "component_id": "COMP-API",
+                "language": language,
+                "framework": framework,
+                "files": [
+                    {
+                        "path": f"app/main.{'py' if language == 'Python' else 'go'}",
+                        "description": "Application entry point",
+                        "content": self._generate_app_entry(
+                            modules, language, framework
+                        ),
+                    }
+                ],
+            }
+        )
 
         return Artifact(
             artifact_type=ArtifactType.SOURCE_CODE,
@@ -108,7 +117,7 @@ class CodeGenerationSkill(Skill):
                 f"@dataclass\n"
                 f"class {module_name.title().replace('_', '')}:\n"
                 f'    """Primary model for {module_name}."""\n\n'
-                f"    id: str = \"\"\n"
+                f'    id: str = ""\n'
                 f"    created_at: datetime = field(default_factory=datetime.now)\n"
                 f"    updated_at: datetime = field(default_factory=datetime.now)\n"
             )
@@ -119,15 +128,15 @@ class CodeGenerationSkill(Skill):
         if language == "Python":
             route_lines = [
                 f'"""API routes for {module_name}."""\n',
-                f"from fastapi import APIRouter, HTTPException\n",
+                "from fastapi import APIRouter, HTTPException\n",
                 f"from .service import {module_name.title().replace('_', '')}Service\n\n",
-                f"router = APIRouter(prefix=\"/api/v1/{module_name}s\", tags=[\"{module_name}\"])\n",
+                f'router = APIRouter(prefix="/api/v1/{module_name}s", tags=["{module_name}"])\n',
                 f"service = {module_name.title().replace('_', '')}Service()\n\n",
             ]
             for ep in endpoints:
                 method = ep.get("method", "GET").lower()
                 route_lines.append(
-                    f"@router.{method}(\"\")\n"
+                    f'@router.{method}("")\n'
                     f"async def {method}_{module_name}():\n"
                     f"    return service.{method}()\n\n"
                 )
@@ -151,27 +160,31 @@ class CodeGenerationSkill(Skill):
                 f"    def delete(self):\n"
                 f"        return None\n"
             )
-        return f"package {module_name}\n\n// {class_name}Service handles business logic\n"
+        return (
+            f"package {module_name}\n\n// {class_name}Service handles business logic\n"
+        )
 
     @staticmethod
     def _generate_app_entry(modules: list, language: str, framework: str) -> str:
         if language == "Python" and framework == "FastAPI":
             imports = "\n".join(
                 f"from app.{m['name']}.routes import router as {m['name']}_router"
-                for m in modules if m["name"] != "app" and m.get("files")
+                for m in modules
+                if m["name"] != "app" and m.get("files")
             )
             includes = "\n".join(
                 f"app.include_router({m['name']}_router)"
-                for m in modules if m["name"] != "app" and m.get("files")
+                for m in modules
+                if m["name"] != "app" and m.get("files")
             )
             return (
                 f'"""Application entry point."""\n\n'
                 f"from fastapi import FastAPI\n\n"
                 f"{imports}\n\n"
-                f"app = FastAPI(title=\"Generated API\")\n\n"
+                f'app = FastAPI(title="Generated API")\n\n'
                 f"{includes}\n"
             )
-        return f"package main\n\nfunc main() {{\n}}\n"
+        return "package main\n\nfunc main() {\n}\n"
 
     @staticmethod
     def _to_module_name(component_name: str) -> str:

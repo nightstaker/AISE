@@ -29,7 +29,7 @@ class UserStoryWritingSkill(Skill):
                 "id": f"US-{req['id']}",
                 "title": self._derive_title(req["description"]),
                 "story": f"As a user, I want to {req['description'].lower().rstrip('.')}, "
-                         f"so that I can achieve my goal.",
+                f"so that I can achieve my goal.",
                 "acceptance_criteria": [
                     f"Given the feature is implemented, when {req['description'].lower().rstrip('.')}, "
                     f"then the system responds correctly.",
@@ -47,7 +47,9 @@ class UserStoryWritingSkill(Skill):
             metadata={"project_name": context.project_name},
         )
 
-    def _get_requirements(self, input_data: dict[str, Any], context: SkillContext) -> list[dict]:
+    def _get_requirements(
+        self, input_data: dict[str, Any], context: SkillContext
+    ) -> list[dict]:
         """Extract functional requirements from input or artifact store."""
         reqs_artifact = context.artifact_store.get_latest(ArtifactType.REQUIREMENTS)
         if reqs_artifact:
@@ -55,8 +57,11 @@ class UserStoryWritingSkill(Skill):
         # Fallback: use raw requirements from input_data
         raw = input_data.get("raw_requirements", "")
         if isinstance(raw, str):
-            lines = [l.strip() for l in raw.split("\n") if l.strip()]
-            return [{"id": f"FR-{i:03d}", "description": l, "priority": "medium"} for i, l in enumerate(lines, 1)]
+            lines = [line.strip() for line in raw.split("\n") if line.strip()]
+            return [
+                {"id": f"FR-{i:03d}", "description": line, "priority": "medium"}
+                for i, line in enumerate(lines, 1)
+            ]
         return []
 
     @staticmethod

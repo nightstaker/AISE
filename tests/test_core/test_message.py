@@ -5,7 +5,12 @@ from aise.core.message import Message, MessageBus, MessageType
 
 class TestMessage:
     def test_message_creation(self):
-        msg = Message(sender="a", receiver="b", msg_type=MessageType.REQUEST, content={"key": "val"})
+        msg = Message(
+            sender="a",
+            receiver="b",
+            msg_type=MessageType.REQUEST,
+            content={"key": "val"},
+        )
         assert msg.sender == "a"
         assert msg.receiver == "b"
         assert msg.msg_type == MessageType.REQUEST
@@ -14,7 +19,9 @@ class TestMessage:
         assert msg.timestamp
 
     def test_message_reply(self):
-        msg = Message(sender="a", receiver="b", msg_type=MessageType.REQUEST, content={"x": 1})
+        msg = Message(
+            sender="a", receiver="b", msg_type=MessageType.REQUEST, content={"x": 1}
+        )
         reply = msg.reply({"y": 2})
         assert reply.sender == "b"
         assert reply.receiver == "a"
@@ -22,7 +29,9 @@ class TestMessage:
         assert reply.correlation_id == msg.id
 
     def test_reply_with_custom_type(self):
-        msg = Message(sender="a", receiver="b", msg_type=MessageType.REQUEST, content={})
+        msg = Message(
+            sender="a", receiver="b", msg_type=MessageType.REQUEST, content={}
+        )
         reply = msg.reply({}, MessageType.REVIEW)
         assert reply.msg_type == MessageType.REVIEW
 
@@ -33,7 +42,12 @@ class TestMessageBus:
         received = []
         bus.subscribe("agent_b", lambda m: received.append(m))
 
-        msg = Message(sender="agent_a", receiver="agent_b", msg_type=MessageType.REQUEST, content={})
+        msg = Message(
+            sender="agent_a",
+            receiver="agent_b",
+            msg_type=MessageType.REQUEST,
+            content={},
+        )
         bus.publish(msg)
 
         assert len(received) == 1
@@ -46,7 +60,12 @@ class TestMessageBus:
         bus.subscribe("b", lambda m: received_b.append(m))
         bus.subscribe("c", lambda m: received_c.append(m))
 
-        msg = Message(sender="a", receiver="broadcast", msg_type=MessageType.NOTIFICATION, content={})
+        msg = Message(
+            sender="a",
+            receiver="broadcast",
+            msg_type=MessageType.NOTIFICATION,
+            content={},
+        )
         bus.publish(msg)
 
         assert len(received_b) == 1
@@ -57,7 +76,12 @@ class TestMessageBus:
         received = []
         bus.subscribe("a", lambda m: received.append(m))
 
-        msg = Message(sender="a", receiver="broadcast", msg_type=MessageType.NOTIFICATION, content={})
+        msg = Message(
+            sender="a",
+            receiver="broadcast",
+            msg_type=MessageType.NOTIFICATION,
+            content={},
+        )
         bus.publish(msg)
 
         assert len(received) == 0
@@ -67,7 +91,9 @@ class TestMessageBus:
         bus.subscribe("x", lambda m: None)
         bus.unsubscribe("x")
 
-        msg = Message(sender="y", receiver="x", msg_type=MessageType.REQUEST, content={})
+        msg = Message(
+            sender="y", receiver="x", msg_type=MessageType.REQUEST, content={}
+        )
         results = bus.publish(msg)
         assert results == []
 
@@ -75,8 +101,12 @@ class TestMessageBus:
         bus = MessageBus()
         bus.subscribe("b", lambda m: None)
 
-        msg1 = Message(sender="a", receiver="b", msg_type=MessageType.REQUEST, content={})
-        msg2 = Message(sender="b", receiver="a", msg_type=MessageType.RESPONSE, content={})
+        msg1 = Message(
+            sender="a", receiver="b", msg_type=MessageType.REQUEST, content={}
+        )
+        msg2 = Message(
+            sender="b", receiver="a", msg_type=MessageType.RESPONSE, content={}
+        )
         bus.publish(msg1)
         bus.publish(msg2)
 
@@ -86,6 +116,8 @@ class TestMessageBus:
 
     def test_clear_history(self):
         bus = MessageBus()
-        bus.publish(Message(sender="a", receiver="b", msg_type=MessageType.REQUEST, content={}))
+        bus.publish(
+            Message(sender="a", receiver="b", msg_type=MessageType.REQUEST, content={})
+        )
         bus.clear_history()
         assert len(bus.get_history()) == 0

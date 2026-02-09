@@ -15,7 +15,9 @@ class TestDeveloperAgent:
         arch = ArchitectAgent(bus, store)
         dev = DeveloperAgent(bus, store)
 
-        pm.execute_skill("requirement_analysis", {"raw_requirements": "User login\nDashboard"})
+        pm.execute_skill(
+            "requirement_analysis", {"raw_requirements": "User login\nDashboard"}
+        )
         pm.execute_skill("user_story_writing", {})
         pm.execute_skill("product_design", {})
         arch.execute_skill("system_design", {})
@@ -54,7 +56,10 @@ class TestDeveloperAgent:
 
     def test_bug_fix(self):
         dev, store = self._setup_with_design()
-        artifact = dev.execute_skill("bug_fix", {
-            "bug_reports": [{"id": "BUG-001", "description": "Login fails"}],
-        })
+        artifact = dev.execute_skill(
+            "bug_fix",
+            {
+                "bug_reports": [{"id": "BUG-001", "description": "Login fails"}],
+            },
+        )
         assert artifact.content["total_bugs"] == 1

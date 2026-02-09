@@ -129,8 +129,12 @@ def main() -> None:
 
     # run command
     run_parser = subparsers.add_parser("run", help="Run the development workflow")
-    run_parser.add_argument("--requirements", "-r", required=True, help="Requirements text or file path")
-    run_parser.add_argument("--project-name", "-p", default="My Project", help="Project name")
+    run_parser.add_argument(
+        "--requirements", "-r", required=True, help="Requirements text or file path"
+    )
+    run_parser.add_argument(
+        "--project-name", "-p", default="My Project", help="Project name"
+    )
     run_parser.add_argument("--output", "-o", help="Output file for results (JSON)")
 
     # demand command
@@ -138,9 +142,12 @@ def main() -> None:
         "demand",
         help="Start an interactive on-demand session",
     )
-    demand_parser.add_argument("--project-name", "-p", default="My Project", help="Project name")
     demand_parser.add_argument(
-        "--requirements", "-r",
+        "--project-name", "-p", default="My Project", help="Project name"
+    )
+    demand_parser.add_argument(
+        "--requirements",
+        "-r",
         help="Optional initial requirements to seed the session",
     )
 
@@ -149,37 +156,48 @@ def main() -> None:
         "whatsapp",
         help="Start a WhatsApp group chat session with the agent team",
     )
-    wa_parser.add_argument("--project-name", "-p", default="My Project", help="Project name")
+    wa_parser.add_argument(
+        "--project-name", "-p", default="My Project", help="Project name"
+    )
     wa_parser.add_argument("--owner", default="", help="Your display name in the group")
     wa_parser.add_argument("--phone", default="", help="Your WhatsApp phone number")
     wa_parser.add_argument(
-        "--webhook", action="store_true",
+        "--webhook",
+        action="store_true",
         help="Start webhook server for real WhatsApp integration",
     )
     wa_parser.add_argument(
-        "--webhook-port", type=int, default=8080,
+        "--webhook-port",
+        type=int,
+        default=8080,
         help="Port for the webhook server (default: 8080)",
     )
     wa_parser.add_argument(
-        "--phone-number-id", default="",
+        "--phone-number-id",
+        default="",
         help="WhatsApp Business phone number ID",
     )
     wa_parser.add_argument(
-        "--access-token", default="",
+        "--access-token",
+        default="",
         help="WhatsApp Business API access token",
     )
     wa_parser.add_argument(
-        "--verify-token", default="",
+        "--verify-token",
+        default="",
         help="Webhook verification token",
     )
     wa_parser.add_argument(
-        "--requirements", "-r",
+        "--requirements",
+        "-r",
         help="Optional initial requirements to seed the session",
     )
 
     # team command
     team_parser = subparsers.add_parser("team", help="Show team information")
-    team_parser.add_argument("--verbose", "-v", action="store_true", help="Show agent skills")
+    team_parser.add_argument(
+        "--verbose", "-v", action="store_true", help="Show agent skills"
+    )
 
     args = parser.parse_args()
 

@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 
 from aise.core.session import OnDemandSession, UserCommand, parse_command
 from aise.core.orchestrator import Orchestrator
 from aise.core.agent import Agent, AgentRole
-from aise.core.artifact import Artifact, ArtifactStore, ArtifactType
-from aise.core.message import MessageBus
+from aise.core.artifact import Artifact, ArtifactType
 from aise.core.skill import Skill, SkillContext
 from aise.main import create_team
 
@@ -77,7 +75,12 @@ class EchoBugFixSkill(Skill):
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         return Artifact(
             artifact_type=ArtifactType.BUG_REPORT,
-            content={"fixes": [], "total_bugs": 1, "fixed_count": 1, "needs_investigation": 0},
+            content={
+                "fixes": [],
+                "total_bugs": 1,
+                "fixed_count": 1,
+                "needs_investigation": 0,
+            },
             producer="developer",
         )
 
@@ -96,7 +99,11 @@ class EchoTaskDecompSkill(Skill):
             artifact_type=ArtifactType.PROGRESS_REPORT,
             content={
                 "tasks": [
-                    {"id": "TASK-001", "agent": "developer", "description": "Sample task"},
+                    {
+                        "id": "TASK-001",
+                        "agent": "developer",
+                        "description": "Sample task",
+                    },
                 ],
                 "total_tasks": 1,
             },

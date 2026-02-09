@@ -1,6 +1,6 @@
 """Tests for the workflow engine."""
 
-from aise.core.workflow import Phase, PhaseStatus, Task, Workflow, WorkflowEngine
+from aise.core.workflow import Phase, Task, Workflow, WorkflowEngine
 
 
 class TestPhase:

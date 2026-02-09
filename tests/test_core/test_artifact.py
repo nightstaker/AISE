@@ -5,7 +5,9 @@ from aise.core.artifact import Artifact, ArtifactStatus, ArtifactStore, Artifact
 
 class TestArtifact:
     def test_artifact_creation(self):
-        a = Artifact(artifact_type=ArtifactType.REQUIREMENTS, content={"data": 1}, producer="pm")
+        a = Artifact(
+            artifact_type=ArtifactType.REQUIREMENTS, content={"data": 1}, producer="pm"
+        )
         assert a.artifact_type == ArtifactType.REQUIREMENTS
         assert a.content == {"data": 1}
         assert a.producer == "pm"
@@ -30,8 +32,18 @@ class TestArtifactStore:
 
     def test_get_by_type(self):
         store = ArtifactStore()
-        a1 = Artifact(artifact_type=ArtifactType.REQUIREMENTS, content={}, producer="pm", version=1)
-        a2 = Artifact(artifact_type=ArtifactType.REQUIREMENTS, content={}, producer="pm", version=2)
+        a1 = Artifact(
+            artifact_type=ArtifactType.REQUIREMENTS,
+            content={},
+            producer="pm",
+            version=1,
+        )
+        a2 = Artifact(
+            artifact_type=ArtifactType.REQUIREMENTS,
+            content={},
+            producer="pm",
+            version=2,
+        )
         store.store(a1)
         store.store(a2)
 
@@ -41,8 +53,12 @@ class TestArtifactStore:
 
     def test_get_latest(self):
         store = ArtifactStore()
-        a1 = Artifact(artifact_type=ArtifactType.PRD, content={"v": 1}, producer="pm", version=1)
-        a2 = Artifact(artifact_type=ArtifactType.PRD, content={"v": 2}, producer="pm", version=2)
+        a1 = Artifact(
+            artifact_type=ArtifactType.PRD, content={"v": 1}, producer="pm", version=1
+        )
+        a2 = Artifact(
+            artifact_type=ArtifactType.PRD, content={"v": 2}, producer="pm", version=2
+        )
         store.store(a1)
         store.store(a2)
 
@@ -56,12 +72,16 @@ class TestArtifactStore:
 
     def test_all(self):
         store = ArtifactStore()
-        store.store(Artifact(artifact_type=ArtifactType.REQUIREMENTS, content={}, producer="pm"))
+        store.store(
+            Artifact(artifact_type=ArtifactType.REQUIREMENTS, content={}, producer="pm")
+        )
         store.store(Artifact(artifact_type=ArtifactType.PRD, content={}, producer="pm"))
         assert len(store.all()) == 2
 
     def test_clear(self):
         store = ArtifactStore()
-        store.store(Artifact(artifact_type=ArtifactType.REQUIREMENTS, content={}, producer="pm"))
+        store.store(
+            Artifact(artifact_type=ArtifactType.REQUIREMENTS, content={}, producer="pm")
+        )
         store.clear()
         assert len(store.all()) == 0

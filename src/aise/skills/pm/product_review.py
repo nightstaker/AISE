@@ -36,22 +36,26 @@ class ProductReviewSkill(Skill):
                 if req["description"] in feature_descs:
                     covered_reqs.add(req["id"])
                 else:
-                    issues.append({
-                        "type": "gap",
-                        "severity": "high",
-                        "requirement_id": req["id"],
-                        "description": f"Requirement '{req['description'][:50]}...' not covered in PRD features",
-                    })
+                    issues.append(
+                        {
+                            "type": "gap",
+                            "severity": "high",
+                            "requirement_id": req["id"],
+                            "description": f"Requirement '{req['description'][:50]}...' not covered in PRD features",
+                        }
+                    )
 
             # Check for scope drift (features without backing requirements)
             req_descs = {r["description"] for r in functional_reqs}
             for feature in features:
                 if feature["description"] not in req_descs:
-                    issues.append({
-                        "type": "scope_drift",
-                        "severity": "medium",
-                        "description": f"Feature '{feature['name'][:50]}' has no backing requirement",
-                    })
+                    issues.append(
+                        {
+                            "type": "scope_drift",
+                            "severity": "medium",
+                            "description": f"Feature '{feature['name'][:50]}' has no backing requirement",
+                        }
+                    )
 
         total_reqs = len(reqs.content.get("functional_requirements", [])) if reqs else 0
         coverage = len(covered_reqs) / total_reqs if total_reqs > 0 else 0.0
@@ -64,13 +68,15 @@ class ProductReviewSkill(Skill):
             "covered_requirements": len(covered_reqs),
             "issues": issues,
             "summary": f"{'Approved' if approved else 'Needs revision'}: "
-                       f"{len(covered_reqs)}/{total_reqs} requirements covered, "
-                       f"{len(issues)} issues found.",
+            f"{len(covered_reqs)}/{total_reqs} requirements covered, "
+            f"{len(issues)} issues found.",
         }
 
         # Update PRD status
         if prd:
-            prd.status = ArtifactStatus.APPROVED if approved else ArtifactStatus.REJECTED
+            prd.status = (
+                ArtifactStatus.APPROVED if approved else ArtifactStatus.REJECTED
+            )
 
         return Artifact(
             artifact_type=ArtifactType.REVIEW_FEEDBACK,

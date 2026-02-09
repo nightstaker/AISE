@@ -17,7 +17,9 @@ class TestQAEngineerAgent:
         dev = DeveloperAgent(bus, store)
         qa = QAEngineerAgent(bus, store)
 
-        pm.execute_skill("requirement_analysis", {"raw_requirements": "User login\nReports"})
+        pm.execute_skill(
+            "requirement_analysis", {"raw_requirements": "User login\nReports"}
+        )
         pm.execute_skill("user_story_writing", {})
         pm.execute_skill("product_design", {})
         arch.execute_skill("system_design", {})
@@ -32,7 +34,12 @@ class TestQAEngineerAgent:
         bus = MessageBus()
         store = ArtifactStore()
         agent = QAEngineerAgent(bus, store)
-        expected = {"test_plan_design", "test_case_design", "test_automation", "test_review"}
+        expected = {
+            "test_plan_design",
+            "test_case_design",
+            "test_automation",
+            "test_review",
+        }
         assert set(agent.skill_names) == expected
 
     def test_test_plan_design(self):

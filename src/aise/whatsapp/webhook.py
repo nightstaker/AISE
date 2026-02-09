@@ -79,9 +79,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             for msg in messages:
                 if self.message_callback:
                     try:
-                        self.message_callback(
-                            msg["sender"], msg["body"], msg
-                        )
+                        self.message_callback(msg["sender"], msg["body"], msg)
                     except Exception:
                         logger.exception("Error in webhook message callback")
 

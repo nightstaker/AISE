@@ -40,20 +40,28 @@ class TestWhatsAppClient:
         client.on_message(lambda s, b, r: received.append((s, b)))
 
         payload = {
-            "entry": [{
-                "changes": [{
-                    "value": {
-                        "contacts": [{"wa_id": "123", "profile": {"name": "Alice"}}],
-                        "messages": [{
-                            "from": "123",
-                            "id": "msg_1",
-                            "timestamp": "1234567890",
-                            "type": "text",
-                            "text": {"body": "Hello"},
-                        }],
-                    }
-                }]
-            }]
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "contacts": [
+                                    {"wa_id": "123", "profile": {"name": "Alice"}}
+                                ],
+                                "messages": [
+                                    {
+                                        "from": "123",
+                                        "id": "msg_1",
+                                        "timestamp": "1234567890",
+                                        "type": "text",
+                                        "text": {"body": "Hello"},
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ]
         }
         messages = client.process_webhook_payload(payload)
         assert len(messages) == 1
@@ -75,22 +83,30 @@ class TestWhatsAppClient:
     def test_interactive_message(self):
         client = WhatsAppClient(WhatsAppConfig())
         payload = {
-            "entry": [{
-                "changes": [{
-                    "value": {
-                        "contacts": [{"wa_id": "123", "profile": {"name": "Bob"}}],
-                        "messages": [{
-                            "from": "123",
-                            "id": "msg_2",
-                            "timestamp": "1234567890",
-                            "type": "interactive",
-                            "interactive": {
-                                "button_reply": {"title": "Yes"}
-                            },
-                        }],
-                    }
-                }]
-            }]
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "contacts": [
+                                    {"wa_id": "123", "profile": {"name": "Bob"}}
+                                ],
+                                "messages": [
+                                    {
+                                        "from": "123",
+                                        "id": "msg_2",
+                                        "timestamp": "1234567890",
+                                        "type": "interactive",
+                                        "interactive": {
+                                            "button_reply": {"title": "Yes"}
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ]
         }
         messages = client.process_webhook_payload(payload)
         assert len(messages) == 1

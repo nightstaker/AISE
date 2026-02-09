@@ -81,7 +81,9 @@ class Orchestrator:
                 task.input_data = {**current_input, **task.input_data}
 
             def executor(agent_name: str, skill_name: str, input_data: dict) -> str:
-                return self.execute_task(agent_name, skill_name, input_data, project_name)
+                return self.execute_task(
+                    agent_name, skill_name, input_data, project_name
+                )
 
             phase_result = self.workflow_engine.execute_phase(workflow, executor)
             results.append(phase_result)

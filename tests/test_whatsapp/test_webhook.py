@@ -1,11 +1,7 @@
 """Tests for the WhatsApp webhook server."""
 
-import json
-from http.server import HTTPServer
-from unittest.mock import MagicMock
-
 from aise.whatsapp.client import WhatsAppClient, WhatsAppConfig
-from aise.whatsapp.webhook import WebhookHandler, WebhookServer
+from aise.whatsapp.webhook import WebhookServer
 
 
 class TestWebhookServer:

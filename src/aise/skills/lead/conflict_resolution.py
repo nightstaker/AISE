@@ -59,21 +59,28 @@ class ConflictResolutionSkill(Skill):
                         rationale = "Selected for security alignment with NFRs"
                         break
 
-            resolutions.append({
-                "issue": issue,
-                "parties": parties,
-                "decision": chosen_option,
-                "rationale": rationale,
-                "status": "resolved",
-            })
+            resolutions.append(
+                {
+                    "issue": issue,
+                    "parties": parties,
+                    "decision": chosen_option,
+                    "rationale": rationale,
+                    "status": "resolved",
+                }
+            )
 
         return Artifact(
             artifact_type=ArtifactType.REVIEW_FEEDBACK,
             content={
                 "resolutions": resolutions,
                 "total_conflicts": len(conflicts),
-                "resolved_count": sum(1 for r in resolutions if r["status"] == "resolved"),
+                "resolved_count": sum(
+                    1 for r in resolutions if r["status"] == "resolved"
+                ),
             },
             producer="team_lead",
-            metadata={"type": "conflict_resolution", "project_name": context.project_name},
+            metadata={
+                "type": "conflict_resolution",
+                "project_name": context.project_name,
+            },
         )

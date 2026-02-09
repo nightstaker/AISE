@@ -1,10 +1,35 @@
 """All agent skills."""
 
-from .architect import APIDesignSkill, ArchitectureReviewSkill, SystemDesignSkill, TechStackSelectionSkill
-from .developer import BugFixSkill, CodeGenerationSkill, CodeReviewSkill, UnitTestWritingSkill
-from .lead import ConflictResolutionSkill, ProgressTrackingSkill, TaskAssignmentSkill, TaskDecompositionSkill
-from .pm import ProductDesignSkill, ProductReviewSkill, RequirementAnalysisSkill, UserStoryWritingSkill
-from .qa import TestAutomationSkill, TestCaseDesignSkill, TestPlanDesignSkill, TestReviewSkill
+from .architect import (
+    APIDesignSkill,
+    ArchitectureReviewSkill,
+    SystemDesignSkill,
+    TechStackSelectionSkill,
+)
+from .developer import (
+    BugFixSkill,
+    CodeGenerationSkill,
+    CodeReviewSkill,
+    UnitTestWritingSkill,
+)
+from .lead import (
+    ConflictResolutionSkill,
+    ProgressTrackingSkill,
+    TaskAssignmentSkill,
+    TaskDecompositionSkill,
+)
+from .pm import (
+    ProductDesignSkill,
+    ProductReviewSkill,
+    RequirementAnalysisSkill,
+    UserStoryWritingSkill,
+)
+from .qa import (
+    TestAutomationSkill,
+    TestCaseDesignSkill,
+    TestPlanDesignSkill,
+    TestReviewSkill,
+)
 
 __all__ = [
     # PM
