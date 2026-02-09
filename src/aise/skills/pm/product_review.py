@@ -72,9 +72,10 @@ class ProductReviewSkill(Skill):
             f"{len(issues)} issues found.",
         }
 
-        # Update PRD status
+        # Update PRD status via the store
         if prd:
-            prd.status = ArtifactStatus.APPROVED if approved else ArtifactStatus.REJECTED
+            new_status = ArtifactStatus.APPROVED if approved else ArtifactStatus.REJECTED
+            context.artifact_store.update_status(prd.id, new_status)
 
         return Artifact(
             artifact_type=ArtifactType.REVIEW_FEEDBACK,

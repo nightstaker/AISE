@@ -8,6 +8,8 @@ project's zero-dependency philosophy. The server handles:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import threading
@@ -28,6 +30,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
     message_callback: Callable[[str, str, dict], None] | None = None
     webhook_path: str = "/webhook"
     verify_token: str = ""
+    app_secret: str = ""
 
     def do_GET(self) -> None:
         """Handle webhook verification (GET request from Meta)."""
@@ -54,6 +57,24 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         self._respond(403, {"error": "Verification failed"})
 
+    def _verify_signature(self, raw_body: bytes) -> bool:
+        """Verify the X-Hub-Signature-256 header using the app secret."""
+        if not self.app_secret:
+            return True  # Skip verification if no app secret configured
+        signature_header = self.headers.get("X-Hub-Signature-256", "")
+        if not signature_header:
+            logger.warning("Missing X-Hub-Signature-256 header")
+            return False
+        expected = (
+            "sha256="
+            + hmac.new(
+                self.app_secret.encode("utf-8"),
+                raw_body,
+                hashlib.sha256,
+            ).hexdigest()
+        )
+        return hmac.compare_digest(expected, signature_header)
+
     def do_POST(self) -> None:
         """Handle incoming webhook events (POST from Meta)."""
         parsed = urlparse(self.path)
@@ -67,6 +88,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return
 
         raw_body = self.rfile.read(content_length)
+
+        if not self._verify_signature(raw_body):
+            self._respond(403, {"error": "Invalid signature"})
+            return
+
         try:
             payload = json.loads(raw_body.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -113,16 +139,18 @@ class WebhookServer:
         self,
         whatsapp_client: WhatsAppClient,
         *,
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         port: int = 8080,
         webhook_path: str = "/webhook",
         message_callback: Callable[[str, str, dict], None] | None = None,
+        app_secret: str = "",
     ) -> None:
         self.whatsapp_client = whatsapp_client
         self.host = host
         self.port = port
         self.webhook_path = webhook_path
         self.message_callback = message_callback
+        self.app_secret = app_secret
         self._server: HTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -137,6 +165,7 @@ class WebhookServer:
                 "message_callback": self.message_callback,
                 "webhook_path": self.webhook_path,
                 "verify_token": self.whatsapp_client.config.verify_token,
+                "app_secret": self.app_secret,
             },
         )
 

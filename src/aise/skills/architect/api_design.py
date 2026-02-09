@@ -22,65 +22,96 @@ class APIDesignSkill(Skill):
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         components = context.artifact_store.get_content(ArtifactType.ARCHITECTURE_DESIGN, "components", [])
 
-        endpoints = []
-        schemas = {}
+        paths: dict[str, Any] = {}
+        schemas: dict[str, Any] = {}
+        endpoints: list[dict[str, Any]] = []
 
         for comp in components:
             if comp["type"] != "service":
                 continue
 
             resource = comp["name"].replace("Service", "").lower()
-            resource_plural = resource + "s"
+            resource_plural = self._pluralize(resource)
 
-            # CRUD endpoints for each service
-            endpoints.extend(
-                [
-                    {
-                        "method": "GET",
-                        "path": f"/api/v1/{resource_plural}",
-                        "description": f"List all {resource_plural}",
-                        "response_schema": f"{resource}_list",
-                        "status_codes": {"200": "Success", "401": "Unauthorized"},
+            base_path = f"/api/v1/{resource_plural}"
+            item_path = f"/api/v1/{resource_plural}/{{id}}"
+
+            # Build OpenAPI paths object
+            paths[base_path] = {
+                "get": {
+                    "summary": f"List all {resource_plural}",
+                    "responses": {
+                        "200": {"description": "Success"},
+                        "401": {"description": "Unauthorized"},
                     },
-                    {
-                        "method": "POST",
-                        "path": f"/api/v1/{resource_plural}",
-                        "description": f"Create a new {resource}",
-                        "request_schema": f"{resource}_create",
-                        "response_schema": f"{resource}_detail",
-                        "status_codes": {
-                            "201": "Created",
-                            "400": "Bad Request",
-                            "401": "Unauthorized",
-                        },
+                },
+                "post": {
+                    "summary": f"Create a new {resource}",
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": f"#/components/schemas/{resource}_create"},
+                            }
+                        }
                     },
-                    {
-                        "method": "GET",
-                        "path": f"/api/v1/{resource_plural}/{{id}}",
-                        "description": f"Get {resource} by ID",
-                        "response_schema": f"{resource}_detail",
-                        "status_codes": {"200": "Success", "404": "Not Found"},
+                    "responses": {
+                        "201": {"description": "Created"},
+                        "400": {"description": "Bad Request"},
+                        "401": {"description": "Unauthorized"},
                     },
-                    {
-                        "method": "PUT",
-                        "path": f"/api/v1/{resource_plural}/{{id}}",
-                        "description": f"Update {resource}",
-                        "request_schema": f"{resource}_update",
-                        "response_schema": f"{resource}_detail",
-                        "status_codes": {
-                            "200": "Success",
-                            "400": "Bad Request",
-                            "404": "Not Found",
-                        },
+                },
+            }
+            paths[item_path] = {
+                "get": {
+                    "summary": f"Get {resource} by ID",
+                    "responses": {
+                        "200": {"description": "Success"},
+                        "404": {"description": "Not Found"},
                     },
-                    {
-                        "method": "DELETE",
-                        "path": f"/api/v1/{resource_plural}/{{id}}",
-                        "description": f"Delete {resource}",
-                        "status_codes": {"204": "No Content", "404": "Not Found"},
+                },
+                "put": {
+                    "summary": f"Update {resource}",
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": f"#/components/schemas/{resource}_update"},
+                            }
+                        }
                     },
-                ]
-            )
+                    "responses": {
+                        "200": {"description": "Success"},
+                        "400": {"description": "Bad Request"},
+                        "404": {"description": "Not Found"},
+                    },
+                },
+                "delete": {
+                    "summary": f"Delete {resource}",
+                    "responses": {
+                        "204": {"description": "No Content"},
+                        "404": {"description": "Not Found"},
+                    },
+                },
+            }
+
+            # Also keep a flat endpoint list for internal consumption
+            for method, path, desc, codes in [
+                ("GET", base_path, f"List all {resource_plural}", {"200": "Success", "401": "Unauthorized"}),
+                (
+                    "POST",
+                    base_path,
+                    f"Create a new {resource}",
+                    {"201": "Created", "400": "Bad Request", "401": "Unauthorized"},
+                ),
+                ("GET", item_path, f"Get {resource} by ID", {"200": "Success", "404": "Not Found"}),
+                (
+                    "PUT",
+                    item_path,
+                    f"Update {resource}",
+                    {"200": "Success", "400": "Bad Request", "404": "Not Found"},
+                ),
+                ("DELETE", item_path, f"Delete {resource}", {"204": "No Content", "404": "Not Found"}),
+            ]:
+                endpoints.append({"method": method, "path": path, "description": desc, "status_codes": codes})
 
             # Schemas
             schemas[f"{resource}_detail"] = {
@@ -105,7 +136,7 @@ class APIDesignSkill(Skill):
                 "properties": {
                     "items": {
                         "type": "array",
-                        "items": {"$ref": f"#/schemas/{resource}_detail"},
+                        "items": {"$ref": f"#/components/schemas/{resource}_detail"},
                     },
                     "total": {"type": "integer"},
                     "page": {"type": "integer"},
@@ -130,9 +161,11 @@ class APIDesignSkill(Skill):
                 "title": f"{context.project_name or 'Project'} API",
                 "version": "1.0.0",
             },
+            "paths": paths,
+            "components": {"schemas": schemas, "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer"}}},
+            # Keep flat endpoint list for internal skill consumption
             "endpoints": endpoints,
             "schemas": schemas,
-            "authentication": {"type": "bearer", "scheme": "JWT"},
         }
 
         return Artifact(
@@ -141,3 +174,12 @@ class APIDesignSkill(Skill):
             producer="architect",
             metadata={"project_name": context.project_name},
         )
+
+    @staticmethod
+    def _pluralize(word: str) -> str:
+        """Naive English pluralization that handles common suffixes."""
+        if word.endswith(("s", "sh", "ch", "x", "z")):
+            return word + "es"
+        if word.endswith("y") and len(word) > 1 and word[-2] not in "aeiou":
+            return word[:-1] + "ies"
+        return word + "s"

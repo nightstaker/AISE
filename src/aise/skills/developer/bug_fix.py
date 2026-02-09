@@ -1,4 +1,4 @@
-"""Bug fix skill - diagnoses and fixes bugs from test failures or error reports."""
+"""Bug fix skill - triages bugs from test failures or error reports."""
 
 from __future__ import annotations
 
@@ -9,7 +9,12 @@ from ...core.skill import Skill, SkillContext
 
 
 class BugFixSkill(Skill):
-    """Diagnose and fix bugs given failing tests or error reports."""
+    """Triage and analyze bugs given failing tests or error reports.
+
+    Note: this skill produces root-cause analysis and triage metadata,
+    not runnable code patches. Bugs are marked as 'triaged' until an
+    LLM-backed code-generation step produces an actual fix.
+    """
 
     @property
     def name(self) -> str:
@@ -17,7 +22,7 @@ class BugFixSkill(Skill):
 
     @property
     def description(self) -> str:
-        return "Analyze bug reports or failing tests and produce fixes"
+        return "Triage bug reports or failing tests and produce analysis"
 
     def validate_input(self, input_data: dict[str, Any]) -> list[str]:
         errors = []
@@ -37,9 +42,9 @@ class BugFixSkill(Skill):
                 "bug_id": bug.get("id", "unknown"),
                 "description": bug.get("description", ""),
                 "root_cause": f"Analysis of: {bug.get('description', 'unknown issue')[:80]}",
-                "fix_description": f"Fix applied for: {bug.get('description', 'unknown')[:60]}",
+                "fix_description": f"Triage analysis for: {bug.get('description', 'unknown')[:60]}",
                 "files_changed": [],
-                "status": "fixed",
+                "status": "triaged",
             }
 
             # Identify affected module from bug description
@@ -61,9 +66,9 @@ class BugFixSkill(Skill):
                 "test_name": test.get("name", "unknown"),
                 "error": test.get("error", ""),
                 "root_cause": f"Test failure analysis: {test.get('error', 'unknown')[:80]}",
-                "fix_description": f"Fix for failing test: {test.get('name', 'unknown')[:60]}",
+                "fix_description": f"Triage analysis for failing test: {test.get('name', 'unknown')[:60]}",
                 "files_changed": [test.get("file", "unknown")],
-                "status": "fixed",
+                "status": "triaged",
             }
             fixes.append(fix)
 
@@ -72,7 +77,7 @@ class BugFixSkill(Skill):
             content={
                 "fixes": fixes,
                 "total_bugs": len(bug_reports) + len(failing_tests),
-                "fixed_count": sum(1 for f in fixes if f["status"] == "fixed"),
+                "triaged_count": sum(1 for f in fixes if f["status"] == "triaged"),
                 "needs_investigation": sum(1 for f in fixes if f["status"] == "needs_investigation"),
             },
             producer="developer",

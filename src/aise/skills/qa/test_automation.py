@@ -83,6 +83,9 @@ class TestAutomationSkill(Skill):
 
         steps_comments = "\n".join(f"    # Step: {step}" for step in steps)
 
+        # Generate assertion based on expected result
+        assertion = '    pytest.fail("Test not yet implemented — expected: ' + expected.replace('"', '\\"') + '")\n'
+
         return (
             f'"""Automated test for {tc_id}: {test_case["name"]}"""\n\n'
             f"import pytest\n\n\n"
@@ -92,8 +95,7 @@ class TestAutomationSkill(Skill):
             f"    Expected: {expected}\n"
             f'    """\n'
             f"{steps_comments}\n"
-            f"    # TODO: implement test logic\n"
-            f"    assert True  # placeholder\n"
+            f"{assertion}"
         )
 
     @staticmethod
@@ -101,16 +103,21 @@ class TestAutomationSkill(Skill):
         """Generate a conftest.py with common fixtures."""
         return (
             '"""Common test fixtures and configuration."""\n\n'
+            "import os\n\n"
             "import pytest\n\n\n"
             "@pytest.fixture\n"
             "def base_url():\n"
             '    """Base URL for API testing."""\n'
-            '    return "http://localhost:8000/api/v1"\n\n\n'
+            '    return os.environ.get("TEST_BASE_URL", "http://localhost:8000/api/v1")\n\n\n'
             "@pytest.fixture\n"
             "def auth_headers():\n"
-            '    """Authentication headers for API testing."""\n'
+            '    """Authentication headers for API testing.\n\n'
+            "    Set the TEST_AUTH_TOKEN environment variable to provide a real token.\n"
+            "    Never hardcode credentials in test code.\n"
+            '    """\n'
+            '    token = os.environ.get("TEST_AUTH_TOKEN", "")\n'
             "    return {\n"
-            '        "Authorization": "Bearer test-token",\n'
+            '        "Authorization": f"Bearer {token}",\n'
             '        "Content-Type": "application/json",\n'
             "    }\n\n\n"
             "@pytest.fixture\n"
