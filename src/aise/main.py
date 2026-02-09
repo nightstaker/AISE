@@ -16,6 +16,8 @@ from .agents import (
 from .config import ProjectConfig
 from .core.orchestrator import Orchestrator
 from .core.session import OnDemandSession
+from .whatsapp.session import WhatsAppGroupSession
+from .whatsapp.client import WhatsAppConfig
 
 
 def create_team(config: ProjectConfig | None = None) -> Orchestrator:
@@ -76,6 +78,48 @@ def start_demand_session(project_name: str = "My Project") -> OnDemandSession:
     return OnDemandSession(orchestrator, project_name)
 
 
+def start_whatsapp_session(
+    project_name: str = "My Project",
+    config: ProjectConfig | None = None,
+    owner_name: str = "",
+    owner_phone: str = "",
+) -> WhatsAppGroupSession:
+    """Create a WhatsApp group chat session with the agent team.
+
+    Args:
+        project_name: Name of the project.
+        config: Optional project configuration with WhatsApp settings.
+        owner_name: Name of the human owner to auto-join.
+        owner_phone: Phone number of the human owner.
+
+    Returns:
+        A configured WhatsAppGroupSession ready to start.
+    """
+    config = config or ProjectConfig()
+    config.project_name = project_name
+    orchestrator = create_team(config)
+
+    wa_config = WhatsAppConfig(
+        phone_number_id=config.whatsapp.phone_number_id,
+        access_token=config.whatsapp.access_token,
+        verify_token=config.whatsapp.verify_token,
+        business_account_id=config.whatsapp.business_account_id,
+        webhook_port=config.whatsapp.webhook_port,
+        webhook_path=config.whatsapp.webhook_path,
+    )
+
+    session = WhatsAppGroupSession(
+        orchestrator=orchestrator,
+        project_name=project_name,
+        whatsapp_config=wa_config,
+    )
+
+    if owner_name:
+        session.add_human(owner_name, owner_phone, is_owner=True)
+
+    return session
+
+
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -96,6 +140,39 @@ def main() -> None:
     )
     demand_parser.add_argument("--project-name", "-p", default="My Project", help="Project name")
     demand_parser.add_argument(
+        "--requirements", "-r",
+        help="Optional initial requirements to seed the session",
+    )
+
+    # whatsapp command
+    wa_parser = subparsers.add_parser(
+        "whatsapp",
+        help="Start a WhatsApp group chat session with the agent team",
+    )
+    wa_parser.add_argument("--project-name", "-p", default="My Project", help="Project name")
+    wa_parser.add_argument("--owner", default="", help="Your display name in the group")
+    wa_parser.add_argument("--phone", default="", help="Your WhatsApp phone number")
+    wa_parser.add_argument(
+        "--webhook", action="store_true",
+        help="Start webhook server for real WhatsApp integration",
+    )
+    wa_parser.add_argument(
+        "--webhook-port", type=int, default=8080,
+        help="Port for the webhook server (default: 8080)",
+    )
+    wa_parser.add_argument(
+        "--phone-number-id", default="",
+        help="WhatsApp Business phone number ID",
+    )
+    wa_parser.add_argument(
+        "--access-token", default="",
+        help="WhatsApp Business API access token",
+    )
+    wa_parser.add_argument(
+        "--verify-token", default="",
+        help="Webhook verification token",
+    )
+    wa_parser.add_argument(
         "--requirements", "-r",
         help="Optional initial requirements to seed the session",
     )
@@ -145,6 +222,37 @@ def main() -> None:
             print(result.get("output", ""))
 
         session.start()
+
+    elif args.command == "whatsapp":
+        config = ProjectConfig(project_name=args.project_name)
+        if args.phone_number_id:
+            config.whatsapp.phone_number_id = args.phone_number_id
+        if args.access_token:
+            config.whatsapp.access_token = args.access_token
+        if args.verify_token:
+            config.whatsapp.verify_token = args.verify_token
+        config.whatsapp.webhook_port = args.webhook_port
+
+        session = start_whatsapp_session(
+            project_name=args.project_name,
+            config=config,
+            owner_name=args.owner or "Owner",
+            owner_phone=args.phone,
+        )
+
+        # Seed with initial requirements if provided
+        if args.requirements:
+            reqs = args.requirements
+            try:
+                with open(reqs) as f:
+                    reqs = f.read()
+            except (FileNotFoundError, IsADirectoryError, PermissionError):
+                pass
+            humans = session.group_chat.human_members
+            sender = humans[0].name if humans else "Owner"
+            session.send_requirement(sender, reqs)
+
+        session.start(start_webhook=args.webhook)
 
     elif args.command == "team":
         orchestrator = create_team()
