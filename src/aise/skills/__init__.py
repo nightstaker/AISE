@@ -12,6 +12,10 @@ from .developer import (
     CodeReviewSkill,
     UnitTestWritingSkill,
 )
+from .github import (
+    PRMergeSkill,
+    PRReviewSkill,
+)
 from .lead import (
     ConflictResolutionSkill,
     ProgressTrackingSkill,
@@ -57,4 +61,7 @@ __all__ = [
     "TaskAssignmentSkill",
     "ConflictResolutionSkill",
     "ProgressTrackingSkill",
+    # GitHub
+    "PRReviewSkill",
+    "PRMergeSkill",
 ]

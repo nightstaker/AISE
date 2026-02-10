@@ -6,6 +6,7 @@ from ..config import ModelConfig
 from ..core.agent import Agent, AgentRole
 from ..core.artifact import ArtifactStore
 from ..core.message import MessageBus
+from ..skills.github import PRMergeSkill, PRReviewSkill
 from ..skills.lead import (
     ConflictResolutionSkill,
     ProgressTrackingSkill,
@@ -34,3 +35,5 @@ class TeamLeadAgent(Agent):
         self.register_skill(TaskAssignmentSkill())
         self.register_skill(ConflictResolutionSkill())
         self.register_skill(ProgressTrackingSkill())
+        self.register_skill(PRReviewSkill(agent_role=AgentRole.TEAM_LEAD))
+        self.register_skill(PRMergeSkill(agent_role=AgentRole.TEAM_LEAD))

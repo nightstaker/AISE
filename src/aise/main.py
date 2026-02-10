@@ -121,6 +121,35 @@ def start_whatsapp_session(
     return session
 
 
+def _add_github_args(sub_parser: argparse.ArgumentParser) -> None:
+    """Add GitHub token / repo CLI arguments to a sub-parser."""
+    sub_parser.add_argument(
+        "--github-token",
+        default=os.environ.get("GITHUB_TOKEN", ""),
+        help="GitHub personal access token (env: GITHUB_TOKEN)",
+    )
+    sub_parser.add_argument(
+        "--github-repo-owner",
+        default=os.environ.get("GITHUB_REPO_OWNER", ""),
+        help="GitHub repository owner (env: GITHUB_REPO_OWNER)",
+    )
+    sub_parser.add_argument(
+        "--github-repo-name",
+        default=os.environ.get("GITHUB_REPO_NAME", ""),
+        help="GitHub repository name (env: GITHUB_REPO_NAME)",
+    )
+
+
+def _apply_github_config(args: argparse.Namespace, config: ProjectConfig) -> None:
+    """Copy CLI / env GitHub values into the project config."""
+    if getattr(args, "github_token", ""):
+        config.github.token = args.github_token
+    if getattr(args, "github_repo_owner", ""):
+        config.github.repo_owner = args.github_repo_owner
+    if getattr(args, "github_repo_name", ""):
+        config.github.repo_name = args.github_repo_name
+
+
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -133,6 +162,7 @@ def main() -> None:
     run_parser.add_argument("--requirements", "-r", required=True, help="Requirements text or file path")
     run_parser.add_argument("--project-name", "-p", default="My Project", help="Project name")
     run_parser.add_argument("--output", "-o", help="Output file for results (JSON)")
+    _add_github_args(run_parser)
 
     # demand command
     demand_parser = subparsers.add_parser(
@@ -145,6 +175,7 @@ def main() -> None:
         "-r",
         help="Optional initial requirements to seed the session",
     )
+    _add_github_args(demand_parser)
 
     # whatsapp command
     wa_parser = subparsers.add_parser(
@@ -185,6 +216,7 @@ def main() -> None:
         "-r",
         help="Optional initial requirements to seed the session",
     )
+    _add_github_args(wa_parser)
 
     # team command
     team_parser = subparsers.add_parser("team", help="Show team information")
@@ -201,7 +233,13 @@ def main() -> None:
         except (FileNotFoundError, IsADirectoryError, PermissionError):
             pass  # Use as raw text
 
-        results = run_project(requirements, args.project_name)
+        config = ProjectConfig(project_name=args.project_name)
+        _apply_github_config(args, config)
+        orchestrator = create_team(config)
+        results = orchestrator.run_default_workflow(
+            project_input={"raw_requirements": requirements},
+            project_name=args.project_name,
+        )
 
         if args.output:
             with open(args.output, "w") as f:
@@ -234,6 +272,7 @@ def main() -> None:
 
     elif args.command == "whatsapp":
         config = ProjectConfig(project_name=args.project_name)
+        _apply_github_config(args, config)
         if args.phone_number_id:
             config.whatsapp.phone_number_id = args.phone_number_id
         if args.access_token:
