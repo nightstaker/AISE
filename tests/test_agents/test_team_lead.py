@@ -19,6 +19,8 @@ class TestTeamLeadAgent:
             "task_assignment",
             "conflict_resolution",
             "progress_tracking",
+            "pr_review",
+            "pr_merge",
         }
         assert set(agent.skill_names) == expected
 

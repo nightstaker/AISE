@@ -28,6 +28,7 @@ class TestArchitectAgent:
             "api_design",
             "architecture_review",
             "tech_stack_selection",
+            "pr_review",
         }
         assert set(agent.skill_names) == expected
 

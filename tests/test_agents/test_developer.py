@@ -28,7 +28,7 @@ class TestDeveloperAgent:
         bus = MessageBus()
         store = ArtifactStore()
         agent = DeveloperAgent(bus, store)
-        expected = {"code_generation", "unit_test_writing", "code_review", "bug_fix"}
+        expected = {"code_generation", "unit_test_writing", "code_review", "bug_fix", "pr_review"}
         assert set(agent.skill_names) == expected
 
     def test_code_generation(self):

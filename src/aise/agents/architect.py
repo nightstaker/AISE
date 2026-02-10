@@ -12,6 +12,7 @@ from ..skills.architect import (
     SystemDesignSkill,
     TechStackSelectionSkill,
 )
+from ..skills.github import PRReviewSkill
 
 
 class ArchitectAgent(Agent):
@@ -34,3 +35,4 @@ class ArchitectAgent(Agent):
         self.register_skill(APIDesignSkill())
         self.register_skill(ArchitectureReviewSkill())
         self.register_skill(TechStackSelectionSkill())
+        self.register_skill(PRReviewSkill(agent_role=AgentRole.ARCHITECT))

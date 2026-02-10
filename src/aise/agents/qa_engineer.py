@@ -6,6 +6,7 @@ from ..config import ModelConfig
 from ..core.agent import Agent, AgentRole
 from ..core.artifact import ArtifactStore
 from ..core.message import MessageBus
+from ..skills.github import PRReviewSkill
 from ..skills.qa import (
     TestAutomationSkill,
     TestCaseDesignSkill,
@@ -34,3 +35,4 @@ class QAEngineerAgent(Agent):
         self.register_skill(TestCaseDesignSkill())
         self.register_skill(TestAutomationSkill())
         self.register_skill(TestReviewSkill())
+        self.register_skill(PRReviewSkill(agent_role=AgentRole.QA_ENGINEER))

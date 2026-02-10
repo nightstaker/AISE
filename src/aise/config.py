@@ -41,6 +41,28 @@ class WorkflowConfig:
 
 
 @dataclass
+class GitHubConfig:
+    """Configuration for GitHub integration.
+
+    The team owner configures a personal access token so that all agents
+    can interact with GitHub pull requests.  Role-based permissions
+    restrict which operations each agent may perform.
+    """
+
+    token: str = ""
+    repo_owner: str = ""
+    repo_name: str = ""
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.token and self.repo_owner and self.repo_name)
+
+    @property
+    def repo_full_name(self) -> str:
+        return f"{self.repo_owner}/{self.repo_name}"
+
+
+@dataclass
 class WhatsAppConfig:
     """Configuration for WhatsApp Business API integration."""
 
@@ -73,6 +95,7 @@ class ProjectConfig:
     )
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     whatsapp: WhatsAppConfig = field(default_factory=WhatsAppConfig)
+    github: GitHubConfig = field(default_factory=GitHubConfig)
 
     def get_model_config(self, agent_name: str) -> ModelConfig:
         """Return the effective model config for an agent.

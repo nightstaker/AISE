@@ -37,6 +37,7 @@ class TestQAEngineerAgent:
             "test_case_design",
             "test_automation",
             "test_review",
+            "pr_review",
         }
         assert set(agent.skill_names) == expected
 

@@ -12,6 +12,7 @@ from ..skills.developer import (
     CodeReviewSkill,
     UnitTestWritingSkill,
 )
+from ..skills.github import PRReviewSkill
 
 
 class DeveloperAgent(Agent):
@@ -34,3 +35,4 @@ class DeveloperAgent(Agent):
         self.register_skill(UnitTestWritingSkill())
         self.register_skill(CodeReviewSkill())
         self.register_skill(BugFixSkill())
+        self.register_skill(PRReviewSkill(agent_role=AgentRole.DEVELOPER))

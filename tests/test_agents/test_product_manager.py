@@ -18,6 +18,8 @@ class TestProductManagerAgent:
             "user_story_writing",
             "product_design",
             "product_review",
+            "pr_review",
+            "pr_merge",
         }
         assert set(agent.skill_names) == expected
 

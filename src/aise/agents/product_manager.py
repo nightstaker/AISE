@@ -6,6 +6,7 @@ from ..config import ModelConfig
 from ..core.agent import Agent, AgentRole
 from ..core.artifact import ArtifactStore
 from ..core.message import MessageBus
+from ..skills.github import PRMergeSkill, PRReviewSkill
 from ..skills.pm import (
     ProductDesignSkill,
     ProductReviewSkill,
@@ -15,7 +16,7 @@ from ..skills.pm import (
 
 
 class ProductManagerAgent(Agent):
-    """Agent responsible for requirements analysis and product design."""
+    """Agent responsible for requirements analysis, product design, and PR merging."""
 
     def __init__(
         self,
@@ -34,3 +35,5 @@ class ProductManagerAgent(Agent):
         self.register_skill(UserStoryWritingSkill())
         self.register_skill(ProductDesignSkill())
         self.register_skill(ProductReviewSkill())
+        self.register_skill(PRReviewSkill(agent_role=AgentRole.PRODUCT_MANAGER))
+        self.register_skill(PRMergeSkill(agent_role=AgentRole.PRODUCT_MANAGER))

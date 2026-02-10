@@ -215,7 +215,7 @@ class TestConcreteAgentsWithModelConfig:
         bus, store = self._bus_store()
         agent = ProductManagerAgent(bus, store)
         assert agent.model_config == ModelConfig()
-        assert len(agent.skill_names) == 4
+        assert len(agent.skill_names) == 6
 
 
 class TestCreateTeamWithModelConfig:
