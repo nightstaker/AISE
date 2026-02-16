@@ -173,7 +173,9 @@ class StatusTrackingSkill(Skill):
             if element["type"] == "architecture_requirement":
                 children = element["children"]
                 if children:
-                    child_completions = [elements[child_id]["completion_percentage"] for child_id in children if child_id in elements]
+                    child_completions = [
+                        elements[child_id]["completion_percentage"] for child_id in children if child_id in elements
+                    ]
                     avg_completion = sum(child_completions) / len(child_completions) if child_completions else 0
                     element["completion_percentage"] = avg_completion
 
@@ -189,7 +191,9 @@ class StatusTrackingSkill(Skill):
             if element["type"] == "system_requirement":
                 children = element["children"]
                 if children:
-                    child_completions = [elements[child_id]["completion_percentage"] for child_id in children if child_id in elements]
+                    child_completions = [
+                        elements[child_id]["completion_percentage"] for child_id in children if child_id in elements
+                    ]
                     avg_completion = sum(child_completions) / len(child_completions) if child_completions else 0
                     element["completion_percentage"] = avg_completion
 
@@ -205,7 +209,9 @@ class StatusTrackingSkill(Skill):
             if element["type"] == "system_feature":
                 children = element["children"]
                 if children:
-                    child_completions = [elements[child_id]["completion_percentage"] for child_id in children if child_id in elements]
+                    child_completions = [
+                        elements[child_id]["completion_percentage"] for child_id in children if child_id in elements
+                    ]
                     avg_completion = sum(child_completions) / len(child_completions) if child_completions else 0
                     element["completion_percentage"] = avg_completion
 

@@ -136,11 +136,13 @@ class ArchitectureRequirementSkill(Skill):
             return "integration"
 
         # Security -> often cross-cutting, but prioritize API layer
-        if any(keyword in sr_category or keyword in sr_desc for keyword in ["security", "authentication", "authorization"]):
+        security_keywords = ["security", "authentication", "authorization"]
+        if any(keyword in sr_category or keyword in sr_desc for keyword in security_keywords):
             return "api"
 
         # Data-related NFRs -> data layer
-        if any(keyword in sr_category or keyword in sr_desc for keyword in ["data", "database", "persistence", "consistency"]):
+        data_keywords = ["data", "database", "persistence", "consistency"]
+        if any(keyword in sr_category or keyword in sr_desc for keyword in data_keywords):
             return "data"
 
         # Default to business layer for other NFRs

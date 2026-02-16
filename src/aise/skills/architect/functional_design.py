@@ -26,7 +26,10 @@ class FunctionalDesignSkill(Skill):
         # Get ARCHITECTURE_REQUIREMENT artifact
         ar_artifact = store.get_latest(ArtifactType.ARCHITECTURE_REQUIREMENT)
         if not ar_artifact:
-            raise ValueError("No ARCHITECTURE_REQUIREMENT artifact found. Please run architecture_requirement_analysis first.")
+            raise ValueError(
+                "No ARCHITECTURE_REQUIREMENT artifact found. "
+                "Please run architecture_requirement_analysis first."
+            )
 
         ars = ar_artifact.content["architecture_requirements"]
 
@@ -54,9 +57,11 @@ class FunctionalDesignSkill(Skill):
         # Build traceability matrix
         traceability_matrix = self._build_fn_ar_matrix(all_functions)
 
+        num_components = fn_counter_component - 1
+        num_services = fn_counter_service - 1
         functional_design_doc = {
             "project_name": project_name,
-            "overview": f"Functional design with {fn_counter_component - 1} components and {fn_counter_service - 1} services",
+            "overview": f"Functional design with {num_components} components and {num_services} services",
             "architecture_layers": architecture_layers,
             "functions": all_functions,
             "traceability_matrix": traceability_matrix,
@@ -94,10 +99,8 @@ class FunctionalDesignSkill(Skill):
         # Generate FN ID
         if component_type == "service":
             fn_id = f"FN-SERVICE-{service_counter:03d}"
-            counter = service_counter
         else:
             fn_id = f"FN-COM-{component_counter:03d}"
-            counter = component_counter
 
         # Generate function name from description
         fn_name = self._generate_function_name(ar_desc, component_type)
@@ -214,16 +217,22 @@ class FunctionalDesignSkill(Skill):
         if ar.get("target_layer") == "api":
             # Create
             if any(keyword in desc_lower for keyword in ["create", "add", "新增", "创建"]):
-                interfaces.append({"method": "POST", "path": f"/api/v1/{resource}", "description": f"Create {resource}"})
+                interfaces.append(
+                    {"method": "POST", "path": f"/api/v1/{resource}", "description": f"Create {resource}"}
+                )
 
             # Read
             if any(keyword in desc_lower for keyword in ["get", "read", "list", "查询", "获取"]):
                 interfaces.append({"method": "GET", "path": f"/api/v1/{resource}", "description": f"List {resource}"})
-                interfaces.append({"method": "GET", "path": f"/api/v1/{resource}/{{id}}", "description": f"Get {resource} by ID"})
+                interfaces.append(
+                    {"method": "GET", "path": f"/api/v1/{resource}/{{id}}", "description": f"Get {resource} by ID"}
+                )
 
             # Update
             if any(keyword in desc_lower for keyword in ["update", "modify", "更新", "修改"]):
-                interfaces.append({"method": "PUT", "path": f"/api/v1/{resource}/{{id}}", "description": f"Update {resource}"})
+                interfaces.append(
+                    {"method": "PUT", "path": f"/api/v1/{resource}/{{id}}", "description": f"Update {resource}"}
+                )
 
             # Delete
             if any(keyword in desc_lower for keyword in ["delete", "remove", "删除"]):
@@ -234,14 +243,23 @@ class FunctionalDesignSkill(Skill):
             # If no specific operation detected, add basic GET
             if not interfaces:
                 interfaces.append(
-                    {"method": "POST", "path": f"/api/v1/{resource}/execute", "description": f"Execute {resource} operation"}
+                    {
+                        "method": "POST",
+                        "path": f"/api/v1/{resource}/execute",
+                        "description": f"Execute {resource} operation",
+                    }
                 )
 
         return interfaces
 
     def _build_layer_structure(self, functions: list[dict[str, Any]]) -> dict[str, Any]:
         """Build hierarchical layer structure."""
-        layers = {"api_layer": {"services": [], "components": []}, "business_layer": {"services": [], "components": []}, "data_layer": {"components": []}, "integration_layer": {"components": []}}
+        layers = {
+            "api_layer": {"services": [], "components": []},
+            "business_layer": {"services": [], "components": []},
+            "data_layer": {"components": []},
+            "integration_layer": {"components": []},
+        }
 
         for fn in functions:
             layer_key = f"{fn['layer']}_layer"

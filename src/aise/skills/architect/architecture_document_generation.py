@@ -67,14 +67,14 @@ class ArchitectureDocumentGenerationSkill(Skill):
 
         with open(file_path, "w", encoding="utf-8") as f:
             # Header
-            f.write(f"# 系统架构设计文档\n\n")
+            f.write("# 系统架构设计文档\n\n")
             f.write(f"**项目名称**: {project_name}\n\n")
 
             # Section 1: Project Overview
             f.write("## 1. 项目概述\n\n")
             f.write(f"- **架构需求数量**: {len(ars)}\n")
             f.write(f"- **功能组件数量**: {len(fns)}\n")
-            f.write(f"- **架构风格**: 分层架构 (API → Business → Data → Integration)\n\n")
+            f.write("- **架构风格**: 分层架构 (API → Business → Data → Integration)\n\n")
 
             # Section 2: Architecture Requirements
             f.write("## 2. 架构需求 (AR)\n\n")
@@ -83,10 +83,17 @@ class ArchitectureDocumentGenerationSkill(Skill):
                 layer = ar.get("target_layer", "business")
                 ar_by_layer[layer].append(ar)
 
-            for layer_name, layer_title in [("api", "API层"), ("business", "业务层"), ("data", "数据层"), ("integration", "集成层")]:
+            layer_configs = [
+                ("api", "API层"),
+                ("business", "业务层"),
+                ("data", "数据层"),
+                ("integration", "集成层"),
+            ]
+            for layer_name, layer_title in layer_configs:
                 layer_ars = ar_by_layer.get(layer_name, [])
                 if layer_ars:
-                    f.write(f"### 2.{['api', 'business', 'data', 'integration'].index(layer_name) + 1} {layer_title}架构需求\n\n")
+                    layer_index = ["api", "business", "data", "integration"].index(layer_name) + 1
+                    f.write(f"### 2.{layer_index} {layer_title}架构需求\n\n")
                     for ar in layer_ars:
                         ar_id = ar["id"]
                         f.write(f"**{ar_id}**: {ar['description']}\n")
@@ -124,10 +131,12 @@ class ArchitectureDocumentGenerationSkill(Skill):
 
             # Section 4: Layer Structure
             f.write("## 4. 层次化架构\n\n")
-            for layer_key in ["api_layer", "business_layer", "data_layer", "integration_layer"]:
+            layer_keys = ["api_layer", "business_layer", "data_layer", "integration_layer"]
+            for layer_key in layer_keys:
                 if layer_key in arch_layers:
-                    layer_data = arch_layers[layer_key]
-                    f.write(f"### 4.{['api_layer', 'business_layer', 'data_layer', 'integration_layer'].index(layer_key) + 1} {layer_key.replace('_', ' ').title()}\n\n")
+                    layer_index = layer_keys.index(layer_key) + 1
+                    layer_title = layer_key.replace("_", " ").title()
+                    f.write(f"### 4.{layer_index} {layer_title}\n\n")
                     f.write("```\n")
                     f.write(f"{layer_key}/\n")
 
@@ -207,28 +216,33 @@ class ArchitectureDocumentGenerationSkill(Skill):
 
             for sf_id, sf in sorted(sfs.items()):
                 status_icon = self._get_status_icon(sf["status"])
-                f.write(f"### {sf_id}: {sf['description']} [{sf['status']} {sf['completion_percentage']:.0f}%] {status_icon}\n\n")
+                status_str = f"[{sf['status']} {sf['completion_percentage']:.0f}%] {status_icon}"
+                f.write(f"### {sf_id}: {sf['description']} {status_str}\n\n")
 
                 # Get children SRs
                 for sr_id in sf.get("children", []):
                     if sr_id in elements:
                         sr = elements[sr_id]
                         status_icon = self._get_status_icon(sr["status"])
-                        f.write(f"- **{sr_id}**: {sr['description']} [{sr['status']} {sr['completion_percentage']:.0f}%] {status_icon}\n")
+                        status_str = f"[{sr['status']} {sr['completion_percentage']:.0f}%] {status_icon}"
+                        f.write(f"- **{sr_id}**: {sr['description']} {status_str}\n")
 
                         # Get children ARs
                         for ar_id in sr.get("children", []):
                             if ar_id in elements:
                                 ar = elements[ar_id]
                                 status_icon = self._get_status_icon(ar["status"])
-                                f.write(f"  - **{ar_id}**: {ar['description']} [{ar['status']} {ar['completion_percentage']:.0f}%] {status_icon}\n")
+                                status_str = f"[{ar['status']} {ar['completion_percentage']:.0f}%]"
+                                f.write(f"  - **{ar_id}**: {ar['description']} {status_str} {status_icon}\n")
 
                                 # Get children FNs
                                 for fn_id in ar.get("children", []):
                                     if fn_id in elements:
                                         fn = elements[fn_id]
                                         status_icon = self._get_status_icon(fn["status"])
-                                        f.write(f"    - **{fn_id}**: {fn['description'][:60]}... [{fn['status']} {fn['completion_percentage']:.0f}%] {status_icon}\n")
+                                        desc_short = fn["description"][:60] + "..."
+                                        status_str = f"[{fn['status']} {fn['completion_percentage']:.0f}%]"
+                                        f.write(f"    - **{fn_id}**: {desc_short} {status_str} {status_icon}\n")
 
                                         # Implementation details
                                         impl = fn.get("implementation_status", {})
@@ -247,9 +261,8 @@ class ArchitectureDocumentGenerationSkill(Skill):
                 elem = elements[elem_id]
                 desc_short = elem["description"][:40] + "..." if len(elem["description"]) > 40 else elem["description"]
                 parent = elem.get("parent", "-")
-                f.write(
-                    f"| {elem_id} | {elem['type']} | {desc_short} | {elem['status']} | {elem['completion_percentage']:.0f}% | {parent} |\n"
-                )
+                completion = f"{elem['completion_percentage']:.0f}%"
+                f.write(f"| {elem_id} | {elem['type']} | {desc_short} | {elem['status']} | {completion} | {parent} |\n")
 
     def _get_status_icon(self, status: str) -> str:
         """Get emoji icon for status."""
