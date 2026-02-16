@@ -28,8 +28,13 @@ class TestArchitectAgent:
             "api_design",
             "architecture_review",
             "tech_stack_selection",
+            "architecture_requirement_analysis",
+            "functional_design",
+            "status_tracking",
+            "architecture_document_generation",
             "pr_review",
         }
+        print(agent.skill_names)
         assert set(agent.skill_names) == expected
 
     def test_system_design(self):
