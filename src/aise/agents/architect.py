@@ -8,7 +8,11 @@ from ..core.artifact import ArtifactStore
 from ..core.message import MessageBus
 from ..skills.architect import (
     APIDesignSkill,
+    ArchitectureDocumentGenerationSkill,
+    ArchitectureRequirementSkill,
     ArchitectureReviewSkill,
+    FunctionalDesignSkill,
+    StatusTrackingSkill,
     SystemDesignSkill,
     TechStackSelectionSkill,
 )
@@ -35,4 +39,8 @@ class ArchitectAgent(Agent):
         self.register_skill(APIDesignSkill())
         self.register_skill(ArchitectureReviewSkill())
         self.register_skill(TechStackSelectionSkill())
+        self.register_skill(ArchitectureRequirementSkill())
+        self.register_skill(FunctionalDesignSkill())
+        self.register_skill(StatusTrackingSkill())
+        self.register_skill(ArchitectureDocumentGenerationSkill())
         self.register_skill(PRReviewSkill(agent_role=AgentRole.ARCHITECT))
