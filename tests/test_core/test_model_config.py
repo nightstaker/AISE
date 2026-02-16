@@ -215,7 +215,8 @@ class TestConcreteAgentsWithModelConfig:
         bus, store = self._bus_store()
         agent = ProductManagerAgent(bus, store)
         assert agent.model_config == ModelConfig()
-        assert len(agent.skill_names) == 9  # Updated: added 3 new skills (system_feature_analysis, system_requirement_analysis, document_generation)
+        # 9 skills: 6 original + 3 new (system_feature_analysis, system_requirement_analysis, document_generation)
+        assert len(agent.skill_names) == 9
 
 
 class TestCreateTeamWithModelConfig:
