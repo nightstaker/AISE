@@ -27,8 +27,7 @@ class FunctionalDesignSkill(Skill):
         ar_artifact = store.get_latest(ArtifactType.ARCHITECTURE_REQUIREMENT)
         if not ar_artifact:
             raise ValueError(
-                "No ARCHITECTURE_REQUIREMENT artifact found. "
-                "Please run architecture_requirement_analysis first."
+                "No ARCHITECTURE_REQUIREMENT artifact found. Please run architecture_requirement_analysis first."
             )
 
         ars = ar_artifact.content["architecture_requirements"]
