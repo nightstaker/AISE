@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..config import ProjectConfig
 from ..core.agent import AgentRole
 from .project import Project, ProjectStatus
 
 if TYPE_CHECKING:
-    from ..main import create_team
+    pass
 
 
 class ProjectManager:
@@ -63,6 +63,7 @@ class ProjectManager:
         # Create isolated orchestrator with agents
         # Import locally to avoid circular dependency
         from ..main import create_team
+
         orchestrator = create_team(config, agent_counts)
 
         # Create project container
@@ -103,10 +104,7 @@ class ProjectManager:
         if status_filter is None:
             return list(self._projects.values())
 
-        return [
-            p for p in self._projects.values()
-            if p.status == status_filter
-        ]
+        return [p for p in self._projects.values() if p.status == status_filter]
 
     def delete_project(self, project_id: str) -> bool:
         """Delete a project and clean up its resources.

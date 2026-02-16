@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Callable
 
-from ..config import GitHubConfig, ProjectConfig
+from ..config import ProjectConfig
 from ..core.agent import AgentRole
 from .project_manager import ProjectManager
 
@@ -217,7 +217,7 @@ class MultiProjectSession:
             output = f"✓ Created project '{project_name}' (ID: {project_id})\n"
             output += f"  Mode: {config.development_mode}\n"
             output += f"  Agents: {total_agents}\n"
-            output += f"  Status: Active (current project)"
+            output += "  Status: Active (current project)"
 
             return {"output": output}
 
