@@ -22,6 +22,8 @@ class Orchestrator:
         self.artifact_store = ArtifactStore()
         self.workflow_engine = WorkflowEngine()
         self._agents: dict[str, Agent] = {}
+        # Routing state for multi-agent task distribution
+        self._routing_state: dict[AgentRole, dict[str, Any]] = {}
 
     def register_agent(self, agent: Agent) -> None:
         """Register an agent with the orchestrator."""
@@ -115,3 +117,92 @@ class Orchestrator:
         """Run the default SDLC workflow."""
         workflow = WorkflowEngine.create_default_workflow()
         return self.run_workflow(workflow, project_input, project_name)
+
+    def execute_task_auto_route(
+        self,
+        role: AgentRole,
+        skill_name: str,
+        input_data: dict[str, Any],
+        project_name: str = "",
+        routing_strategy: str = "round_robin",
+    ) -> str:
+        """Execute a task on any agent of specified role using routing strategy.
+
+        This method automatically selects an agent from all agents of the given role
+        and executes the task on that agent. Useful for distributing work across
+        multiple agents of the same type.
+
+        Args:
+            role: The agent role to execute the task
+            skill_name: Name of the skill to execute
+            input_data: Input data for the skill
+            project_name: Name of the project
+            routing_strategy: Strategy for selecting agent ("round_robin" or "load_based")
+
+        Returns:
+            Artifact ID from the executed task
+
+        Raises:
+            ValueError: If no agents available for the specified role
+        """
+        agents = self.get_agents_by_role(role)
+        if not agents:
+            raise ValueError(f"No agents available for role {role}")
+
+        # Select agent based on strategy
+        agent = self._select_agent(agents, role, routing_strategy)
+
+        return self.execute_task(agent.name, skill_name, input_data, project_name)
+
+    def _select_agent(
+        self,
+        agents: list[Agent],
+        role: AgentRole,
+        strategy: str,
+    ) -> Agent:
+        """Select an agent from the list based on routing strategy.
+
+        Args:
+            agents: List of agents to choose from
+            role: The agent role (for tracking routing state)
+            strategy: Routing strategy ("round_robin" or "load_based")
+
+        Returns:
+            Selected agent
+        """
+        if len(agents) == 1:
+            return agents[0]
+
+        # Initialize routing state for this role if needed
+        if role not in self._routing_state:
+            self._routing_state[role] = {
+                "round_robin_index": 0,
+                "load_counts": {agent.name: 0 for agent in agents},
+            }
+
+        state = self._routing_state[role]
+
+        if strategy == "round_robin":
+            # Round-robin: distribute tasks evenly in sequence
+            index = state["round_robin_index"]
+            selected = agents[index % len(agents)]
+            state["round_robin_index"] = (index + 1) % len(agents)
+            return selected
+
+        elif strategy == "load_based":
+            # Load-based: select agent with minimum load
+            load_counts = state["load_counts"]
+
+            # Ensure all current agents have entries in load_counts
+            for agent in agents:
+                if agent.name not in load_counts:
+                    load_counts[agent.name] = 0
+
+            # Select agent with minimum load
+            selected = min(agents, key=lambda a: load_counts.get(a.name, 0))
+            load_counts[selected.name] = load_counts.get(selected.name, 0) + 1
+            return selected
+
+        else:
+            # Default to round-robin for unknown strategies
+            return self._select_agent(agents, role, "round_robin")

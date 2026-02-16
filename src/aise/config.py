@@ -83,6 +83,7 @@ class ProjectConfig:
     """Top-level project configuration."""
 
     project_name: str = "Untitled Project"
+    development_mode: str = "local"  # "local" or "github"
     default_model: ModelConfig = field(default_factory=ModelConfig)
     agents: dict[str, AgentConfig] = field(
         default_factory=lambda: {
@@ -94,9 +95,32 @@ class ProjectConfig:
             "team_manager": AgentConfig(name="team_manager"),
         }
     )
+    agent_counts: dict[str, int] = field(default_factory=dict)
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     whatsapp: WhatsAppConfig = field(default_factory=WhatsAppConfig)
     github: GitHubConfig = field(default_factory=GitHubConfig)
+
+    @property
+    def is_github_mode(self) -> bool:
+        """Check if project is in GitHub development mode.
+
+        Returns True if:
+        1. development_mode is explicitly set to "github", AND
+        2. GitHub configuration is properly configured
+
+        Returns:
+            True if GitHub mode is enabled and configured
+        """
+        return self.development_mode == "github" and self.github.is_configured
+
+    @property
+    def is_local_mode(self) -> bool:
+        """Check if project is in local development mode.
+
+        Returns:
+            True if development mode is "local" or GitHub is not configured
+        """
+        return self.development_mode == "local" or not self.github.is_configured
 
     def get_model_config(self, agent_name: str) -> ModelConfig:
         """Return the effective model config for an agent.
