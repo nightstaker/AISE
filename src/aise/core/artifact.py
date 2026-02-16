@@ -28,6 +28,9 @@ class ArtifactType(Enum):
     AUTOMATED_TESTS = "automated_tests"
     BUG_REPORT = "bug_report"
     PROGRESS_REPORT = "progress_report"
+    ARCHITECTURE_REQUIREMENT = "architecture_requirement"
+    FUNCTIONAL_DESIGN = "functional_design"
+    STATUS_TRACKING = "status_tracking"
 
 
 class ArtifactStatus(Enum):
