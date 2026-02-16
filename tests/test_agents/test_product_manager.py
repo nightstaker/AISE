@@ -74,7 +74,9 @@ class TestProductManagerAgent:
         artifact = agent.execute_skill(
             "system_feature_analysis",
             {
-                "raw_requirements": "User login\nUser registration\nPerformance must be under 200ms\nSystem must be secure",
+                "raw_requirements": (
+                    "User login\nUser registration\nPerformance must be under 200ms\nSystem must be secure"
+                ),
             },
         )
         content = artifact.content
