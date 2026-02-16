@@ -15,6 +15,8 @@ class ArtifactType(Enum):
     REQUIREMENTS = "requirements"
     USER_STORIES = "user_stories"
     PRD = "prd"
+    SYSTEM_DESIGN = "system_design"
+    SYSTEM_REQUIREMENTS = "system_requirements"
     ARCHITECTURE_DESIGN = "architecture_design"
     API_CONTRACT = "api_contract"
     TECH_STACK = "tech_stack"

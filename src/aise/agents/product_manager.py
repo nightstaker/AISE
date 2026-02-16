@@ -8,9 +8,12 @@ from ..core.artifact import ArtifactStore
 from ..core.message import MessageBus
 from ..skills.github import PRMergeSkill, PRReviewSkill
 from ..skills.pm import (
+    DocumentGenerationSkill,
     ProductDesignSkill,
     ProductReviewSkill,
     RequirementAnalysisSkill,
+    SystemFeatureAnalysisSkill,
+    SystemRequirementAnalysisSkill,
     UserStoryWritingSkill,
 )
 
@@ -35,5 +38,8 @@ class ProductManagerAgent(Agent):
         self.register_skill(UserStoryWritingSkill())
         self.register_skill(ProductDesignSkill())
         self.register_skill(ProductReviewSkill())
+        self.register_skill(SystemFeatureAnalysisSkill())
+        self.register_skill(SystemRequirementAnalysisSkill())
+        self.register_skill(DocumentGenerationSkill())
         self.register_skill(PRReviewSkill(agent_role=AgentRole.PRODUCT_MANAGER))
         self.register_skill(PRMergeSkill(agent_role=AgentRole.PRODUCT_MANAGER))
