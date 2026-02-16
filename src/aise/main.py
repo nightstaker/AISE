@@ -16,37 +16,94 @@ from .agents import (
     TeamManagerAgent,
 )
 from .config import ProjectConfig
+from .core.agent import AgentRole
+from .core.multi_project_session import MultiProjectSession
 from .core.orchestrator import Orchestrator
 from .core.session import OnDemandSession
 from .whatsapp.client import WhatsAppConfig
 from .whatsapp.session import WhatsAppGroupSession
 
 
-def create_team(config: ProjectConfig | None = None) -> Orchestrator:
+def _get_agent_class(role: AgentRole):
+    """Map AgentRole to agent class constructor.
+
+    Args:
+        role: The agent role
+
+    Returns:
+        Agent class constructor
+
+    Raises:
+        ValueError: If role is unknown
+    """
+    mapping = {
+        AgentRole.PRODUCT_MANAGER: ProductManagerAgent,
+        AgentRole.ARCHITECT: ArchitectAgent,
+        AgentRole.DEVELOPER: DeveloperAgent,
+        AgentRole.QA_ENGINEER: QAEngineerAgent,
+        AgentRole.TEAM_LEAD: TeamLeadAgent,
+        AgentRole.TEAM_MANAGER: TeamManagerAgent,
+    }
+    if role not in mapping:
+        raise ValueError(f"Unknown agent role: {role}")
+    return mapping[role]
+
+
+def create_team(
+    config: ProjectConfig | None = None,
+    agent_counts: dict[AgentRole, int] | None = None,
+) -> Orchestrator:
     """Create a fully configured development team.
+
+    Args:
+        config: Optional project configuration
+        agent_counts: Optional dict mapping AgentRole to count.
+                     Default: 1 agent per role (backward compatible)
+                     Example: {AgentRole.DEVELOPER: 3, AgentRole.QA_ENGINEER: 2}
 
     Returns:
         An Orchestrator with all agents registered and ready.
     """
     config = config or ProjectConfig()
-    orchestrator = Orchestrator()
 
+    # Default: 1 agent per role (backward compatible)
+    if agent_counts is None:
+        agent_counts = {role: 1 for role in AgentRole}
+
+    orchestrator = Orchestrator()
     bus = orchestrator.message_bus
     store = orchestrator.artifact_store
 
-    agents = [
-        ProductManagerAgent(bus, store, config.get_model_config("product_manager")),
-        ArchitectAgent(bus, store, config.get_model_config("architect")),
-        DeveloperAgent(bus, store, config.get_model_config("developer")),
-        QAEngineerAgent(bus, store, config.get_model_config("qa_engineer")),
-        TeamLeadAgent(bus, store, config.get_model_config("team_lead")),
-        TeamManagerAgent(bus, store, config.get_model_config("team_manager")),
-    ]
+    # Create agents based on agent_counts
+    for role, count in agent_counts.items():
+        if count < 1:
+            continue  # Skip if count is 0 or negative
 
-    for agent in agents:
-        agent_config = config.agents.get(agent.name)
-        if agent_config is None or agent_config.enabled:
-            orchestrator.register_agent(agent)
+        agent_class = _get_agent_class(role)
+
+        for i in range(1, count + 1):
+            # Generate agent name
+            if count == 1:
+                # Single agent: keep simple name for backward compatibility
+                agent_name = role.value
+            else:
+                # Multiple agents: use indexed names
+                agent_name = f"{role.value}_{i}"
+
+            # Create agent instance
+            agent = agent_class(
+                message_bus=bus,
+                artifact_store=store,
+                model_config=config.get_model_config(role.value),
+            )
+
+            # Override agent name
+            agent.name = agent_name
+
+            # Check if agent is enabled in config
+            agent_config = config.agents.get(role.value)
+            if agent_config is None or agent_config.enabled:
+                orchestrator.register_agent(agent)
 
     return orchestrator
 
@@ -79,6 +136,15 @@ def start_demand_session(project_name: str = "My Project") -> OnDemandSession:
     """
     orchestrator = create_team()
     return OnDemandSession(orchestrator, project_name)
+
+
+def start_multi_project_session() -> MultiProjectSession:
+    """Create and return a multi-project interactive session.
+
+    Returns:
+        A configured MultiProjectSession ready to start.
+    """
+    return MultiProjectSession()
 
 
 def start_whatsapp_session(
@@ -224,6 +290,19 @@ def main() -> None:
     team_parser = subparsers.add_parser("team", help="Show team information")
     team_parser.add_argument("--verbose", "-v", action="store_true", help="Show agent skills")
 
+    # multi-project command
+    multi_parser = subparsers.add_parser(
+        "multi-project",
+        help="Start an interactive multi-project session",
+    )
+    multi_parser.add_argument(
+        "--interactive",
+        "-i",
+        action="store_true",
+        default=True,
+        help="Start interactive session (default)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "run":
@@ -313,6 +392,10 @@ def main() -> None:
             if args.verbose:
                 for skill_name, skill in agent.skills.items():
                     print(f"  - {skill_name}: {skill.description}")
+
+    elif args.command == "multi-project":
+        session = start_multi_project_session()
+        session.start()
 
     else:
         parser.print_help()
