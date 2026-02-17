@@ -1,0 +1,16 @@
+{% extends "layout.html" %}
+{% block content %}
+<section class="card">
+  <h1>任务详情</h1>
+  <p>阶段: {{ phase_name }}</p>
+  <p>任务: {{ task_key }}</p>
+  <p>状态: {{ task.status }}</p>
+  {% if task.artifact_id %}
+  <p>产物ID: {{ task.artifact_id }}</p>
+  {% endif %}
+  {% if task.error %}
+  <pre class="error">{{ task.error }}</pre>
+  {% endif %}
+  <a class="btn secondary" href="/projects/{{ project_id }}/runs/{{ run_id }}">返回执行详情</a>
+</section>
+{% endblock %}

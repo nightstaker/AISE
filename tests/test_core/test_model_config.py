@@ -132,6 +132,78 @@ class TestProjectConfigModelResolution:
         assert loaded.workflow.max_review_iterations == 7
         assert loaded.github.repo_full_name == "acme/platform"
 
+    def test_model_catalog_default_and_agent_selection(self):
+        config = ProjectConfig.from_dict(
+            {
+                "default_model": {"provider": "openai", "model": "gpt-4o"},
+                "model_catalog": [
+                    {"id": "openai:gpt-4.1", "default": True},
+                    {"id": "anthropic:claude-sonnet-4-20250514", "default": False},
+                ],
+                "agent_model_selection": {
+                    "architect": "anthropic:claude-sonnet-4-20250514",
+                },
+            }
+        )
+
+        assert config.get_default_model_id() == "gpt-4.1"
+        assert config.default_model.provider == "openai"
+        assert config.default_model.model == "gpt-4.1"
+
+        resolved = config.get_model_config("architect")
+        assert resolved.provider == "anthropic"
+        assert resolved.model == "claude-sonnet-4-20250514"
+
+    def test_model_catalog_backward_compatible_without_catalog(self):
+        config = ProjectConfig.from_dict(
+            {
+                "default_model": {"provider": "anthropic", "model": "claude-opus-4"},
+            }
+        )
+
+        assert config.get_default_model_id() == "claude-opus-4"
+        assert len(config.model_catalog) == 1
+        assert config.model_catalog[0].is_default is True
+
+    def test_to_dict_removes_legacy_agent_model_block(self):
+        config = ProjectConfig()
+        data = config.to_dict()
+        assert "agents" in data
+        first_agent = data["agents"]["product_manager"]
+        assert "model" not in first_agent
+
+    def test_models_support_name_api_model_and_local_flag(self):
+        config = ProjectConfig.from_dict(
+            {
+                "model_providers": [{"provider": "openai", "api_key": "", "base_url": "", "enabled": True}],
+                "models": [
+                    {
+                        "id": "gpt-4o",
+                        "name": "GPT-4o",
+                        "api_model": "gpt-4o",
+                        "default": True,
+                        "default_provider": "openai",
+                        "providers": ["openai"],
+                        "is_local": False,
+                    },
+                    {
+                        "id": "qwen2.5-coder:7b",
+                        "name": "Qwen2.5 Coder 7B",
+                        "api_model": "qwen2.5-coder:7b",
+                        "default": False,
+                        "default_provider": "local",
+                        "providers": [],
+                        "is_local": True,
+                    },
+                ],
+                "agent_model_selection": {"developer": "qwen2.5-coder:7b"},
+            }
+        )
+        resolved = config.get_model_config("developer")
+        assert resolved.provider == "local"
+        assert resolved.model == "qwen2.5-coder:7b"
+        assert resolved.extra.get("is_local_model") is True
+
 
 class TestLLMClient:
     def test_creation(self):

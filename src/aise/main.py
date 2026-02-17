@@ -194,6 +194,22 @@ def start_whatsapp_session(
     return session
 
 
+def start_web_app(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    reload: bool = False,
+) -> None:
+    """Start the AISE web system."""
+    try:
+        import uvicorn
+    except Exception as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("uvicorn is required for web mode. Install with: pip install -e '.[web]'") from exc
+
+    from .web import create_app
+
+    uvicorn.run(create_app(), host=host, port=port, reload=reload)
+
+
 def _add_github_args(sub_parser: argparse.ArgumentParser) -> None:
     """Add GitHub token / repo CLI arguments to a sub-parser."""
     sub_parser.add_argument(
@@ -307,6 +323,15 @@ def main() -> None:
         default=True,
         help="Start interactive session (default)",
     )
+
+    # web command
+    web_parser = subparsers.add_parser(
+        "web",
+        help="Start web project management system",
+    )
+    web_parser.add_argument("--host", default="127.0.0.1", help="Host for web server")
+    web_parser.add_argument("--port", type=int, default=8000, help="Port for web server")
+    web_parser.add_argument("--reload", action="store_true", help="Enable auto reload")
 
     # develop command — concurrent development sessions
     dev_parser = subparsers.add_parser(
@@ -427,6 +452,9 @@ def main() -> None:
     elif args.command == "multi-project":
         session = start_multi_project_session()
         session.start()
+
+    elif args.command == "web":
+        start_web_app(host=args.host, port=args.port, reload=args.reload)
 
     elif args.command == "develop":
         import asyncio

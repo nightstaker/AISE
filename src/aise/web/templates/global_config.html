@@ -1,0 +1,115 @@
+{% extends "layout.html" %}
+{% block content %}
+<section class="config-layout">
+  <aside class="card config-nav">
+    <h2>配置中心</h2>
+    <a class="{% if section == 'models' %}active{% endif %}" href="/config/global/models">Models</a>
+    <a class="{% if section == 'agents' %}active{% endif %}" href="/config/global/agents">Agents</a>
+    <a class="{% if section == 'workspace' %}active{% endif %}" href="/config/global/workspace">工作空间</a>
+    <a class="{% if section == 'logging' %}active{% endif %}" href="/config/global/logging">日志系统</a>
+    <a class="{% if section == 'json' %}active{% endif %}" href="/config/global/json">Raw JSON</a>
+  </aside>
+
+  <article class="card config-main">
+    <h1>全局配置 - {{ section|upper }}</h1>
+    {% if error %}
+    <p class="warning">保存失败: {{ error }}</p>
+    {% endif %}
+
+    {% if section == "models" %}
+    <form id="models-config-form" method="post" action="/config/global/models" class="stack">
+      <label>默认开发模式</label>
+      <select name="development_mode">
+        <option value="local" {% if config_data.development_mode == "local" %}selected{% endif %}>Local</option>
+        <option value="github" {% if config_data.development_mode == "github" %}selected{% endif %}>GitHub</option>
+      </select>
+      <h3>Providers 配置</h3>
+      <p>先配置 Provider（KEY/URI），再在模型中选择可用 Providers。</p>
+      <input type="hidden" name="providers_json" id="providers-json-input">
+      <div id="providers-editor"></div>
+      <button type="button" id="add-provider-btn" class="btn secondary">新增 Provider</button>
+
+      <h3>Models 配置</h3>
+      <input type="hidden" name="models_json" id="models-json-input">
+      <div id="models-editor"></div>
+      <button type="button" id="add-model-btn" class="btn secondary">新增模型</button>
+      <button type="submit" class="btn">保存 Models 配置</button>
+    </form>
+    <script id="providers-initial-data" type="application/json">{{ config_data.model_providers|tojson }}</script>
+    <script id="models-initial-data" type="application/json">{{ config_data.models|tojson }}</script>
+    {% endif %}
+
+    {% if section == "agents" %}
+    <form method="post" action="/config/global/agents" class="stack">
+      <table>
+        <thead>
+          <tr>
+            <th>Agent Key</th>
+            <th>显示名称</th>
+            <th>启用</th>
+            <th>模型</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for agent in config_data.agents %}
+          <tr>
+            <td>{{ agent.key }}</td>
+            <td>
+              <input name="agent_name_{{ agent.key }}" value="{{ agent.name }}">
+            </td>
+            <td>
+              <input type="checkbox" name="agent_enabled_{{ agent.key }}" {% if agent.enabled %}checked{% endif %}>
+            </td>
+            <td>
+              <select name="agent_model_{{ agent.key }}">
+                {% for m in config_data.model_options %}
+                <option value="{{ m.id }}" {% if agent.selected_model == m.id %}selected{% endif %}>
+                  {{ m.id }}{% if m.default %} (default){% endif %}
+                </option>
+                {% endfor %}
+              </select>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <button class="btn" type="submit">保存 Agents 配置</button>
+    </form>
+    {% endif %}
+
+    {% if section == "workspace" %}
+    <form method="post" action="/config/global/workspace" class="stack">
+      <label>Projects Root</label>
+      <input name="projects_root" value="{{ config_data.workspace.projects_root }}">
+      <label>Artifacts Root</label>
+      <input name="artifacts_root" value="{{ config_data.workspace.artifacts_root }}">
+      <label><input type="checkbox" name="auto_create_dirs" {% if config_data.workspace.auto_create_dirs %}checked{% endif %}> 自动创建目录</label>
+      <button class="btn" type="submit">保存工作空间配置</button>
+    </form>
+    {% endif %}
+
+    {% if section == "logging" %}
+    <form method="post" action="/config/global/logging" class="stack">
+      <label>日志等级</label>
+      <select name="level">
+        {% for lv in ["DEBUG","INFO","WARNING","ERROR"] %}
+        <option value="{{ lv }}" {% if config_data.logging.level == lv %}selected{% endif %}>{{ lv }}</option>
+        {% endfor %}
+      </select>
+      <label>日志目录</label>
+      <input name="log_dir" value="{{ config_data.logging.log_dir }}">
+      <label><input type="checkbox" name="json_format" {% if config_data.logging.json_format %}checked{% endif %}> JSON 格式日志</label>
+      <label><input type="checkbox" name="rotate_daily" {% if config_data.logging.rotate_daily %}checked{% endif %}> 按日切分</label>
+      <button class="btn" type="submit">保存日志配置</button>
+    </form>
+    {% endif %}
+
+    {% if section == "json" %}
+    <form method="post" action="/config/global/json" class="stack">
+      <textarea name="config_json" rows="26">{{ config_json }}</textarea>
+      <button class="btn secondary" type="submit">保存 JSON</button>
+    </form>
+    {% endif %}
+  </article>
+</section>
+{% endblock %}

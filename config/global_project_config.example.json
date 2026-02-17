@@ -10,85 +10,74 @@
     "max_tokens": 4096,
     "extra": {}
   },
-  "agents": {
-    "product_manager": {
-      "name": "product_manager",
-      "enabled": true,
-      "model": {
-        "provider": "openai",
-        "model": "gpt-4o",
-        "api_key": "",
-        "base_url": "",
-        "temperature": 0.7,
-        "max_tokens": 4096,
-        "extra": {}
-      }
+  "model_catalog": [
+    { "id": "gpt-4o", "default": true },
+    { "id": "gpt-4.1", "default": false },
+    { "id": "claude-sonnet-4-20250514", "default": false },
+    { "id": "qwen2.5-coder:7b", "default": false }
+  ],
+  "model_providers": [
+    { "provider": "openai", "api_key": "", "base_url": "", "enabled": true },
+    { "provider": "azure_openai", "api_key": "", "base_url": "", "enabled": false },
+    { "provider": "anthropic", "api_key": "", "base_url": "", "enabled": true }
+  ],
+  "models": [
+    {
+      "id": "gpt-4o",
+      "name": "GPT-4o",
+      "api_model": "gpt-4o",
+      "default": true,
+      "default_provider": "openai",
+      "is_local": false,
+      "providers": ["openai", "azure_openai"],
+      "extra": { "supports_tools": true, "context_window": 128000 }
     },
-    "architect": {
-      "name": "architect",
-      "enabled": true,
-      "model": {
-        "provider": "openai",
-        "model": "gpt-4o",
-        "api_key": "",
-        "base_url": "",
-        "temperature": 0.7,
-        "max_tokens": 4096,
-        "extra": {}
-      }
+    {
+      "id": "gpt-4.1",
+      "name": "GPT-4.1",
+      "api_model": "gpt-4.1",
+      "default": false,
+      "default_provider": "openai",
+      "is_local": false,
+      "providers": ["openai"],
+      "extra": {}
     },
-    "developer": {
-      "name": "developer",
-      "enabled": true,
-      "model": {
-        "provider": "openai",
-        "model": "gpt-4o",
-        "api_key": "",
-        "base_url": "",
-        "temperature": 0.7,
-        "max_tokens": 4096,
-        "extra": {}
-      }
+    {
+      "id": "claude-sonnet-4-20250514",
+      "name": "Claude Sonnet 4",
+      "api_model": "claude-sonnet-4-20250514",
+      "default": false,
+      "default_provider": "anthropic",
+      "is_local": false,
+      "providers": ["anthropic"],
+      "extra": {}
     },
-    "qa_engineer": {
-      "name": "qa_engineer",
-      "enabled": true,
-      "model": {
-        "provider": "openai",
-        "model": "gpt-4o",
-        "api_key": "",
-        "base_url": "",
-        "temperature": 0.7,
-        "max_tokens": 4096,
-        "extra": {}
-      }
-    },
-    "team_lead": {
-      "name": "team_lead",
-      "enabled": true,
-      "model": {
-        "provider": "openai",
-        "model": "gpt-4o",
-        "api_key": "",
-        "base_url": "",
-        "temperature": 0.7,
-        "max_tokens": 4096,
-        "extra": {}
-      }
-    },
-    "team_manager": {
-      "name": "team_manager",
-      "enabled": true,
-      "model": {
-        "provider": "openai",
-        "model": "gpt-4o",
-        "api_key": "",
-        "base_url": "",
-        "temperature": 0.7,
-        "max_tokens": 4096,
-        "extra": {}
-      }
+    {
+      "id": "qwen2.5-coder:7b",
+      "name": "Qwen2.5 Coder 7B",
+      "api_model": "qwen2.5-coder:7b",
+      "default": false,
+      "default_provider": "local",
+      "is_local": true,
+      "providers": [],
+      "extra": { "runtime": "ollama" }
     }
+  ],
+  "agent_model_selection": {
+    "product_manager": "gpt-4.1",
+    "architect": "claude-sonnet-4-20250514",
+    "developer": "gpt-4o",
+    "qa_engineer": "gpt-4o",
+    "team_lead": "gpt-4o",
+    "team_manager": "gpt-4o"
+  },
+  "agents": {
+    "product_manager": { "name": "product_manager", "enabled": true },
+    "architect": { "name": "architect", "enabled": true },
+    "developer": { "name": "developer", "enabled": true },
+    "qa_engineer": { "name": "qa_engineer", "enabled": true },
+    "team_lead": { "name": "team_lead", "enabled": true },
+    "team_manager": { "name": "team_manager", "enabled": true }
   },
   "agent_counts": {},
   "workflow": {
@@ -100,6 +89,17 @@
     "status_update_interval_minutes": 5,
     "stale_task_threshold_minutes": 10,
     "reviewer_poll_interval_seconds": 60
+  },
+  "workspace": {
+    "projects_root": "projects",
+    "artifacts_root": "artifacts",
+    "auto_create_dirs": true
+  },
+  "logging": {
+    "level": "INFO",
+    "log_dir": "logs",
+    "json_format": false,
+    "rotate_daily": true
   },
   "whatsapp": {
     "phone_number_id": "",
