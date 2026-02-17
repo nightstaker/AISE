@@ -114,6 +114,74 @@ class GitHubClient:
         )
 
     # ------------------------------------------------------------------
+    # Pull-request create operation
+    # ------------------------------------------------------------------
+
+    def create_pull_request(
+        self,
+        title: str,
+        body: str,
+        head: str,
+        base: str = "main",
+    ) -> dict[str, Any]:
+        """Create a pull request.
+
+        Args:
+            title: PR title.
+            body: PR description body.
+            head: The branch containing the changes.
+            base: The branch to merge into.
+
+        Returns:
+            Dict with PR details including 'number' and 'html_url'.
+        """
+        return self._request(
+            "POST",
+            self._repo_path("/pulls"),
+            {"title": title, "body": body, "head": head, "base": base},
+        )
+
+    # ------------------------------------------------------------------
+    # CI / check operations
+    # ------------------------------------------------------------------
+
+    def get_check_runs(self, ref: str) -> list[Any]:
+        """Get CI check runs for a git ref (branch name or commit SHA).
+
+        Args:
+            ref: Branch name or commit SHA.
+
+        Returns:
+            List of check run objects.
+        """
+        result = self._request("GET", self._repo_path(f"/commits/{ref}/check-runs"))
+        if isinstance(result, dict):
+            return result.get("check_runs", [])
+        return []
+
+    def get_pr_comments(self, pr_number: int) -> list[Any]:
+        """Get all issue comments on a pull request.
+
+        Args:
+            pr_number: The pull request number.
+
+        Returns:
+            List of comment objects.
+        """
+        return self._request("GET", self._repo_path(f"/issues/{pr_number}/comments"))
+
+    def get_review_comments(self, pr_number: int) -> list[Any]:
+        """Get all inline review comments on a pull request.
+
+        Args:
+            pr_number: The pull request number.
+
+        Returns:
+            List of review comment objects.
+        """
+        return self._request("GET", self._repo_path(f"/pulls/{pr_number}/comments"))
+
+    # ------------------------------------------------------------------
     # Merge operation
     # ------------------------------------------------------------------
 

@@ -58,6 +58,13 @@ _ROLE_PERMISSIONS: dict[AgentRole, frozenset[GitHubPermission]] = {
             GitHubPermission.MERGE_PR,
         }
     ),
+    AgentRole.REVIEWER: frozenset(
+        {
+            GitHubPermission.REVIEW_PR,
+            GitHubPermission.COMMENT_PR,
+            GitHubPermission.MERGE_PR,
+        }
+    ),
 }
 
 

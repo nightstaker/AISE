@@ -79,6 +79,16 @@ class WhatsAppConfig:
 
 
 @dataclass
+class SessionConfig:
+    """Configuration for concurrent development sessions."""
+
+    max_concurrent_sessions: int = 5
+    status_update_interval_minutes: int = 5
+    stale_task_threshold_minutes: int = 10
+    reviewer_poll_interval_seconds: int = 60
+
+
+@dataclass
 class ProjectConfig:
     """Top-level project configuration."""
 
@@ -97,6 +107,7 @@ class ProjectConfig:
     )
     agent_counts: dict[str, int] = field(default_factory=dict)
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
+    session: SessionConfig = field(default_factory=SessionConfig)
     whatsapp: WhatsAppConfig = field(default_factory=WhatsAppConfig)
     github: GitHubConfig = field(default_factory=GitHubConfig)
 

@@ -21,6 +21,7 @@ class TestCheckPermission:
             AgentRole.QA_ENGINEER,
             AgentRole.PRODUCT_MANAGER,
             AgentRole.TEAM_LEAD,
+            AgentRole.REVIEWER,
         ],
     )
     def test_all_roles_can_review(self, role):
@@ -34,18 +35,22 @@ class TestCheckPermission:
             AgentRole.QA_ENGINEER,
             AgentRole.PRODUCT_MANAGER,
             AgentRole.TEAM_LEAD,
+            AgentRole.REVIEWER,
         ],
     )
     def test_all_roles_can_comment(self, role):
         assert check_permission(role, GitHubPermission.COMMENT_PR) is True
 
-    # -- Merge permissions (only PM and Team Lead) --
+    # -- Merge permissions (PM, Team Lead, and Reviewer) --
 
     def test_product_manager_can_merge(self):
         assert check_permission(AgentRole.PRODUCT_MANAGER, GitHubPermission.MERGE_PR) is True
 
     def test_team_lead_can_merge(self):
         assert check_permission(AgentRole.TEAM_LEAD, GitHubPermission.MERGE_PR) is True
+
+    def test_reviewer_can_merge(self):
+        assert check_permission(AgentRole.REVIEWER, GitHubPermission.MERGE_PR) is True
 
     @pytest.mark.parametrize(
         "role",
