@@ -116,6 +116,22 @@ class TestProjectConfigModelResolution:
         resolved = config.get_model_config("nonexistent")
         assert resolved.provider == "ollama"
 
+    def test_project_config_json_round_trip(self, tmp_path):
+        config = ProjectConfig(project_name="RoundTrip")
+        config.default_model = ModelConfig(provider="anthropic", model="claude-opus-4")
+        config.workflow.max_review_iterations = 7
+        config.github.repo_owner = "acme"
+        config.github.repo_name = "platform"
+
+        file_path = tmp_path / "project_config.json"
+        config.to_json_file(file_path)
+        loaded = ProjectConfig.from_json_file(file_path)
+
+        assert loaded.project_name == "RoundTrip"
+        assert loaded.default_model.provider == "anthropic"
+        assert loaded.workflow.max_review_iterations == 7
+        assert loaded.github.repo_full_name == "acme/platform"
+
 
 class TestLLMClient:
     def test_creation(self):

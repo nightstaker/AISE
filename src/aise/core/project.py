@@ -36,6 +36,7 @@ class Project:
         project_id: str,
         config: ProjectConfig,
         orchestrator: Orchestrator,
+        project_root: str | None = None,
     ) -> None:
         """Initialize a project container.
 
@@ -43,10 +44,12 @@ class Project:
             project_id: Unique identifier for this project
             config: Project configuration (includes name, GitHub settings, agent counts)
             orchestrator: Orchestrator instance for this project (with its own bus/store)
+            project_root: Optional root directory path for persisted project files
         """
         self.project_id = project_id
         self.config = config
         self.orchestrator = orchestrator
+        self.project_root = project_root
         self.status = ProjectStatus.ACTIVE
         self.created_at = datetime.now(timezone.utc)
         self.updated_at = self.created_at
@@ -102,6 +105,7 @@ class Project:
             "status": self.status.value,
             "development_mode": self.development_mode,
             "agent_count": self.agent_count,
+            "project_root": self.project_root,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..config import ProjectConfig
@@ -19,10 +20,18 @@ class ProjectManager:
     each with its own team of agents, message bus, and artifact store.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        projects_root: str | Path = "projects",
+        global_config_path: str | Path = "config/global_project_config.json",
+    ) -> None:
         """Initialize the project manager."""
         self._projects: dict[str, Project] = {}
         self._project_counter = 0
+        self._projects_root = Path(projects_root)
+        self._global_config_path = Path(global_config_path)
+        self._global_config = self._load_global_config()
 
     def create_project(
         self,
@@ -56,9 +65,13 @@ class ProjectManager:
         project_id = f"project_{self._project_counter}"
         self._project_counter += 1
 
-        # Prepare configuration
-        config = config or ProjectConfig()
+        # Prepare configuration (inherit global defaults by default)
+        config = config or self.create_default_project_config(project_name)
         config.project_name = project_name
+
+        # Persist project directory and config snapshot
+        project_root = self._prepare_project_root(project_id, project_name)
+        config.to_json_file(project_root / "project_config.json")
 
         # Create isolated orchestrator with agents
         # Import locally to avoid circular dependency
@@ -71,12 +84,33 @@ class ProjectManager:
             project_id=project_id,
             config=config,
             orchestrator=orchestrator,
+            project_root=str(project_root),
         )
 
         # Store project
         self._projects[project_id] = project
 
         return project_id
+
+    def create_default_project_config(self, project_name: str) -> ProjectConfig:
+        """Create a project config by inheriting global defaults."""
+        config = ProjectConfig.from_dict(self._global_config.to_dict())
+        config.project_name = project_name
+        return config
+
+    def _load_global_config(self) -> ProjectConfig:
+        """Load global config if available, otherwise use built-in defaults."""
+        if not self._global_config_path.exists():
+            return ProjectConfig()
+        return ProjectConfig.from_json_file(self._global_config_path)
+
+    def _prepare_project_root(self, project_id: str, project_name: str) -> Path:
+        """Create and return the filesystem root for a project."""
+        safe_name = "".join(c.lower() if c.isalnum() else "-" for c in project_name).strip("-")
+        safe_name = "-".join(filter(None, safe_name.split("-"))) or "project"
+        project_root = self._projects_root / f"{project_id}-{safe_name}"
+        project_root.mkdir(parents=True, exist_ok=True)
+        return project_root
 
     def get_project(self, project_id: str) -> Project | None:
         """Get a project by its ID.

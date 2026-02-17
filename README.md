@@ -151,6 +151,16 @@ pip install -e ".[dev]"
 
 ## Usage
 
+### Global Project Config (Optional)
+
+You can place a global default config at `config/global_project_config.json`.
+Use `config/global_project_config.example.json` as a template.
+
+In `aise multi-project` mode, every new project created by `create <name>` will:
+
+- inherit this global config by default
+- write the effective project config to `<repo>/projects/<project_id>-<project_name>/project_config.json`
+
 ### Run a development workflow
 
 ```bash
@@ -198,12 +208,13 @@ src/aise/
 │   ├── skill.py         # Skill base class & SkillContext
 │   └── workflow.py      # Workflow engine, Phase & Task models
 ├── agents/              # 6 agent implementations
-├── skills/              # 24 skill implementations (4 per agent)
+├── skills/              # Runtime skill implementations
 │   ├── pm/
 │   ├── architect/
 │   ├── developer/
 │   ├── qa/
 │   ├── lead/
+│   ├── github/          # PR review/merge skills
 │   └── manager/         # Team Manager skills (HA mode)
 └── whatsapp/            # WhatsApp group chat integration
     ├── client.py        # WhatsApp Business Cloud API client
