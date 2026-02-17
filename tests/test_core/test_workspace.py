@@ -31,9 +31,7 @@ class TestWorkspace:
     @patch("aise.core.workspace.subprocess.run")
     @patch("aise.core.workspace.Path.mkdir")
     def test_create_failure_raises_workspace_error(self, mock_mkdir, mock_run):
-        mock_run.side_effect = subprocess.CalledProcessError(
-            128, "git", stderr="fatal: branch already exists"
-        )
+        mock_run.side_effect = subprocess.CalledProcessError(128, "git", stderr="fatal: branch already exists")
 
         with pytest.raises(WorkspaceError, match="Failed to create worktree"):
             Workspace.create("/repo", "dev/AR-0001")
@@ -49,9 +47,7 @@ class TestWorkspace:
 
     @patch("aise.core.workspace.subprocess.run")
     def test_cleanup_failure_raises_workspace_error(self, mock_run):
-        mock_run.side_effect = subprocess.CalledProcessError(
-            128, "git", stderr="error"
-        )
+        mock_run.side_effect = subprocess.CalledProcessError(128, "git", stderr="error")
         ws = Workspace(branch_name="dev/test", worktree_path="/tmp/ws")
 
         with pytest.raises(WorkspaceError, match="Failed to remove worktree"):
@@ -68,9 +64,7 @@ class TestWorkspace:
 
     @patch("aise.core.workspace.subprocess.run")
     def test_commit_and_push_failure(self, mock_run):
-        mock_run.side_effect = subprocess.CalledProcessError(
-            1, "git", stderr="nothing to commit"
-        )
+        mock_run.side_effect = subprocess.CalledProcessError(1, "git", stderr="nothing to commit")
         ws = Workspace(branch_name="dev/test", worktree_path="/tmp/ws")
 
         with pytest.raises(WorkspaceError, match="Failed to commit and push"):

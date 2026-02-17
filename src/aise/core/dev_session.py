@@ -244,9 +244,7 @@ class SessionManager:
             session.branch_name = branch_name
 
             try:
-                workspace = await asyncio.to_thread(
-                    Workspace.create, self.repo_root, branch_name
-                )
+                workspace = await asyncio.to_thread(Workspace.create, self.repo_root, branch_name)
                 session.worktree_path = workspace.worktree_path
                 working_dir = workspace.worktree_path
             except WorkspaceError as exc:
@@ -387,12 +385,8 @@ class SessionManager:
                     return
 
                 # Check CI status
-                checks = await asyncio.to_thread(
-                    client.get_check_runs, workspace.branch_name
-                )
-                has_ci_failure = any(
-                    c.get("conclusion") == "failure" for c in checks
-                )
+                checks = await asyncio.to_thread(client.get_check_runs, workspace.branch_name)
+                has_ci_failure = any(c.get("conclusion") == "failure" for c in checks)
 
                 if has_ci_failure:
                     session.status = SessionStatus.FIXING_CI
