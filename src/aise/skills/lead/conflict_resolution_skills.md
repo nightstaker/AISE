@@ -7,7 +7,7 @@
 | **Name** | `conflict_resolution` |
 | **Class** | `ConflictResolutionSkill` |
 | **Module** | `aise.skills.lead.conflict_resolution` |
-| **Agent** | Team Lead (`team_lead`) |
+| **Agent** | Project Manager (`project_manager`) |
 | **Description** | Resolve conflicts between agents by analyzing trade-offs and making decisions |
 
 ## Purpose

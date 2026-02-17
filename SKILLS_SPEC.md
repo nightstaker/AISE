@@ -22,20 +22,18 @@ Machine-readable registry of all skills in the AISE multi-agent system. This fil
 | SK-14 | `test_case_design` | qa_engineer | testing | `TestCaseDesignSkill` | `aise.skills.qa.test_case_design` |
 | SK-15 | `test_automation` | qa_engineer | testing | `TestAutomationSkill` | `aise.skills.qa.test_automation` |
 | SK-16 | `test_review` | qa_engineer | testing | `TestReviewSkill` | `aise.skills.qa.test_review` |
-| SK-17 | `task_decomposition` | team_lead | cross-cutting | `TaskDecompositionSkill` | `aise.skills.lead.task_decomposition` |
-| SK-18 | `task_assignment` | team_lead | cross-cutting | `TaskAssignmentSkill` | `aise.skills.lead.task_assignment` |
-| SK-19 | `conflict_resolution` | team_lead | cross-cutting | `ConflictResolutionSkill` | `aise.skills.lead.conflict_resolution` |
-| SK-20 | `progress_tracking` | team_lead | cross-cutting | `ProgressTrackingSkill` | `aise.skills.lead.progress_tracking` |
-| SK-21 | `agent_health_monitor` | team_manager | cross-cutting | `AgentHealthMonitorSkill` | `aise.skills.manager.agent_health_monitor` |
-| SK-22 | `agent_restart` | team_manager | cross-cutting | `AgentRestartSkill` | `aise.skills.manager.agent_restart` |
-| SK-23 | `architecture_optimization` | team_manager | cross-cutting | `ArchitectureOptimizationSkill` | `aise.skills.manager.architecture_optimization` |
-| SK-24 | `code_optimization` | team_manager | cross-cutting | `CodeOptimizationSkill` | `aise.skills.manager.code_optimization` |
+| SK-17 | `conflict_resolution` | project_manager | cross-cutting | `ConflictResolutionSkill` | `aise.skills.lead.conflict_resolution` |
+| SK-18 | `progress_tracking` | project_manager | cross-cutting | `ProgressTrackingSkill` | `aise.skills.lead.progress_tracking` |
+| SK-19 | `version_release` | project_manager | cross-cutting | `VersionReleaseSkill` | `aise.skills.lead.version_release` |
+| SK-20 | `team_health` | project_manager | cross-cutting | `TeamHealthSkill` | `aise.skills.lead.team_health` |
+| SK-21 | `team_formation` | rd_director | setup | `TeamFormationSkill` | `aise.skills.manager.team_formation` |
+| SK-22 | `requirement_distribution` | rd_director | setup | `RequirementDistributionSkill` | `aise.skills.manager.requirement_distribution` |
 
 ## Artifact Types
 
 | Type | Enum Value | Primary Producer | Consumers |
 |------|-----------|------------------|-----------|
-| `REQUIREMENTS` | `requirements` | requirement_analysis | user_story_writing, product_design, product_review, system_design, tech_stack_selection, conflict_resolution |
+| `REQUIREMENTS` | `requirements` | requirement_analysis, requirement_distribution | user_story_writing, product_design, product_review, system_design, tech_stack_selection, conflict_resolution |
 | `USER_STORIES` | `user_stories` | user_story_writing | product_design |
 | `PRD` | `prd` | product_design | product_review, system_design |
 | `ARCHITECTURE_DESIGN` | `architecture_design` | system_design | api_design, tech_stack_selection, architecture_review, code_generation, test_plan_design, test_case_design |
@@ -48,14 +46,17 @@ Machine-readable registry of all skills in the AISE multi-agent system. This fil
 | `TEST_CASES` | `test_cases` | test_case_design | test_automation, test_review |
 | `AUTOMATED_TESTS` | `automated_tests` | test_automation | test_review |
 | `BUG_REPORT` | `bug_report` | bug_fix | — |
-| `PROGRESS_REPORT` | `progress_report` | task_decomposition, task_assignment, progress_tracking, agent_health_monitor, agent_restart, architecture_optimization, code_optimization | — |
+| `PROGRESS_REPORT` | `progress_report` | progress_tracking, version_release, team_health, team_formation | — |
 
 ## Dependency Graph
 
 Execution order derived from artifact dependencies. Skills can only run after their upstream dependencies have produced artifacts.
 
 ```
-requirement_analysis          (no dependencies — entry point)
+team_formation                (no dependencies — setup entry point, rd_director)
+requirement_distribution      (no dependencies — setup entry point, rd_director)
+
+requirement_analysis          (no dependencies — delivery entry point)
   ├─► user_story_writing      (requires: REQUIREMENTS)
   ├─► product_design          (requires: REQUIREMENTS, USER_STORIES)
   │     └─► product_review    (requires: REQUIREMENTS, PRD) [review gate]
@@ -73,18 +74,19 @@ test_plan_design              (requires: ARCHITECTURE_DESIGN, API_CONTRACT)
         └─► test_automation   (requires: TEST_CASES, TECH_STACK)
               └─► test_review (requires: TEST_PLAN, TEST_CASES, AUTOMATED_TESTS, API_CONTRACT, UNIT_TESTS) [review gate]
 
-task_decomposition            (cross-cutting, no hard dependencies)
-  └─► task_assignment         (requires: task list from decomposition)
-conflict_resolution           (requires: REQUIREMENTS — on-demand)
-progress_tracking             (reads all artifact types — on-demand)
-
-agent_health_monitor          (cross-cutting, no hard dependencies — HA mode)
-  └─► agent_restart           (requires: stuck_agents list from health monitor)
-architecture_optimization     (requires: ARCHITECTURE_DESIGN — idle mode)
-code_optimization             (requires: SOURCE_CODE — idle mode)
+conflict_resolution           (requires: REQUIREMENTS — on-demand, project_manager)
+progress_tracking             (reads all artifact types — on-demand, project_manager)
+version_release               (requires: REQUIREMENTS, ARCHITECTURE_DESIGN, SOURCE_CODE, UNIT_TESTS — on-demand, project_manager)
+team_health                   (cross-cutting, no hard dependencies — project_manager)
 ```
 
 ## Workflow Phases
+
+### Phase 0: Setup (RD Director)
+| Order | Skill | Agent |
+|-------|-------|-------|
+| 1 | `team_formation` | rd_director |
+| 2 | `requirement_distribution` | rd_director |
 
 ### Phase 1: Requirements
 | Order | Skill | Review Gate |
@@ -227,61 +229,53 @@ code_optimization             (requires: SOURCE_CODE — idle mode)
 - **Thresholds:** endpoint coverage ≥70%, automation rate ≥60%
 - **Dependencies:** test_plan_design, test_case_design, test_automation
 
-### SK-17: task_decomposition
-
-- **Input:** `{ "goals": [str] }` — high-level project goals
-- **Output artifact:** `PROGRESS_REPORT` — ordered task list with dependencies
-- **Dependencies:** none (cross-cutting)
-
-### SK-18: task_assignment
-
-- **Input:** `{ "tasks": [task objects] }` — tasks from decomposition
-- **Output artifact:** `PROGRESS_REPORT` — task-to-agent assignments grouped by agent
-- **Dependencies:** task_decomposition
-
-### SK-19: conflict_resolution
+### SK-17: conflict_resolution
 
 - **Input:** `{ "conflicts": [{ "parties": [str], "issue": str, "options": [str] }] }`
 - **Output artifact:** `REVIEW_FEEDBACK` — resolutions with rationale
 - **Heuristics:** NFR-aligned (performance, security); falls back to first option
 - **Dependencies:** reads REQUIREMENTS (on-demand)
 
-### SK-20: progress_tracking
+### SK-18: progress_tracking
 
 - **Input:** `{}` — reads all artifact types from store
 - **Output artifact:** `PROGRESS_REPORT` — phase completion and artifact status report
 - **Metrics:** per-phase completion %, overall progress, review feedback summary
 - **Dependencies:** none (reads whatever is available)
 
-### SK-21: agent_health_monitor
+### SK-19: version_release
 
-- **Input:** `{ "agents": dict, "message_history": list, "task_statuses": list }` — agent info, message history, and task statuses
-- **Output artifact:** `PROGRESS_REPORT` — health report with stuck/healthy agent lists
-- **Detection:** Identifies agents with in-progress tasks that have unanswered pending requests
-- **Trigger:** Periodic (HA cycle) or on-demand
-- **Dependencies:** none (cross-cutting)
+- **Input:** `{ "version": str, "release_notes": str (optional), "release_type": str (optional) }`
+- **Output artifact:** `PROGRESS_REPORT` — release record with readiness checks and blockers
+- **Readiness checks:** REQUIREMENTS, ARCHITECTURE_DESIGN, SOURCE_CODE, UNIT_TESTS must all exist
+- **Validation:** `version` is required
+- **Trigger:** On-demand (project_manager calls when ready to cut a release)
+- **Dependencies:** requires core delivery artifacts to be present
 
-### SK-22: agent_restart
+### SK-20: team_health
 
-- **Input:** `{ "stuck_agents": [str], "agent_registry": dict }` — agents to restart and their info
-- **Output artifact:** `PROGRESS_REPORT` — restart results with re-queued task lists
-- **Validation:** `stuck_agents` must be non-empty
-- **Trigger:** After agent_health_monitor detects stuck agents
-- **Dependencies:** agent_health_monitor
+- **Input:** `{ "agent_statuses": dict (optional), "blocked_tasks": [str] (optional), "overdue_tasks": [str] (optional) }`
+- **Output artifact:** `PROGRESS_REPORT` — health score, risk factors, and recommendations
+- **Health score:** 100 − (blocked_tasks × 10) − (overdue_tasks × 5), capped at 0
+- **Status thresholds:** healthy ≥ 70, at_risk ≥ 40, critical < 40
+- **Trigger:** On-demand or periodic (project_manager)
+- **Dependencies:** none (reads artifact store for context)
 
-### SK-23: architecture_optimization
+### SK-21: team_formation
 
-- **Input:** `{}` — reads ARCHITECTURE_DESIGN from artifact store
-- **Output artifact:** `PROGRESS_REPORT` — optimisation task list (scalability, security, performance, maintainability)
-- **Trigger:** When no pending requirements exist (idle mode)
-- **Dependencies:** system_design (requires ARCHITECTURE_DESIGN)
+- **Input:** `{ "roles": { role_name: { "count": int, "model": str, "provider": str, "enabled": bool } }, "development_mode": "local"|"github" }`
+- **Output artifact:** `PROGRESS_REPORT` — team roster with agent names and model assignments
+- **Validation:** `roles` must be non-empty; `development_mode` must be `"local"` or `"github"`
+- **Trigger:** Once at project start (rd_director)
+- **Dependencies:** none (setup entry point)
 
-### SK-24: code_optimization
+### SK-22: requirement_distribution
 
-- **Input:** `{}` — reads SOURCE_CODE, UNIT_TESTS from artifact store
-- **Output artifact:** `PROGRESS_REPORT` — optimisation task list (test coverage, refactoring, performance, dependencies)
-- **Trigger:** When no pending requirements exist (idle mode)
-- **Dependencies:** code_generation (requires SOURCE_CODE)
+- **Input:** `{ "product_requirements": str | [str], "architecture_requirements": str | [str] (optional), "recipients": [str] (optional) }`
+- **Output artifact:** `REQUIREMENTS` — structured distribution record with functional and architecture requirements
+- **Validation:** `product_requirements` must be non-empty
+- **Trigger:** Once at project start after team_formation (rd_director)
+- **Dependencies:** team_formation (logical; no hard artifact dependency)
 
 ## Routing Rules
 
@@ -289,6 +283,8 @@ Given a task description, use these rules to select the correct agent and skill:
 
 | Intent | Agent | Skill |
 |--------|-------|-------|
+| Form the project team (roles, counts, models) | rd_director | team_formation |
+| Distribute initial requirements to the team | rd_director | requirement_distribution |
 | Parse/analyze requirements from raw input | product_manager | requirement_analysis |
 | Write user stories with acceptance criteria | product_manager | user_story_writing |
 | Create product requirement document (PRD) | product_manager | product_design |
@@ -305,14 +301,10 @@ Given a task description, use these rules to select the correct agent and skill:
 | Design detailed test cases | qa_engineer | test_case_design |
 | Generate automated test scripts | qa_engineer | test_automation |
 | Review test coverage and quality | qa_engineer | test_review |
-| Break goals into tasks | team_lead | task_decomposition |
-| Assign tasks to agents | team_lead | task_assignment |
-| Resolve inter-agent conflicts | team_lead | conflict_resolution |
-| Report project progress | team_lead | progress_tracking |
-| Check agent health / detect stuck agents | team_manager | agent_health_monitor |
-| Restart a stuck agent | team_manager | agent_restart |
-| Generate architecture optimisation tasks | team_manager | architecture_optimization |
-| Generate code optimisation tasks | team_manager | code_optimization |
+| Resolve inter-agent conflicts | project_manager | conflict_resolution |
+| Report project progress | project_manager | progress_tracking |
+| Cut a version release | project_manager | version_release |
+| Assess team health and flag risks | project_manager | team_health |
 
 ## Review Gates Summary
 

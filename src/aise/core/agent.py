@@ -19,8 +19,8 @@ class AgentRole(Enum):
     ARCHITECT = "architect"
     DEVELOPER = "developer"
     QA_ENGINEER = "qa_engineer"
-    TEAM_LEAD = "team_lead"
-    TEAM_MANAGER = "team_manager"
+    PROJECT_MANAGER = "project_manager"
+    RD_DIRECTOR = "rd_director"
     REVIEWER = "reviewer"
 
 

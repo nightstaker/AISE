@@ -94,8 +94,8 @@ class TestPRMergeSkill:
         with pytest.raises(PermissionDeniedError):
             skill.execute({"pr_number": 10}, ctx)
 
-    def test_team_lead_can_merge_offline(self):
-        skill = PRMergeSkill(agent_role=AgentRole.TEAM_LEAD)
-        ctx = _make_context(agent_name="team_lead")
+    def test_project_manager_can_merge_offline(self):
+        skill = PRMergeSkill(agent_role=AgentRole.PROJECT_MANAGER)
+        ctx = _make_context(agent_name="project_manager")
         artifact = skill.execute({"pr_number": 5}, ctx)
         assert artifact.content["pr_number"] == 5

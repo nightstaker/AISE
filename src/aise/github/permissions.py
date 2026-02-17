@@ -6,7 +6,7 @@ Policy
   *write feedback* on pull requests, but they are **not** allowed to merge.
 - **Product Manager** may *merge* pull requests once all necessary feedback
   has been applied or answered.
-- **Team Lead** may review and merge (full access).
+- **Project Manager** may review and merge (full access).
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ _ROLE_PERMISSIONS: dict[AgentRole, frozenset[GitHubPermission]] = {
             GitHubPermission.MERGE_PR,
         }
     ),
-    AgentRole.TEAM_LEAD: frozenset(
+    AgentRole.PROJECT_MANAGER: frozenset(
         {
             GitHubPermission.REVIEW_PR,
             GitHubPermission.COMMENT_PR,

@@ -395,27 +395,35 @@ class OnDemandSession:
             return {"status": "error", "output": f"Workflow execution failed: {e}"}
 
     def _handle_ask(self, text: str) -> dict[str, Any]:
-        """Route a freeform question to the Team Lead for triage."""
+        """Route a freeform question to the Project Manager for a progress update."""
         if not text.strip():
             return {"status": "error", "output": "Usage: ask <question or instruction>"}
 
-        # Use team lead's task_decomposition to break down the request
+        # Use the project manager's progress_tracking to report current state
         try:
             artifact_id = self.orchestrator.execute_task(
-                "team_lead",
-                "task_decomposition",
-                {"raw_requirements": text},
+                "project_manager",
+                "progress_tracking",
+                {},
                 self.project_name,
             )
             artifact = self.orchestrator.artifact_store.get(artifact_id)
             content = artifact.content if artifact else {}
-            tasks = content.get("tasks", [])
+            phases = content.get("phases", {})
+            progress = content.get("progress_percentage", 0)
 
-            lines = [f"Team Lead decomposed your request into {len(tasks)} tasks:"]
-            for t in tasks[:10]:  # Show at most 10
-                lines.append(f"  [{t.get('id')}] {t.get('agent'):20s} {t.get('description', '')}")
-            if len(tasks) > 10:
-                lines.append(f"  ... and {len(tasks) - 10} more")
+            lines = [f"Project Manager status report (progress: {progress:.0f}%):"]
+            if isinstance(phases, dict):
+                for phase_name, phase_info in phases.items():
+                    complete = "done" if phase_info.get("complete") else "in_progress"
+                    lines.append(f"  {phase_name:20s}  {complete}")
+            else:
+                for phase in phases:
+                    lines.append(
+                        f"  {phase.get('phase', '?'):20s}  "
+                        f"{phase.get('completion_percentage', 0):.0f}%  "
+                        f"{phase.get('status', '?')}"
+                    )
 
             return {
                 "status": "ok",
@@ -483,7 +491,7 @@ Available commands:
   artifacts [type]   List artifacts (optionally filter by type)
   phase <name>       Run a specific phase (requirements|design|implementation|testing)
   workflow           Run the full SDLC workflow
-  ask <question>     Ask the Team Lead to decompose a request
+  ask <question>     Ask the Project Manager for a progress report
   help               Show this help message
   quit               Exit the session
 """
