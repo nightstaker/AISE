@@ -12,6 +12,7 @@ from .agents import (
     DeveloperAgent,
     ProductManagerAgent,
     QAEngineerAgent,
+    ReviewerAgent,
     TeamLeadAgent,
     TeamManagerAgent,
 )
@@ -43,6 +44,7 @@ def _get_agent_class(role: AgentRole):
         AgentRole.QA_ENGINEER: QAEngineerAgent,
         AgentRole.TEAM_LEAD: TeamLeadAgent,
         AgentRole.TEAM_MANAGER: TeamManagerAgent,
+        AgentRole.REVIEWER: ReviewerAgent,
     }
     if role not in mapping:
         raise ValueError(f"Unknown agent role: {role}")
@@ -66,9 +68,12 @@ def create_team(
     """
     config = config or ProjectConfig()
 
-    # Default: 1 agent per role (backward compatible)
+    # Default: 1 agent per role (backward compatible).
+    # Reviewer is only included in GitHub mode.
     if agent_counts is None:
-        agent_counts = {role: 1 for role in AgentRole}
+        agent_counts = {role: 1 for role in AgentRole if role != AgentRole.REVIEWER}
+        if config.is_github_mode:
+            agent_counts[AgentRole.REVIEWER] = 1
 
     orchestrator = Orchestrator()
     bus = orchestrator.message_bus
@@ -303,6 +308,32 @@ def main() -> None:
         help="Start interactive session (default)",
     )
 
+    # develop command — concurrent development sessions
+    dev_parser = subparsers.add_parser(
+        "develop",
+        help="Start concurrent development sessions",
+    )
+    dev_parser.add_argument("--project-name", "-p", default="My Project", help="Project name")
+    dev_parser.add_argument(
+        "--max-sessions",
+        "-n",
+        type=int,
+        default=5,
+        help="Maximum concurrent developer sessions (default: 5)",
+    )
+    dev_parser.add_argument(
+        "--mode",
+        choices=["local", "github"],
+        default="local",
+        help="Development mode (default: local)",
+    )
+    dev_parser.add_argument(
+        "--repo-root",
+        default=".",
+        help="Path to the git repository root (default: current directory)",
+    )
+    _add_github_args(dev_parser)
+
     args = parser.parse_args()
 
     if args.command == "run":
@@ -396,6 +427,53 @@ def main() -> None:
     elif args.command == "multi-project":
         session = start_multi_project_session()
         session.start()
+
+    elif args.command == "develop":
+        import asyncio
+
+        from .core.dev_session import SessionManager
+
+        config = ProjectConfig(
+            project_name=args.project_name,
+            development_mode=args.mode,
+        )
+        config.session.max_concurrent_sessions = args.max_sessions
+        _apply_github_config(args, config)
+
+        # For local mode, enforce single session
+        effective_sessions = args.max_sessions
+        if config.is_local_mode:
+            effective_sessions = 1
+
+        orchestrator = create_team(config)
+
+        # Validate prerequisite: STATUS_TRACKING artifact must exist
+        from .core.artifact import ArtifactType
+
+        status_artifact = orchestrator.artifact_store.get_latest(ArtifactType.STATUS_TRACKING)
+        if status_artifact is None:
+            print(
+                "Error: No STATUS_TRACKING artifact found.\n"
+                "The architect pipeline must run first:\n"
+                "  1. system_feature_analysis (SF)\n"
+                "  2. system_requirement_analysis (SR)\n"
+                "  3. architecture_requirement_analysis (AR)\n"
+                "  4. functional_design (FN)\n"
+                "  5. status_tracking\n\n"
+                "Run 'aise run' or 'aise demand' first to generate these artifacts."
+            )
+            sys.exit(1)
+
+        session_manager = SessionManager(
+            orchestrator=orchestrator,
+            config=config,
+            max_concurrent_sessions=effective_sessions,
+            repo_root=args.repo_root,
+        )
+
+        print(f"Starting development sessions (mode={args.mode}, max_sessions={effective_sessions})")
+        asyncio.run(session_manager.start())
+        print("Development sessions completed.")
 
     else:
         parser.print_help()

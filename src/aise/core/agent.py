@@ -21,6 +21,7 @@ class AgentRole(Enum):
     QA_ENGINEER = "qa_engineer"
     TEAM_LEAD = "team_lead"
     TEAM_MANAGER = "team_manager"
+    REVIEWER = "reviewer"
 
 
 class Agent:
