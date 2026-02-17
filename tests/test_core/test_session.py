@@ -83,29 +83,25 @@ class EchoBugFixSkill(Skill):
         )
 
 
-class EchoTaskDecompSkill(Skill):
+class EchoProgressTrackingSkill(Skill):
     @property
     def name(self) -> str:
-        return "task_decomposition"
+        return "progress_tracking"
 
     @property
     def description(self) -> str:
-        return "Echo task decomposition"
+        return "Echo progress tracking"
 
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         return Artifact(
             artifact_type=ArtifactType.PROGRESS_REPORT,
             content={
-                "tasks": [
-                    {
-                        "id": "TASK-001",
-                        "agent": "developer",
-                        "description": "Sample task",
-                    },
+                "phases": [
+                    {"phase": "requirements", "completion_percentage": 50, "status": "in_progress"},
                 ],
-                "total_tasks": 1,
+                "progress_percentage": 50,
             },
-            producer="team_lead",
+            producer="project_manager",
         )
 
 
@@ -124,8 +120,8 @@ def _make_session() -> OnDemandSession:
     dev.register_skill(EchoBugFixSkill())
     orch.register_agent(dev)
 
-    lead = Agent("team_lead", AgentRole.TEAM_LEAD, bus, store)
-    lead.register_skill(EchoTaskDecompSkill())
+    lead = Agent("project_manager", AgentRole.PROJECT_MANAGER, bus, store)
+    lead.register_skill(EchoProgressTrackingSkill())
     orch.register_agent(lead)
 
     return OnDemandSession(orch, project_name="TestProject")
@@ -276,7 +272,7 @@ class TestOnDemandSession:
         session = _make_session()
         result = session.handle_input("ask How should I structure the auth module?")
         assert result["status"] == "ok"
-        assert "tasks" in result["output"].lower()
+        assert "progress" in result["output"].lower()
 
     def test_ask_empty(self):
         session = _make_session()

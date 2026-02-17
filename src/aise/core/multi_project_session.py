@@ -472,7 +472,7 @@ General:
 Agent Counts Format:
   --agents role:count,role:count,...
   Available roles: developer, qa_engineer, architect, product_manager,
-                  team_lead, team_manager
+                  project_manager, rd_director
   Example: --agents developer:3,qa_engineer:2,architect:1
 """
         return {"output": help_text}
@@ -503,8 +503,8 @@ Agent Counts Format:
             "architect": AgentRole.ARCHITECT,
             "developer": AgentRole.DEVELOPER,
             "qa_engineer": AgentRole.QA_ENGINEER,
-            "team_lead": AgentRole.TEAM_LEAD,
-            "team_manager": AgentRole.TEAM_MANAGER,
+            "project_manager": AgentRole.PROJECT_MANAGER,
+            "rd_director": AgentRole.RD_DIRECTOR,
         }
 
         agent_counts: dict[AgentRole, int] = {}

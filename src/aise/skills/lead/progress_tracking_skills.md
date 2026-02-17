@@ -7,7 +7,7 @@
 | **Name** | `progress_tracking` |
 | **Class** | `ProgressTrackingSkill` |
 | **Module** | `aise.skills.lead.progress_tracking` |
-| **Agent** | Team Lead (`team_lead`) |
+| **Agent** | Project Manager (`project_manager`) |
 | **Description** | Track and report project progress across all development phases |
 
 ## Purpose

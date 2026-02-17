@@ -29,7 +29,7 @@ class TestWhatsAppGroupSession:
         assert "architect" in agent_names
         assert "developer" in agent_names
         assert "qa_engineer" in agent_names
-        assert "team_lead" in agent_names
+        assert "project_manager" in agent_names
 
     def test_add_human_owner(self):
         session = _make_session()

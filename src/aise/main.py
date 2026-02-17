@@ -11,10 +11,10 @@ from .agents import (
     ArchitectAgent,
     DeveloperAgent,
     ProductManagerAgent,
+    ProjectManagerAgent,
     QAEngineerAgent,
+    RDDirectorAgent,
     ReviewerAgent,
-    TeamLeadAgent,
-    TeamManagerAgent,
 )
 from .config import ProjectConfig
 from .core.agent import AgentRole
@@ -42,8 +42,8 @@ def _get_agent_class(role: AgentRole):
         AgentRole.ARCHITECT: ArchitectAgent,
         AgentRole.DEVELOPER: DeveloperAgent,
         AgentRole.QA_ENGINEER: QAEngineerAgent,
-        AgentRole.TEAM_LEAD: TeamLeadAgent,
-        AgentRole.TEAM_MANAGER: TeamManagerAgent,
+        AgentRole.PROJECT_MANAGER: ProjectManagerAgent,
+        AgentRole.RD_DIRECTOR: RDDirectorAgent,
         AgentRole.REVIEWER: ReviewerAgent,
     }
     if role not in mapping:

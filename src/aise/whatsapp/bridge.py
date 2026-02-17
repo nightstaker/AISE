@@ -24,7 +24,7 @@ _ROLE_EMOJI: dict[str, str] = {
     "architect": "[Arch]",
     "developer": "[Dev]",
     "qa_engineer": "[QA]",
-    "team_lead": "[Lead]",
+    "project_manager": "[PM]",
 }
 
 
@@ -218,7 +218,7 @@ class WhatsAppBridge:
         - "@dev ..." → send to developer
         - "@arch ..." → send to architect
         - "@qa ..." → send to qa_engineer
-        - "@lead ..." → send to team_lead
+        - "@projmgr ..." → send to project_manager
         - No prefix → broadcast as new requirement to all
         """
         text = message.content.strip()
@@ -280,8 +280,8 @@ class WhatsAppBridge:
             "@developer": "developer",
             "@qa": "qa_engineer",
             "@qa_engineer": "qa_engineer",
-            "@lead": "team_lead",
-            "@team_lead": "team_lead",
+            "@projmgr": "project_manager",
+            "@project_manager": "project_manager",
         }
 
         lower = text.lower()

@@ -20,7 +20,7 @@ class TestCheckPermission:
             AgentRole.DEVELOPER,
             AgentRole.QA_ENGINEER,
             AgentRole.PRODUCT_MANAGER,
-            AgentRole.TEAM_LEAD,
+            AgentRole.PROJECT_MANAGER,
             AgentRole.REVIEWER,
         ],
     )
@@ -34,7 +34,7 @@ class TestCheckPermission:
             AgentRole.DEVELOPER,
             AgentRole.QA_ENGINEER,
             AgentRole.PRODUCT_MANAGER,
-            AgentRole.TEAM_LEAD,
+            AgentRole.PROJECT_MANAGER,
             AgentRole.REVIEWER,
         ],
     )
@@ -46,8 +46,8 @@ class TestCheckPermission:
     def test_product_manager_can_merge(self):
         assert check_permission(AgentRole.PRODUCT_MANAGER, GitHubPermission.MERGE_PR) is True
 
-    def test_team_lead_can_merge(self):
-        assert check_permission(AgentRole.TEAM_LEAD, GitHubPermission.MERGE_PR) is True
+    def test_project_manager_can_merge(self):
+        assert check_permission(AgentRole.PROJECT_MANAGER, GitHubPermission.MERGE_PR) is True
 
     def test_reviewer_can_merge(self):
         assert check_permission(AgentRole.REVIEWER, GitHubPermission.MERGE_PR) is True

@@ -6,8 +6,8 @@ from aise.agents import (
     ArchitectAgent,
     DeveloperAgent,
     ProductManagerAgent,
+    ProjectManagerAgent,
     QAEngineerAgent,
-    TeamLeadAgent,
 )
 from aise.config import AgentConfig, ModelConfig, ProjectConfig
 from aise.core.agent import Agent, AgentRole
@@ -205,10 +205,10 @@ class TestConcreteAgentsWithModelConfig:
         agent = QAEngineerAgent(bus, store, model_config=cfg)
         assert agent.model_config.provider == "google"
 
-    def test_team_lead_accepts_config(self):
+    def test_project_manager_accepts_config(self):
         bus, store = self._bus_store()
         cfg = ModelConfig(provider="mistral", model="mistral-large")
-        agent = TeamLeadAgent(bus, store, model_config=cfg)
+        agent = ProjectManagerAgent(bus, store, model_config=cfg)
         assert agent.model_config.provider == "mistral"
 
     def test_backward_compatible_without_config(self):
@@ -247,7 +247,7 @@ class TestCreateTeamWithModelConfig:
                     model=ModelConfig(provider="ollama", model="codellama"),
                 ),
                 "qa_engineer": AgentConfig(name="qa_engineer"),
-                "team_lead": AgentConfig(name="team_lead"),
+                "project_manager": AgentConfig(name="project_manager"),
             },
         )
         orchestrator = create_team(cfg)
@@ -257,4 +257,4 @@ class TestCreateTeamWithModelConfig:
         assert agents["architect"].model_config.provider == "anthropic"
         assert agents["developer"].model_config.provider == "ollama"
         assert agents["qa_engineer"].model_config.provider == "openai"
-        assert agents["team_lead"].model_config.provider == "openai"
+        assert agents["project_manager"].model_config.provider == "openai"

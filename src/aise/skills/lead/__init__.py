@@ -1,13 +1,13 @@
-"""Team Lead skills."""
+"""Project Manager skills."""
 
 from .conflict_resolution import ConflictResolutionSkill
 from .progress_tracking import ProgressTrackingSkill
-from .task_assignment import TaskAssignmentSkill
-from .task_decomposition import TaskDecompositionSkill
+from .team_health import TeamHealthSkill
+from .version_release import VersionReleaseSkill
 
 __all__ = [
     "ConflictResolutionSkill",
     "ProgressTrackingSkill",
-    "TaskAssignmentSkill",
-    "TaskDecompositionSkill",
+    "TeamHealthSkill",
+    "VersionReleaseSkill",
 ]
