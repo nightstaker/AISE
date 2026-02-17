@@ -75,7 +75,7 @@ class ConflictResolutionSkill(Skill):
                 "total_conflicts": len(conflicts),
                 "resolved_count": sum(1 for r in resolutions if r["status"] == "resolved"),
             },
-            producer="team_lead",
+            producer="project_manager",
             metadata={
                 "type": "conflict_resolution",
                 "project_name": context.project_name,
