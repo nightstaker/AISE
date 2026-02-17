@@ -24,14 +24,12 @@ from .github import (
 from .lead import (
     ConflictResolutionSkill,
     ProgressTrackingSkill,
-    TaskAssignmentSkill,
-    TaskDecompositionSkill,
+    TeamHealthSkill,
+    VersionReleaseSkill,
 )
 from .manager import (
-    AgentHealthMonitorSkill,
-    AgentRestartSkill,
-    ArchitectureOptimizationSkill,
-    CodeOptimizationSkill,
+    RequirementDistributionSkill,
+    TeamFormationSkill,
 )
 from .pm import (
     DocumentGenerationSkill,
@@ -78,16 +76,14 @@ __all__ = [
     "TestCaseDesignSkill",
     "TestAutomationSkill",
     "TestReviewSkill",
-    # Lead
-    "TaskDecompositionSkill",
-    "TaskAssignmentSkill",
+    # Project Manager
     "ConflictResolutionSkill",
     "ProgressTrackingSkill",
-    # Manager
-    "AgentHealthMonitorSkill",
-    "AgentRestartSkill",
-    "ArchitectureOptimizationSkill",
-    "CodeOptimizationSkill",
+    "VersionReleaseSkill",
+    "TeamHealthSkill",
+    # RD Director
+    "TeamFormationSkill",
+    "RequirementDistributionSkill",
     # GitHub
     "PRReviewSkill",
     "PRMergeSkill",

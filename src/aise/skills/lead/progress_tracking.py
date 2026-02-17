@@ -107,7 +107,7 @@ class ProgressTrackingSkill(Skill):
                 "review_summary": review_summary,
                 "project_name": context.project_name,
             },
-            producer="team_lead",
+            producer="project_manager",
             metadata={"type": "progress_report", "project_name": context.project_name},
         )
 

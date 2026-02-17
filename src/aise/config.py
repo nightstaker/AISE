@@ -161,8 +161,8 @@ class ProjectConfig:
             "architect": AgentConfig(name="architect"),
             "developer": AgentConfig(name="developer"),
             "qa_engineer": AgentConfig(name="qa_engineer"),
-            "team_lead": AgentConfig(name="team_lead"),
-            "team_manager": AgentConfig(name="team_manager"),
+            "project_manager": AgentConfig(name="project_manager"),
+            "rd_director": AgentConfig(name="rd_director"),
         }
     )
     agent_counts: dict[str, int] = field(default_factory=dict)

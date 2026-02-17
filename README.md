@@ -4,7 +4,7 @@ A multi-agent AI system that simulates a complete software development team. Spe
 
 ## Overview
 
-AISE orchestrates six specialized agents, each with distinct skills, through a structured workflow pipeline. Agents communicate via a publish-subscribe message bus and produce versioned artifacts that flow through review gates before advancing to the next phase. A dedicated Team Manager runs in high-availability demand mode, automatically restarting stuck agents and generating optimisation tasks when idle.
+AISE orchestrates six specialized agents, each with distinct skills, through a structured workflow pipeline. Agents communicate via a publish-subscribe message bus and produce versioned artifacts that flow through review gates before advancing to the next phase. An **RD Director** bootstraps each project by forming the team and distributing the initial requirements. A **Project Manager** then oversees execution, tracks progress, manages releases, monitors team health, and resolves conflicts throughout the lifecycle.
 
 ## Architecture
 
@@ -26,26 +26,33 @@ AISE orchestrates six specialized agents, each with distinct skills, through a s
                          │  │
                     ┌────┘  └────┐
                     ▼            ▼
-               ┌─────────┐ ┌─────────────┐
-               │Team Lead│ │Team Manager │
-               └─────────┘ │ (HA Mode)   │
-                    │       └──────┬──────┘
-              ┌─────┴─────┐       │
-              ▼            ▼      ▼
+            ┌─────────────┐ ┌─────────────┐
+            │ RD Director │ │Project Mgr  │
+            │ (bootstrap) │ │(execution)  │
+            └─────────────┘ └─────────────┘
+                    │               │
+              ┌─────┴─────┐         │
+              ▼            ▼        ▼
         ArtifactStore  WorkflowEngine
 ```
 
 ## Features
 
-### High-Availability Team Manager
+### RD Director — Project Bootstrap
 
-The Team Manager agent runs in **high-availability demand mode**, continuously supervising the agent team:
+The RD Director is the entry point for every project:
 
-- **Health monitoring** — Detects stuck or unresponsive agents by inspecting message-bus history and task statuses.
-- **Automatic restart** — Re-initialises stuck agents and re-queues their pending tasks so the workflow can recover without manual intervention.
-- **Idle optimisation** — When there are no pending requirements, the Team Manager generates architecture and code optimisation tasks to keep the team productive.
+- **Team formation** — Define roles, agent counts, LLM model per role, and development mode (local or GitHub) before work begins.
+- **Requirement distribution** — Formally hand off product requirements and architecture requirements to the team as a single authoritative source.
 
-The HA cycle runs automatically: health check → restart stuck agents → generate optimisation tasks.
+### Project Manager — Execution & Oversight
+
+The Project Manager keeps the project on track throughout its lifecycle without owning task decomposition or assignment:
+
+- **Progress tracking** — Report phase completion and overall delivery percentage at any point.
+- **Version release** — Coordinate a release: validate readiness (required artifacts present), record release notes, and notify the team.
+- **Team health** — Produce a health score from blocked and overdue tasks, flag risk factors, and recommend corrective actions.
+- **Conflict resolution** — Mediate inter-agent disagreements using NFR-aligned heuristics.
 
 ### WhatsApp Group Chat Integration
 
@@ -78,7 +85,7 @@ Available commands inside the session:
 | `artifacts [type]` | List produced artifacts |
 | `phase <name>` | Run a specific workflow phase |
 | `workflow` | Run the full SDLC workflow |
-| `ask <question>` | Ask the Team Lead to decompose a request |
+| `ask <question>` | Ask the Project Manager for a progress report |
 | `help` | Show available commands |
 | `quit` | End the session |
 
@@ -112,12 +119,12 @@ GitHub Actions workflow that runs on every pull request and push to `main`:
 
 | Agent | Role | Skills |
 |-------|------|--------|
+| **RD Director** | Project bootstrap | Team Formation, Requirement Distribution |
+| **Project Manager** | Project execution & oversight | Conflict Resolution, Progress Tracking, Version Release, Team Health |
 | **Product Manager** | Requirements & product vision | Requirement Analysis, User Story Writing, Product Design, Product Review |
 | **Architect** | System design & technical decisions | System Design, API Design, Tech Stack Selection, Architecture Review |
 | **Developer** | Implementation & code quality | Code Generation, Unit Test Writing, Code Review, Bug Fix |
 | **QA Engineer** | Testing strategy & automation | Test Plan Design, Test Case Design, Test Automation, Test Review |
-| **Team Lead** | Coordination & progress tracking | Task Decomposition, Task Assignment, Conflict Resolution, Progress Tracking |
-| **Team Manager** | High-availability supervision | Agent Health Monitor, Agent Restart, Architecture Optimization, Code Optimization |
 
 ## Workflow Pipeline
 
@@ -131,7 +138,7 @@ Requirements ──► Design ──► Implementation ──► Testing
 
 Phases advance only after artifacts pass their review gate (up to 3 iterations).
 
-The Team Manager supervises the entire pipeline. If an agent becomes stuck during any phase, the Team Manager detects the failure and restarts the agent automatically. Between phases (or when no requirements are queued), it generates optimisation tasks for the Architect and Developer.
+The Project Manager operates cross-cutting to the pipeline, available for progress queries, conflict resolution, team health checks, and version releases at any point during delivery.
 
 ## Installation
 
@@ -275,14 +282,13 @@ src/aise/
 │   ├── skill.py         # Skill base class & SkillContext
 │   └── workflow.py      # Workflow engine, Phase & Task models
 ├── agents/              # 6 agent implementations
-├── skills/              # Runtime skill implementations
+├── skills/              # 22 skill implementations
+│   ├── manager/         # RD Director skills (team_formation, req_distribution)
+│   ├── lead/            # Project Manager skills (conflict, progress, release, health)
 │   ├── pm/
 │   ├── architect/
 │   ├── developer/
-│   ├── qa/
-│   ├── lead/
-│   ├── github/          # PR review/merge skills
-│   └── manager/         # Team Manager skills (HA mode)
+│   └── qa/
 └── whatsapp/            # WhatsApp group chat integration
     ├── client.py        # WhatsApp Business Cloud API client
     ├── group.py         # Group chat model & member management
@@ -319,7 +325,8 @@ ruff format --check src/ tests/
 - **Stateless Skills** — Each skill is a pure function of input artifacts and context, producing output artifacts
 - **Declarative Workflows** — Pipeline phases defined as data structures with dependency tracking
 - **LLM Abstraction** — Provider-agnostic model access allowing heterogeneous agent configurations
-- **High-Availability Mode** — Team Manager continuously monitors agent health, restarts stuck agents, and generates optimisation tasks during idle periods
+- **RD Director Bootstrap** — Project setup (team composition, model assignments, development mode, and initial requirements) is handled before the delivery pipeline begins
+- **Project Manager Oversight** — Dedicated execution oversight (progress, releases, team health, conflicts) without owning task decomposition or assignment
 
 ## License
 
