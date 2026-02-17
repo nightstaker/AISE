@@ -158,6 +158,16 @@ pip install -e ".[dev]"
 
 ## Usage
 
+### Global Project Config (Optional)
+
+You can place a global default config at `config/global_project_config.json`.
+Use `config/global_project_config.example.json` as a template.
+
+In `aise multi-project` mode, every new project created by `create <name>` will:
+
+- inherit this global config by default
+- write the effective project config to `<repo>/projects/<project_id>-<project_name>/project_config.json`
+
 ### Run a development workflow
 
 ```bash

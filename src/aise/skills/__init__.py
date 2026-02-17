@@ -2,7 +2,11 @@
 
 from .architect import (
     APIDesignSkill,
+    ArchitectureDocumentGenerationSkill,
+    ArchitectureRequirementSkill,
     ArchitectureReviewSkill,
+    FunctionalDesignSkill,
+    StatusTrackingSkill,
     SystemDesignSkill,
     TechStackSelectionSkill,
 )
@@ -10,6 +14,7 @@ from .developer import (
     BugFixSkill,
     CodeGenerationSkill,
     CodeReviewSkill,
+    TDDSessionSkill,
     UnitTestWritingSkill,
 )
 from .github import (
@@ -27,9 +32,12 @@ from .manager import (
     TeamFormationSkill,
 )
 from .pm import (
+    DocumentGenerationSkill,
     ProductDesignSkill,
     ProductReviewSkill,
     RequirementAnalysisSkill,
+    SystemFeatureAnalysisSkill,
+    SystemRequirementAnalysisSkill,
     UserStoryWritingSkill,
 )
 from .qa import (
@@ -45,16 +53,24 @@ __all__ = [
     "UserStoryWritingSkill",
     "ProductDesignSkill",
     "ProductReviewSkill",
+    "SystemFeatureAnalysisSkill",
+    "SystemRequirementAnalysisSkill",
+    "DocumentGenerationSkill",
     # Architect
     "SystemDesignSkill",
     "APIDesignSkill",
     "ArchitectureReviewSkill",
     "TechStackSelectionSkill",
+    "ArchitectureRequirementSkill",
+    "FunctionalDesignSkill",
+    "StatusTrackingSkill",
+    "ArchitectureDocumentGenerationSkill",
     # Developer
     "CodeGenerationSkill",
     "UnitTestWritingSkill",
     "CodeReviewSkill",
     "BugFixSkill",
+    "TDDSessionSkill",
     # QA
     "TestPlanDesignSkill",
     "TestCaseDesignSkill",

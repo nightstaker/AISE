@@ -1,0 +1,117 @@
+{
+  "project_name": "Global Template",
+  "development_mode": "local",
+  "default_model": {
+    "provider": "openai",
+    "model": "gpt-4o",
+    "api_key": "",
+    "base_url": "",
+    "temperature": 0.7,
+    "max_tokens": 4096,
+    "extra": {}
+  },
+  "agents": {
+    "product_manager": {
+      "name": "product_manager",
+      "enabled": true,
+      "model": {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "api_key": "",
+        "base_url": "",
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "extra": {}
+      }
+    },
+    "architect": {
+      "name": "architect",
+      "enabled": true,
+      "model": {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "api_key": "",
+        "base_url": "",
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "extra": {}
+      }
+    },
+    "developer": {
+      "name": "developer",
+      "enabled": true,
+      "model": {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "api_key": "",
+        "base_url": "",
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "extra": {}
+      }
+    },
+    "qa_engineer": {
+      "name": "qa_engineer",
+      "enabled": true,
+      "model": {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "api_key": "",
+        "base_url": "",
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "extra": {}
+      }
+    },
+    "team_lead": {
+      "name": "team_lead",
+      "enabled": true,
+      "model": {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "api_key": "",
+        "base_url": "",
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "extra": {}
+      }
+    },
+    "team_manager": {
+      "name": "team_manager",
+      "enabled": true,
+      "model": {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "api_key": "",
+        "base_url": "",
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "extra": {}
+      }
+    }
+  },
+  "agent_counts": {},
+  "workflow": {
+    "max_review_iterations": 3,
+    "fail_on_review_rejection": false
+  },
+  "session": {
+    "max_concurrent_sessions": 5,
+    "status_update_interval_minutes": 5,
+    "stale_task_threshold_minutes": 10,
+    "reviewer_poll_interval_seconds": 60
+  },
+  "whatsapp": {
+    "phone_number_id": "",
+    "access_token": "",
+    "verify_token": "",
+    "business_account_id": "",
+    "webhook_port": 8080,
+    "webhook_path": "/webhook"
+  },
+  "github": {
+    "token": "",
+    "repo_owner": "",
+    "repo_name": ""
+  }
+}

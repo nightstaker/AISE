@@ -5,7 +5,6 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Callable
 
-from ..config import ProjectConfig
 from ..core.agent import AgentRole
 from .project_manager import ProjectManager
 
@@ -194,11 +193,9 @@ class MultiProjectSession:
         # Parse agent counts
         agent_counts = self._parse_agent_counts(agent_counts_str) if agent_counts_str else None
 
-        # Create config
-        config = ProjectConfig(
-            project_name=project_name,
-            development_mode="github" if github_mode else "local",
-        )
+        # Create config from global defaults, then apply explicit command overrides
+        config = self.project_manager.create_default_project_config(project_name)
+        config.development_mode = "github" if github_mode else "local"
 
         # Create project
         try:
