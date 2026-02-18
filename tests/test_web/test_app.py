@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -95,6 +96,46 @@ class TestWebApi:
         )
         assert update_cfg.status_code == 200
 
+    def test_requirement_submission_is_async_and_status_pollable(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+
+        app = create_app()
+        service = app.state.web_service
+
+        def _slow_workflow(*args, **kwargs):
+            time.sleep(0.3)
+            return _mock_workflow_result(*args, **kwargs)
+
+        monkeypatch.setattr(service.project_manager, "run_project_workflow", _slow_workflow)
+
+        client = TestClient(app)
+        _login_dev(client)
+
+        create_resp = client.post(
+            "/api/projects",
+            json={"project_name": "AsyncProject", "development_mode": "local"},
+        )
+        assert create_resp.status_code == 200
+        project_id = create_resp.json()["project_id"]
+
+        req_resp = client.post(
+            f"/api/projects/{project_id}/requirements",
+            json={"requirement_text": "Build async status"},
+        )
+        assert req_resp.status_code == 200
+        run_id = req_resp.json()["run_id"]
+
+        run_now = client.get(f"/api/projects/{project_id}/runs/{run_id}")
+        assert run_now.status_code == 200
+        assert run_now.json()["status"] in {"pending", "running"}
+
+        time.sleep(0.45)
+        run_later = client.get(f"/api/projects/{project_id}/runs/{run_id}")
+        assert run_later.status_code == 200
+        assert run_later.json()["status"] == "completed"
+        assert len(run_later.json()["phase_results"]) == 1
+
     def test_local_admin_login(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
         app = create_app()
@@ -162,3 +203,30 @@ class TestWebPersistence:
         assert project_payload is not None
         assert len(project_payload["requirements"]) == 1
         assert len(project_payload["runs"]) == 1
+
+    def test_delete_project_removes_directory_and_state(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+
+        app = create_app()
+        client = TestClient(app)
+        _login_dev(client)
+
+        create_resp = client.post(
+            "/api/projects",
+            json={"project_name": "ToDelete", "development_mode": "local"},
+        )
+        assert create_resp.status_code == 200
+        project_id = create_resp.json()["project_id"]
+
+        project_dirs = list((tmp_path / "projects").glob(f"{project_id}-*"))
+        assert len(project_dirs) == 1
+        assert project_dirs[0].exists()
+
+        delete_resp = client.delete(f"/api/projects/{project_id}")
+        assert delete_resp.status_code == 200
+        assert delete_resp.json()["deleted"] is True
+
+        assert not project_dirs[0].exists()
+        assert client.get(f"/api/projects/{project_id}").status_code == 404
+        assert client.get("/api/projects").json()["projects"] == []

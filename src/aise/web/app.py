@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import RLock
+from threading import RLock, Thread
 from typing import Any
 
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -42,6 +43,9 @@ class WorkflowRun:
     run_id: str
     requirement_text: str
     started_at: datetime
+    status: str = "pending"
+    completed_at: datetime | None = None
+    error: str = ""
     phase_results: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -83,6 +87,22 @@ class WebProjectService:
         agent_models: dict[str, str] | None = None,
         initial_requirement: str = "",
     ) -> str:
+        project_id, _ = self.create_project_with_initial_run(
+            project_name=project_name,
+            development_mode=development_mode,
+            agent_models=agent_models,
+            initial_requirement=initial_requirement,
+        )
+        return project_id
+
+    def create_project_with_initial_run(
+        self,
+        *,
+        project_name: str,
+        development_mode: str,
+        agent_models: dict[str, str] | None = None,
+        initial_requirement: str = "",
+    ) -> tuple[str, str | None]:
         if not project_name.strip():
             raise ValueError("Project name cannot be empty")
         logger.info("Web create_project requested: name=%s mode=%s", project_name, development_mode)
@@ -101,11 +121,12 @@ class WebProjectService:
             self._runs_by_project.setdefault(project_id, [])
             self._requirements_by_project.setdefault(project_id, [])
             self._save_state()
+            run_id: str | None = None
             initial_text = initial_requirement.strip()
             if initial_text:
-                self.run_requirement(project_id, initial_text)
+                run_id = self.run_requirement(project_id, initial_text)
             logger.info("Web create_project completed: project_id=%s", project_id)
-            return project_id
+            return project_id, run_id
 
     def get_project(self, project_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -138,12 +159,13 @@ class WebProjectService:
 
     def get_run(self, project_id: str, run_id: str) -> dict[str, Any] | None:
         with self._lock:
-            for run in self._runs_by_project.get(project_id, []):
-                if run.run_id == run_id:
-                    return self._serialize_run(run)
+            run = self._find_run(project_id, run_id)
+            if run is not None:
+                return self._serialize_run(run)
         return None
 
     def run_requirement(self, project_id: str, requirement_text: str) -> str:
+        """Submit requirement and execute workflow asynchronously."""
         with self._lock:
             project = self.project_manager.get_project(project_id)
             if project is None:
@@ -174,18 +196,57 @@ class WebProjectService:
             project.orchestrator.artifact_store.store(requirement_artifact)
 
             run_id = uuid.uuid4().hex[:10]
-            results = self.project_manager.run_project_workflow(
-                project_id,
-                {"raw_requirements": requirement},
-            )
             run = WorkflowRun(
                 run_id=run_id,
                 requirement_text=requirement,
                 started_at=datetime.now(timezone.utc),
-                phase_results=results,
+                status="pending",
             )
             self._runs_by_project.setdefault(project_id, []).append(run)
-            if project.project_root:
+            self._save_state()
+            logger.info("Web requirement queued: project_id=%s run_id=%s", project_id, run_id)
+
+        Thread(
+            target=self._execute_workflow_run,
+            args=(project_id, run_id, requirement),
+            daemon=True,
+        ).start()
+
+        return run_id
+
+    def _execute_workflow_run(self, project_id: str, run_id: str, requirement: str) -> None:
+        with self._lock:
+            run = self._find_run(project_id, run_id)
+            if run is None:
+                return
+            run.status = "running"
+            run.error = ""
+            self._save_state()
+
+        try:
+            results = self.project_manager.run_project_workflow(
+                project_id,
+                {"raw_requirements": requirement},
+            )
+            completed_status = "completed"
+            error_message = ""
+        except Exception as exc:
+            logger.exception("Web requirement failed: project_id=%s run_id=%s", project_id, run_id)
+            results = []
+            completed_status = "failed"
+            error_message = str(exc)
+
+        with self._lock:
+            run = self._find_run(project_id, run_id)
+            if run is None:
+                return
+            run.phase_results = results
+            run.status = completed_status
+            run.error = error_message
+            run.completed_at = datetime.now(timezone.utc)
+
+            project = self.project_manager.get_project(project_id)
+            if completed_status == "completed" and project is not None and project.project_root:
                 runs_dir = Path(project.project_root) / "runs"
                 runs_dir.mkdir(parents=True, exist_ok=True)
                 run_path = runs_dir / f"{run_id}.json"
@@ -194,8 +255,41 @@ class WebProjectService:
                     encoding="utf-8",
                 )
             self._save_state()
-            logger.info("Web requirement completed: project_id=%s run_id=%s", project_id, run_id)
-            return run_id
+            logger.info(
+                "Web requirement finished: project_id=%s run_id=%s status=%s",
+                project_id,
+                run_id,
+                completed_status,
+            )
+
+    def _find_run(self, project_id: str, run_id: str) -> WorkflowRun | None:
+        for run in self._runs_by_project.get(project_id, []):
+            if run.run_id == run_id:
+                return run
+        return None
+
+    def delete_project(self, project_id: str) -> None:
+        """Delete a project and its persisted directory."""
+        with self._lock:
+            project = self.project_manager.get_project(project_id)
+            if project is None:
+                raise ValueError(f"Project {project_id} not found")
+
+            project_root = Path(project.project_root).resolve() if project.project_root else None
+            projects_root = self.project_manager._projects_root.resolve()
+            if project_root is not None and project_root.exists():
+                if not project_root.is_relative_to(projects_root):
+                    raise ValueError("Refuse to delete project directory outside projects root")
+                shutil.rmtree(project_root)
+
+            deleted = self.project_manager.delete_project(project_id)
+            if not deleted:
+                raise ValueError(f"Project {project_id} not found")
+
+            self._runs_by_project.pop(project_id, None)
+            self._requirements_by_project.pop(project_id, None)
+            self._save_state()
+            logger.info("Web project deleted: project_id=%s", project_id)
 
     def load_global_config_json(self) -> str:
         with self._lock:
@@ -481,15 +575,28 @@ class WebProjectService:
                     if not isinstance(item, dict):
                         continue
                     started_at = item.get("started_at")
+                    completed_at = item.get("completed_at")
                     try:
                         started = datetime.fromisoformat(str(started_at))
                     except Exception:
                         started = datetime.now(timezone.utc)
+                    completed: datetime | None = None
+                    if isinstance(completed_at, str) and completed_at:
+                        try:
+                            completed = datetime.fromisoformat(completed_at)
+                        except Exception:
+                            completed = None
+                    status = str(item.get("status", ""))
+                    if not status:
+                        status = "completed" if item.get("phase_results") else "pending"
                     self._runs_by_project[project_id].append(
                         WorkflowRun(
                             run_id=str(item.get("run_id", "")),
                             requirement_text=str(item.get("requirement_text", "")),
                             started_at=started,
+                            status=status,
+                            completed_at=completed,
+                            error=str(item.get("error", "")),
                             phase_results=list(item.get("phase_results", [])),
                         )
                     )
@@ -566,6 +673,9 @@ class WebProjectService:
             "run_id": run.run_id,
             "requirement_text": run.requirement_text,
             "started_at": run.started_at.isoformat(),
+            "status": run.status,
+            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+            "error": run.error,
             "phase_results": run.phase_results,
         }
 
@@ -785,14 +895,19 @@ def create_app() -> FastAPI:
                 agent_name = key.replace("agent_model_", "", 1)
                 agent_models[agent_name] = str(value)
         try:
-            project_id = service.create_project(
-                project_name.strip(),
-                development_mode,
-                agent_models,
+            project_id, run_id = service.create_project_with_initial_run(
+                project_name=project_name.strip(),
+                development_mode=development_mode,
+                agent_models=agent_models,
                 initial_requirement=initial_requirement,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if run_id:
+            return RedirectResponse(
+                url=f"/projects/{project_id}/runs/{run_id}",
+                status_code=HTTP_303_SEE_OTHER,
+            )
         return RedirectResponse(url=f"/projects/{project_id}", status_code=HTTP_303_SEE_OTHER)
 
     @app.get("/projects/{project_id}", response_class=HTMLResponse)
@@ -987,15 +1102,15 @@ def create_app() -> FastAPI:
         if not isinstance(agent_models, dict):
             agent_models = {}
         try:
-            project_id = service.create_project(
-                project_name,
-                development_mode,
-                {str(k): str(v) for k, v in agent_models.items()},
+            project_id, run_id = service.create_project_with_initial_run(
+                project_name=project_name,
+                development_mode=development_mode,
+                agent_models={str(k): str(v) for k, v in agent_models.items()},
                 initial_requirement=initial_requirement,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"project_id": project_id}
+        return {"project_id": project_id, "run_id": run_id}
 
     @app.get("/api/projects/{project_id}")
     async def api_get_project(request: Request, project_id: str) -> dict[str, Any]:
@@ -1004,6 +1119,15 @@ def create_app() -> FastAPI:
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
         return project
+
+    @app.delete("/api/projects/{project_id}")
+    async def api_delete_project(request: Request, project_id: str) -> dict[str, Any]:
+        require_login(request)
+        try:
+            service.delete_project(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"deleted": True, "project_id": project_id}
 
     @app.get("/api/projects/{project_id}/requirements")
     async def api_get_requirements(request: Request, project_id: str) -> dict[str, Any]:
