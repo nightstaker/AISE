@@ -86,6 +86,7 @@ class ProjectManager:
         from ..main import create_team
 
         orchestrator = create_team(config, agent_counts)
+        orchestrator.project_root = str(project_root)
 
         # Create project container
         project = Project(
@@ -127,6 +128,8 @@ class ProjectManager:
         safe_name = "-".join(filter(None, safe_name.split("-"))) or "project"
         project_root = self._projects_root / f"{project_id}-{safe_name}"
         project_root.mkdir(parents=True, exist_ok=True)
+        for subdir in ("docs", "src", "tests", "scripts", "config", "artifacts"):
+            (project_root / subdir).mkdir(parents=True, exist_ok=True)
         return project_root
 
     def get_project(self, project_id: str) -> Project | None:

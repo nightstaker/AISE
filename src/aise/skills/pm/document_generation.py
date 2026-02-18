@@ -18,7 +18,7 @@ class DocumentGenerationSkill(Skill):
 
     @property
     def description(self) -> str:
-        return "Generate system-design.md and system-requirements.md from artifacts"
+        return "Generate system-design.md and System-Requirements.md from artifacts"
 
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         store = context.artifact_store
@@ -42,16 +42,16 @@ class DocumentGenerationSkill(Skill):
         else:
             results["errors"].append("No SYSTEM_DESIGN artifact found")
 
-        # Generate system-requirements.md
+        # Generate System-Requirements.md
         system_requirements = store.get_latest(ArtifactType.SYSTEM_REQUIREMENTS)
         if system_requirements:
             try:
                 req_doc = self._generate_system_requirements_md(system_requirements.content)
-                req_path = Path(output_dir) / "system-requirements.md"
+                req_path = Path(output_dir) / "System-Requirements.md"
                 req_path.write_text(req_doc, encoding="utf-8")
                 results["generated_files"].append(str(req_path))
             except Exception as e:
-                results["errors"].append(f"Failed to generate system-requirements.md: {e}")
+                results["errors"].append(f"Failed to generate System-Requirements.md: {e}")
         else:
             results["errors"].append("No SYSTEM_REQUIREMENTS artifact found")
 
@@ -133,7 +133,7 @@ performance, security, scalability, reliability, and maintainability characteris
         return md
 
     def _generate_system_requirements_md(self, content: dict[str, Any]) -> str:
-        """Generate system-requirements.md content."""
+        """Generate System-Requirements.md content."""
         project_name = content.get("project_name", "Untitled Project")
         overview = content.get("overview", "")
         requirements = content.get("requirements", [])

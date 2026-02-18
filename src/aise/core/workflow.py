@@ -253,6 +253,9 @@ class WorkflowEngine:
         # Phase 1: Requirements
         p1 = Phase(name="requirements")
         p1.add_task("product_manager", "requirement_analysis")
+        p1.add_task("product_manager", "system_feature_analysis")
+        p1.add_task("product_manager", "system_requirement_analysis")
+        p1.add_task("product_manager", "document_generation", {"output_dir": "."})
         p1.add_task("product_manager", "user_story_writing")
         p1.add_task("product_manager", "product_design")
         p1.review_gate = ReviewGate(
