@@ -49,6 +49,14 @@ class UserStoryWritingSkill(Skill):
 
     def _get_requirements(self, input_data: dict[str, Any], context: SkillContext) -> list[dict]:
         """Extract functional requirements from input or artifact store."""
+        provided = input_data.get("requirements")
+        if isinstance(provided, list):
+            return [r for r in provided if isinstance(r, dict)]
+        if isinstance(provided, dict):
+            values = provided.get("functional_requirements", [])
+            if isinstance(values, list):
+                return [r for r in values if isinstance(r, dict)]
+
         reqs_artifact = context.artifact_store.get_latest(ArtifactType.REQUIREMENTS)
         if reqs_artifact:
             return reqs_artifact.content.get("functional_requirements", [])

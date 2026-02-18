@@ -21,9 +21,31 @@ class ProductDesignSkill(Skill):
 
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         store = context.artifact_store
-        functional_reqs = store.get_content(ArtifactType.REQUIREMENTS, "functional_requirements", [])
-        non_functional_reqs = store.get_content(ArtifactType.REQUIREMENTS, "non_functional_requirements", [])
-        user_stories = store.get_content(ArtifactType.USER_STORIES, "user_stories", [])
+        requirements_payload = input_data.get("requirements")
+        if isinstance(requirements_payload, dict):
+            functional_reqs = requirements_payload.get("functional_requirements", [])
+            non_functional_reqs = requirements_payload.get("non_functional_requirements", [])
+        else:
+            functional_reqs = store.get_content(ArtifactType.REQUIREMENTS, "functional_requirements", [])
+            non_functional_reqs = store.get_content(ArtifactType.REQUIREMENTS, "non_functional_requirements", [])
+
+        user_stories_payload = input_data.get("user_stories")
+        if isinstance(user_stories_payload, dict):
+            user_stories = user_stories_payload.get("user_stories", [])
+        elif isinstance(user_stories_payload, list):
+            user_stories = user_stories_payload
+        else:
+            user_stories = store.get_content(ArtifactType.USER_STORIES, "user_stories", [])
+
+        previous_review = input_data.get("review_feedback")
+        missing_requirement_ids = set()
+        if isinstance(previous_review, dict):
+            for issue in previous_review.get("issues", []):
+                if not isinstance(issue, dict):
+                    continue
+                req_id = issue.get("requirement_id")
+                if req_id:
+                    missing_requirement_ids.add(req_id)
 
         # Build feature list from requirements
         features = []
@@ -36,6 +58,27 @@ class ProductDesignSkill(Skill):
                     "user_stories": [s["id"] for s in user_stories if s.get("source_requirement") == req["id"]],
                 }
             )
+
+        # If previous review flagged uncovered requirements, make sure they are represented explicitly.
+        if missing_requirement_ids:
+            existing_desc = {f["description"] for f in features}
+            by_id = {r.get("id"): r for r in functional_reqs if isinstance(r, dict)}
+            for req_id in sorted(missing_requirement_ids):
+                req = by_id.get(req_id)
+                if not req:
+                    continue
+                description = req.get("description", "")
+                if description in existing_desc:
+                    continue
+                features.append(
+                    {
+                        "name": description[:60],
+                        "description": description,
+                        "priority": req.get("priority", "high"),
+                        "user_stories": [s["id"] for s in user_stories if s.get("source_requirement") == req_id],
+                    }
+                )
+                existing_desc.add(description)
 
         # Build user flows
         user_flows = []
@@ -55,6 +98,7 @@ class ProductDesignSkill(Skill):
 
         prd = {
             "project_name": context.project_name or input_data.get("project_name", "Untitled"),
+            "iteration": int(input_data.get("iteration", 1)),
             "overview": f"Product with {len(features)} features derived from {len(functional_reqs)} requirements.",
             "features": features,
             "user_flows": user_flows,

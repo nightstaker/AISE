@@ -250,22 +250,23 @@ class WorkflowEngine:
         """Create the standard software development workflow."""
         workflow = Workflow(name="default_sdlc")
 
-        # Phase 1: Requirements
+        # Phase 1: Requirements (Product Manager owned)
         p1 = Phase(name="requirements")
         p1.add_task("product_manager", "requirement_analysis")
         p1.add_task("product_manager", "system_feature_analysis")
         p1.add_task("product_manager", "system_requirement_analysis")
-        p1.add_task("product_manager", "document_generation", {"output_dir": "."})
         p1.add_task("product_manager", "user_story_writing")
         p1.add_task("product_manager", "product_design")
+        p1.add_task("product_manager", "document_generation", {"output_dir": "."})
         p1.review_gate = ReviewGate(
             reviewer_agent="product_manager",
             review_skill="product_review",
             target_artifact_type="prd",
+            max_iterations=5,
         )
         workflow.add_phase(p1)
 
-        # Phase 2: Architecture & Design
+        # Phase 2: Architecture & Design (Architect owned)
         # Requires at least 3 review rounds between design work and review.
         p2 = Phase(name="design")
         p2.add_task("architect", "system_design")

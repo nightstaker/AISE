@@ -23,12 +23,18 @@ class SystemRequirementAnalysisSkill(Skill):
         store = context.artifact_store
         project_name = context.project_name or input_data.get("project_name", "Untitled")
 
-        # Get system design (SF list)
-        system_design = store.get_latest(ArtifactType.SYSTEM_DESIGN)
-        if not system_design:
-            raise ValueError("No SYSTEM_DESIGN artifact found. Please run system_feature_analysis first.")
+        # Get system design (SF list) from input first, then artifact store.
+        system_design_payload = input_data.get("system_design")
+        if isinstance(system_design_payload, dict):
+            all_features = system_design_payload.get("all_features", [])
+        else:
+            system_design = store.get_latest(ArtifactType.SYSTEM_DESIGN)
+            if not system_design:
+                raise ValueError("No SYSTEM_DESIGN artifact found. Please run system_feature_analysis first.")
+            all_features = system_design.content.get("all_features", [])
 
-        all_features = system_design.content.get("all_features", [])
+        if not all_features:
+            raise ValueError("No SYSTEM_DESIGN artifact found. Please run system_feature_analysis first.")
 
         # Generate system requirements from features
         system_requirements = []

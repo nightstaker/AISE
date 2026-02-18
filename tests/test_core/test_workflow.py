@@ -92,6 +92,9 @@ class TestWorkflowEngine:
         requirement_skills = [task.skill for task in wf.phases[0].tasks]
         assert "system_requirement_analysis" in requirement_skills
         assert "document_generation" in requirement_skills
+        assert "system_design" not in requirement_skills
+        assert "api_design" not in requirement_skills
+        assert "architecture_review" not in requirement_skills
 
     def test_create_default_workflow_design_min_review_rounds(self):
         wf = WorkflowEngine.create_default_workflow()
@@ -99,6 +102,21 @@ class TestWorkflowEngine:
         assert design_phase.name == "design"
         assert design_phase.review_gate is not None
         assert design_phase.review_gate.min_review_rounds == 3
+
+    def test_create_default_workflow_requirements_role_boundary(self):
+        wf = WorkflowEngine.create_default_workflow()
+        requirements_phase = wf.phases[0]
+        assert all(task.agent == "product_manager" for task in requirements_phase.tasks)
+        assert requirements_phase.review_gate is not None
+        assert requirements_phase.review_gate.reviewer_agent == "product_manager"
+        assert requirements_phase.review_gate.max_iterations == 5
+
+    def test_create_default_workflow_design_role_boundary(self):
+        wf = WorkflowEngine.create_default_workflow()
+        design_phase = wf.phases[1]
+        assert all(task.agent == "architect" for task in design_phase.tasks)
+        assert design_phase.review_gate is not None
+        assert design_phase.review_gate.reviewer_agent == "architect"
 
     def test_create_default_workflow_implementation_min_review_rounds(self):
         wf = WorkflowEngine.create_default_workflow()
