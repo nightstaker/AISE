@@ -1,39 +1,71 @@
-# Skill Spec: product_review
+# Skill: product_review
 
-## 1. Metadata
-- `skill_id`: `product_review`
-- `module`: `aise.skills.product_review.scripts.product_review`
-- `class`: `ProductReviewSkill`
-- `implementation`: `src/aise/skills/product_review/scripts/product_review.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Review product deliverables against requirements for completeness and correctness
+| Field | Value |
+|-------|-------|
+| **Name** | `product_review` |
+| **Class** | `ProductReviewSkill` |
+| **Module** | `aise.skills.product_review.scripts.product_review` |
+| **Agent** | Product Manager (`product_manager`) |
+| **Description** | Review product deliverables against requirements for completeness and correctness |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Acts as a review gate for the requirements phase. Compares the PRD features against the original functional requirements to identify gaps (requirements not covered) and scope drift (features without backing requirements). Updates the PRD artifact status to APPROVED or REJECTED.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.REVIEW_FEEDBACK`
-- Producer: `product_manager`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| *(none)* | — | — | All input is read from the artifact store |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+The skill reads from the artifact store:
+- `ArtifactType.REQUIREMENTS` — functional requirements to check coverage
+- `ArtifactType.PRD` — features to validate against requirements
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Output
+
+**Artifact Type:** `ArtifactType.REVIEW_FEEDBACK`
+
+```json
+{
+  "approved": true,
+  "coverage_percentage": 100.0,
+  "total_requirements": 5,
+  "covered_requirements": 5,
+  "issues": [
+    {
+      "type": "gap",
+      "severity": "high",
+      "requirement_id": "FR-003",
+      "description": "Requirement '...' not covered in PRD features"
+    },
+    {
+      "type": "scope_drift",
+      "severity": "medium",
+      "description": "Feature '...' has no backing requirement"
+    }
+  ],
+  "summary": "Approved: 5/5 requirements covered, 0 issues found."
+}
+```
+
+## Side Effects
+
+- Sets `PRD` artifact status to `ArtifactStatus.APPROVED` or `ArtifactStatus.REJECTED`
+
+## Approval Logic
+
+- **Approved**: No issues found, or all issues have severity `low`
+- **Rejected**: Any issue with severity `high`, `medium`, or `critical`
+
+## Integration
+
+### Consumed By
+- `progress_tracking` — checks review feedback for progress reporting
+- Workflow review gates — orchestrator uses approval status to decide phase progression
+
+### Depends On
+- `requirement_analysis` — reads `ArtifactType.REQUIREMENTS`
+- `product_design` — reads `ArtifactType.PRD`

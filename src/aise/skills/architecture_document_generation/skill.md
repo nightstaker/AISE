@@ -1,39 +1,73 @@
-# Skill Spec: architecture_document_generation
+# Skill: architecture_document_generation
 
-## 1. Metadata
-- `skill_id`: `architecture_document_generation`
-- `module`: `aise.skills.architecture_document_generation.scripts.architecture_document_generation`
-- `class`: `ArchitectureDocumentGenerationSkill`
-- `implementation`: `src/aise/skills/architecture_document_generation/scripts/architecture_document_generation.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Generate complete architecture and status documentation in Markdown format
+| Field | Value |
+|-------|-------|
+| **Name** | `architecture_document_generation` |
+| **Class** | `ArchitectureDocumentGenerationSkill` |
+| **Module** | `aise.skills.architecture_document_generation.scripts.architecture_document_generation` |
+| **Agent** | Architect (`architect`) |
+| **Description** | Generate complete architecture and status documentation in Markdown format |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Generates two project-facing markdown artifacts from upstream architecture pipeline outputs:
+- `system-architecture.md` (AR/FN structure, layered architecture, API interfaces, traceability)
+- `status.md` (SF-SR-AR-FN progress view and completion summary)
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.PROGRESS_REPORT`
-- Producer: `architect`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+This skill is intended for end-of-architecture reporting after AR/FN/status artifacts are available.
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+## Input
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `project_name` | `str` | No | Project display name fallback when `context.project_name` is empty |
+| `output_dir` | `str` | No | Output directory for generated markdown files (default: `.`) |
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Dependencies
+
+The skill reads from artifact store and requires all of the following:
+- `ArtifactType.ARCHITECTURE_REQUIREMENT`
+- `ArtifactType.FUNCTIONAL_DESIGN`
+- `ArtifactType.STATUS_TRACKING`
+
+If any artifact is missing, execution fails with `ValueError`.
+
+## Output
+
+**Artifact Type:** `ArtifactType.PROGRESS_REPORT`
+
+```json
+{
+  "generated_files": ["<output_dir>/system-architecture.md", "<output_dir>/status.md"],
+  "project_name": "<project_name>",
+  "output_dir": "<output_dir>"
+}
+```
+
+## Document Contents
+
+### system-architecture.md
+- AR breakdown by target layer (`api/business/data/integration`)
+- FN service/component tables with source AR links
+- Layered filesystem-like structure grouped by subsystem
+- API interface list for API-layer services
+- SR -> AR -> FN traceability matrix
+
+### status.md
+- Overall completion summary
+- SF-SR-AR-FN hierarchy with per-node status (`未开始/进行中/已完成`)
+- Function-level implementation checks (code/tests/review flags)
+- Flat detailed status table for all elements
+
+## Integration
+
+### Depends On
+- `architecture_requirement_analysis`
+- `functional_design`
+- `status_tracking`
+
+### Consumed By
+- Project reporting / architecture handoff workflows
+- Human review and progress checkpoint communications

@@ -1,39 +1,71 @@
-# Skill Spec: system_design
+# Skill: system_design
 
-## 1. Metadata
-- `skill_id`: `system_design`
-- `module`: `aise.skills.system_design.scripts.system_design`
-- `class`: `SystemDesignSkill`
-- `implementation`: `src/aise/skills/system_design/scripts/system_design.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Design high-level system architecture from requirements and PRD
+| Field | Value |
+|-------|-------|
+| **Name** | `system_design` |
+| **Class** | `SystemDesignSkill` |
+| **Module** | `aise.skills.system_design.scripts.system_design` |
+| **Agent** | Architect (`architect`) |
+| **Description** | Design high-level system architecture from requirements and PRD |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Produces a high-level system architecture by deriving service components from PRD features, adding standard infrastructure components (API Gateway, Database, Cache), defining data flows between components, and determining the architecture style (monolith vs microservices).
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.ARCHITECTURE_DESIGN`
-- Producer: `architect`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| *(none)* | — | — | All input is read from the artifact store |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+The skill reads from the artifact store:
+- `ArtifactType.PRD` — features to derive service components
+- `ArtifactType.REQUIREMENTS` — non-functional requirements for architecture considerations
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Output
+
+**Artifact Type:** `ArtifactType.ARCHITECTURE_DESIGN`
+
+```json
+{
+  "project_name": "My Project",
+  "architecture_style": "microservices",
+  "components": [
+    { "id": "COMP-001", "name": "FeatureService", "responsibility": "...", "type": "service" },
+    { "id": "COMP-API", "name": "APIGateway", "responsibility": "Request routing and authentication", "type": "infrastructure" },
+    { "id": "COMP-DB", "name": "Database", "responsibility": "Persistent data storage", "type": "infrastructure" },
+    { "id": "COMP-CACHE", "name": "Cache", "responsibility": "Performance caching layer", "type": "infrastructure" }
+  ],
+  "data_flows": [
+    { "from": "APIGateway", "to": "FeatureService", "description": "Routes requests to FeatureService" },
+    { "from": "FeatureService", "to": "Database", "description": "FeatureService persists data" }
+  ],
+  "deployment": {
+    "strategy": "containerized",
+    "environments": ["development", "staging", "production"]
+  },
+  "non_functional_considerations": [
+    { "requirement": "...", "approach": "Address via architecture for: ..." }
+  ]
+}
+```
+
+## Architecture Style Selection
+
+- **Microservices**: Selected when more than 3 service components are derived from features
+- **Monolith**: Selected when 3 or fewer service components exist
+
+## Integration
+
+### Consumed By
+- `api_design` — reads components to generate API endpoints per service
+- `tech_stack_selection` — reads architecture style for infrastructure decisions
+- `architecture_review` — validates architecture completeness
+- `code_generation` — reads components to generate service modules
+- `test_plan_design` — reads components for subsystem test planning
+
+### Depends On
+- `product_design` — reads `ArtifactType.PRD`
+- `requirement_analysis` — reads `ArtifactType.REQUIREMENTS`

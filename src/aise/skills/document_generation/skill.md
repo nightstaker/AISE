@@ -1,39 +1,66 @@
-# Skill Spec: document_generation
+# Skill: document_generation
 
-## 1. Metadata
-- `skill_id`: `document_generation`
-- `module`: `aise.skills.document_generation.scripts.document_generation`
-- `class`: `DocumentGenerationSkill`
-- `implementation`: `src/aise/skills/document_generation/scripts/document_generation.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Generate system-design.md and System-Requirements.md from artifacts
+| Field | Value |
+|-------|-------|
+| **Name** | `document_generation` |
+| **Class** | `DocumentGenerationSkill` |
+| **Module** | `aise.skills.document_generation.scripts.document_generation` |
+| **Agent** | Product Manager (`product_manager`) |
+| **Description** | Generate system-design.md and System-Requirements.md from artifacts |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Renders project markdown documentation from existing analysis artifacts:
+- `system-design.md` from `SYSTEM_DESIGN`
+- `System-Requirements.md` from `SYSTEM_REQUIREMENTS`
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.PROGRESS_REPORT`
-- Producer: `product_manager`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+The skill is best-effort: it records per-document generation errors in output instead of failing entire execution.
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+## Input
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `output_dir` | `str` | No | Directory to write generated files (default: `.`) |
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Dependencies
+
+Reads from artifact store:
+- `ArtifactType.SYSTEM_DESIGN` (optional but required to produce `system-design.md`)
+- `ArtifactType.SYSTEM_REQUIREMENTS` (optional but required to produce `System-Requirements.md`)
+
+## Output
+
+**Artifact Type:** `ArtifactType.PROGRESS_REPORT`
+
+```json
+{
+  "generated_files": ["./system-design.md", "./System-Requirements.md"],
+  "errors": ["No SYSTEM_DESIGN artifact found", "..."]
+}
+```
+
+## Rendering Scope
+
+### system-design.md
+- Overview
+- External features grouped by category
+- Internal DFX features grouped by category
+- Feature summary table
+
+### System-Requirements.md
+- Coverage summary and uncovered SFs
+- Functional / non-functional SR tables
+- Detailed requirement section grouped by category
+- SF -> SR traceability matrix
+
+## Integration
+
+### Depends On
+- `system_feature_analysis` (via `SYSTEM_DESIGN`)
+- `system_requirement_analysis` (via `SYSTEM_REQUIREMENTS`)
+
+### Consumed By
+- Human-readable project handoff
+- Artifact export/report workflows

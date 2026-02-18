@@ -1,39 +1,76 @@
-# Skill Spec: tdd_session
+# Skill: tdd_session
 
-## 1. Metadata
-- `skill_id`: `tdd_session`
-- `module`: `aise.skills.tdd_session.scripts.tdd_session`
-- `class`: `TDDSessionSkill`
-- `implementation`: `src/aise/skills/tdd_session/scripts/tdd_session.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Execute a TDD development cycle: tests first, then code, then verify
+| Field | Value |
+|-------|-------|
+| **Name** | `tdd_session` |
+| **Class** | `TDDSessionSkill` |
+| **Module** | `aise.skills.tdd_session.scripts.tdd_session` |
+| **Agent** | Developer (`developer`) |
+| **Description** | Execute a TDD development cycle: tests first, then code, then verify |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: `description`, `element_id`
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Executes a single-element TDD loop that produces test stubs, implementation stubs, then runs automated verification (`pytest` + `ruff check`) and returns consolidated execution results.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.SOURCE_CODE`
-- Producer: `developer`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `element_id` | `str` | Yes | Target element ID (e.g., AR/FN identifier) |
+| `description` | `str` | Yes | Element description used to generate test/code stubs |
+| `element_type` | `str` | No | Logical type label (default: `architecture_requirement`) |
+| `working_dir` | `str` | No | Directory where tests/lint are executed (default: `.`) |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+### Validation
+- `element_id` is required
+- `description` is required
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Output
+
+**Artifact Type:** `ArtifactType.SOURCE_CODE`
+
+```json
+{
+  "element_id": "AR-0001",
+  "element_type": "architecture_requirement",
+  "description": "...",
+  "tests": {
+    "test_file": "tests/test_ar_0001.py",
+    "test_code": "...",
+    "test_count": 2
+  },
+  "code": {
+    "source_file": "src/ar_0001.py",
+    "source_code": "..."
+  },
+  "test_run": {"passed": true, "output": "...", "errors": ""},
+  "lint_run": {"passed": true, "output": "...", "errors": ""},
+  "all_passed": true
+}
+```
+
+Metadata includes:
+- `element_id`
+- `tdd_session: true`
+- `project_name`
+
+## Execution Steps
+
+1. Generate deterministic test stub (`_generate_tests`)
+2. Generate deterministic code stub (`_generate_code`)
+3. Run tests: `python3 -m pytest --tb=short -q`
+4. Run lint: `python3 -m ruff check .`
+5. Aggregate pass/fail flags
+
+Timeout/error handling is built into test/lint subprocess wrappers.
+
+## Integration
+
+### Consumed By
+- developer session orchestration for iterative implementation
+- code/review pipelines that require runnable verification snapshots
+
+### Depends On
+- Local runtime with `python3`, `pytest`, and `ruff` available in execution context

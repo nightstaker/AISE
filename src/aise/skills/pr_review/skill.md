@@ -1,39 +1,73 @@
-# Skill Spec: pr_review
+# Skill: pr_review
 
-## 1. Metadata
-- `skill_id`: `pr_review`
-- `module`: `aise.skills.pr_review.scripts.pr_review`
-- `class`: `PRReviewSkill`
-- `implementation`: `src/aise/skills/pr_review/scripts/pr_review.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Review a GitHub pull request and post feedback comments
+| Field | Value |
+|-------|-------|
+| **Name** | `pr_review` |
+| **Class** | `PRReviewSkill` |
+| **Module** | `aise.skills.pr_review.scripts.pr_review` |
+| **Agent** | Architect / Developer / QA / Product Manager / Project Manager / Reviewer (permission-gated) |
+| **Description** | Review a GitHub pull request and post feedback comments |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: `feedback`, `pr_number`
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Submits review feedback for a PR with role-based permission checks. In GitHub mode it posts review comments/events to GitHub; in offline mode it persists a local review artifact.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.REVIEW_FEEDBACK`
-- Producer: `context.parameters["agent_name"] or unknown`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `pr_number` | `int` | Yes | Pull request number |
+| `feedback` | `str` | Yes | Review comment body |
+| `event` | `str` | No | GitHub review event (`COMMENT` by default) |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+## Runtime Parameters
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+Read from `context.parameters`:
+- `github_config` for API mode
+- `agent_name` for artifact producer identity
+
+## Output
+
+**Artifact Type:** `ArtifactType.REVIEW_FEEDBACK`
+
+GitHub mode example:
+
+```json
+{
+  "pr_number": 42,
+  "feedback": "Looks good",
+  "event": "COMMENT",
+  "submitted": true,
+  "review_id": 123,
+  "html_url": "https://github.com/..."
+}
+```
+
+Offline mode example:
+
+```json
+{
+  "pr_number": 42,
+  "feedback": "Looks good",
+  "event": "COMMENT",
+  "submitted": false,
+  "note": "GitHub is not configured; review recorded locally."
+}
+```
+
+## Permission Model
+
+- Enforced via `check_permission(agent_role, GitHubPermission.REVIEW_PR)`
+- Disallowed roles raise `PermissionDeniedError`
+
+## Integration
+
+### Depends On
+- GitHub client (`GitHubClient`) when configured
+- GitHub permission subsystem
+
+### Consumed By
+- Reviewer session and PR governance flows
+- Quality gate loops in GitHub-based delivery

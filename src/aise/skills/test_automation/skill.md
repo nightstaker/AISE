@@ -1,39 +1,83 @@
-# Skill Spec: test_automation
+# Skill: test_automation
 
-## 1. Metadata
-- `skill_id`: `test_automation`
-- `module`: `aise.skills.test_automation.scripts.test_automation`
-- `class`: `TestAutomationSkill`
-- `implementation`: `src/aise/skills/test_automation/scripts/test_automation.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Generate automated test scripts from test case designs
+| Field | Value |
+|-------|-------|
+| **Name** | `test_automation` |
+| **Class** | `TestAutomationSkill` |
+| **Module** | `aise.skills.test_automation.scripts.test_automation` |
+| **Agent** | QA Engineer (`qa_engineer`) |
+| **Description** | Generate automated test scripts from test case designs |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Implements automated test scripts from test case designs. Generates pytest-based test files organized by test type (integration, e2e, regression), a shared `conftest.py` with common fixtures, and a `pytest.ini` configuration.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.AUTOMATED_TESTS`
-- Producer: `qa_engineer`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| *(none)* | — | — | All input is read from the artifact store |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+The skill reads from the artifact store:
+- `ArtifactType.TEST_CASES` — test case designs to implement
+- `ArtifactType.TECH_STACK` — testing tools for framework selection
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Output
+
+**Artifact Type:** `ArtifactType.AUTOMATED_TESTS`
+
+```json
+{
+  "test_files": {
+    "integration": {
+      "path": "tests/integration/",
+      "scripts": [
+        { "file": "tests/integration/test_integration_tc_api_001.py", "test_case_id": "TC-API-001", "content": "..." }
+      ]
+    },
+    "e2e": {
+      "path": "tests/e2e/",
+      "scripts": [...]
+    },
+    "regression": {
+      "path": "tests/regression/",
+      "scripts": [...]
+    }
+  },
+  "conftest": "...",
+  "pytest_ini": "[pytest]\ntestpaths = tests\n...",
+  "framework": "pytest + httpx",
+  "total_scripts": 15
+}
+```
+
+## Generated Artifacts
+
+### Test Scripts
+Each test script includes:
+- Docstring with test case name and expected result
+- `@pytest.mark.{type}` marker (integration, e2e, regression)
+- Step comments from the test case design
+- Placeholder assertion (`assert True`)
+
+### conftest.py
+Common fixtures:
+- `base_url` — API base URL (`http://localhost:8000/api/v1`)
+- `auth_headers` — JWT authentication headers
+- `test_client` — HTTP client placeholder
+
+### pytest.ini
+Configuration with:
+- Test paths set to `tests/`
+- Custom markers for `integration`, `e2e`, `regression`
+
+## Integration
+
+### Consumed By
+- `test_review` — checks automation rate and script count
+
+### Depends On
+- `test_case_design` — reads `ArtifactType.TEST_CASES`
+- `tech_stack_selection` — reads `ArtifactType.TECH_STACK`

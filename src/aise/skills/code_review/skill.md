@@ -1,39 +1,79 @@
-# Skill Spec: code_review
+# Skill: code_review
 
-## 1. Metadata
-- `skill_id`: `code_review`
-- `module`: `aise.skills.code_review.scripts.code_review`
-- `class`: `CodeReviewSkill`
-- `implementation`: `src/aise/skills/code_review/scripts/code_review.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Review source code for correctness, style, security, and performance issues
+| Field | Value |
+|-------|-------|
+| **Name** | `code_review` |
+| **Class** | `CodeReviewSkill` |
+| **Module** | `aise.skills.code_review.scripts.code_review` |
+| **Agent** | Developer (`developer`) |
+| **Description** | Review source code for correctness, style, security, and performance issues |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Reviews generated source code across four categories: correctness, style, security, and performance. Checks for common issues like `eval`/`exec` usage, hardcoded credentials, long lines, bare `except` blocks, and missing test coverage.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.REVIEW_FEEDBACK`
-- Producer: `developer`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| *(none)* | — | — | All input is read from the artifact store |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+The skill reads from the artifact store:
+- `ArtifactType.SOURCE_CODE` — code content to review
+- `ArtifactType.UNIT_TESTS` — test suites to check coverage
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Output
+
+**Artifact Type:** `ArtifactType.REVIEW_FEEDBACK`
+
+```json
+{
+  "approved": true,
+  "total_findings": 3,
+  "findings_by_category": {
+    "correctness": 0,
+    "style": 2,
+    "security": 0,
+    "performance": 1
+  },
+  "findings": [
+    { "file": "app/feature/routes.py", "issue": "Line exceeds 120 characters", "severity": "low", "category": "style" },
+    { "file": "app/feature/service.py", "issue": "Use of eval/exec detected", "severity": "critical", "category": "security" }
+  ],
+  "summary": "Code review: Approved, 3 findings (0 critical/high)."
+}
+```
+
+## Side Effects
+
+- Sets `SOURCE_CODE` artifact status to `ArtifactStatus.APPROVED` or `ArtifactStatus.REJECTED`
+
+## Review Checks
+
+### Security
+- `eval()` or `exec()` usage — severity: `critical`
+- Potential hardcoded credentials — severity: `high`
+
+### Style
+- Lines exceeding 120 characters — severity: `low`
+
+### Correctness
+- Bare `except: pass` blocks — severity: `medium`
+- Modules without unit tests — severity: `high`
+
+## Approval Logic
+
+- **Approved**: No findings with severity `critical` or `high`
+- **Rejected**: Any finding with severity `critical` or `high`
+
+## Integration
+
+### Consumed By
+- `progress_tracking` — checks review feedback for progress reporting
+- Workflow review gates — orchestrator uses approval status to decide phase progression
+
+### Depends On
+- `code_generation` — reads `ArtifactType.SOURCE_CODE`
+- `unit_test_writing` — reads `ArtifactType.UNIT_TESTS`

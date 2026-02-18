@@ -1,39 +1,84 @@
-# Skill Spec: functional_design
+# Skill: functional_design
 
-## 1. Metadata
-- `skill_id`: `functional_design`
-- `module`: `aise.skills.functional_design.scripts.functional_design`
-- `class`: `FunctionalDesignSkill`
-- `implementation`: `src/aise/skills/functional_design/scripts/functional_design.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Generate FN (components/services) from Architecture Requirements with layer organization
+| Field | Value |
+|-------|-------|
+| **Name** | `functional_design` |
+| **Class** | `FunctionalDesignSkill` |
+| **Module** | `aise.skills.functional_design.scripts.functional_design` |
+| **Agent** | Architect (`architect`) |
+| **Description** | Generate FN (components/services) from Architecture Requirements with layer organization |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Transforms AR definitions into executable functional units (FN) and layer structure metadata. Each AR maps to one FN (`service` or `component`) with naming, subsystem classification, interface hints, file path, and AR->FN traceability.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.FUNCTIONAL_DESIGN`
-- Producer: `architect`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `project_name` | `str` | No | Project name fallback when context is empty |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+No direct AR payload is expected in `input_data`; AR data is read from artifact store.
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Dependencies
+
+Required artifact:
+- `ArtifactType.ARCHITECTURE_REQUIREMENT`
+
+Missing dependency raises:
+- `ValueError("No ARCHITECTURE_REQUIREMENT artifact found...")`
+
+## Output
+
+**Artifact Type:** `ArtifactType.FUNCTIONAL_DESIGN`
+
+```json
+{
+  "project_name": "<project>",
+  "overview": "Functional design with <components> components and <services> services",
+  "architecture_layers": {
+    "api_layer": {"services": [], "components": []},
+    "business_layer": {"services": [], "components": []},
+    "data_layer": {"components": []},
+    "integration_layer": {"components": []}
+  },
+  "functions": [
+    {
+      "id": "FN-SERVICE-001",
+      "type": "service|component",
+      "name": "...",
+      "description": "...",
+      "layer": "api|business|data|integration",
+      "subsystem": "...",
+      "source_ars": ["AR-..."],
+      "interfaces": [{"method": "GET", "path": "/api/v1/...", "description": "..."}],
+      "dependencies": [],
+      "file_path": "src/...",
+      "estimated_complexity": "low|medium|high"
+    }
+  ],
+  "traceability_matrix": {"AR-...": ["FN-..."]}
+}
+```
+
+## Generation Rules
+
+- AR grouped by `target_layer`: `api`, `business`, `data`, `integration`
+- FN ID pattern:
+- Service -> `FN-SERVICE-<nnn>`
+- Component -> `FN-COM-<nnn>`
+- Service naming enforces `...Service` suffix
+- API-layer services include heuristic HTTP interface generation
+- File path follows `src/<layer>_layer/<subsystem>/<snake_case_name>.py`
+
+## Integration
+
+### Depends On
+- `architecture_requirement_analysis`
+
+### Consumed By
+- `status_tracking`
+- `architecture_document_generation`
+- downstream code-generation/planning workflows

@@ -1,39 +1,77 @@
-# Skill Spec: architecture_requirement_analysis
+# Skill: architecture_requirement_analysis
 
-## 1. Metadata
-- `skill_id`: `architecture_requirement_analysis`
-- `module`: `aise.skills.architecture_requirement.scripts.architecture_requirement`
-- `class`: `ArchitectureRequirementSkill`
-- `implementation`: `src/aise/skills/architecture_requirement/scripts/architecture_requirement.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Decompose System Requirements into Architecture Requirements with layer classification
+| Field | Value |
+|-------|-------|
+| **Name** | `architecture_requirement_analysis` |
+| **Class** | `ArchitectureRequirementSkill` |
+| **Module** | `aise.skills.architecture_requirement.scripts.architecture_requirement` |
+| **Agent** | Architect (`architect`) |
+| **Description** | Decompose System Requirements into Architecture Requirements with layer classification |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Transforms `SYSTEM_REQUIREMENTS` (SR) into architecture-level requirements (AR), assigning each AR to a target layer and component type, then builds SR->AR traceability and coverage summary.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.ARCHITECTURE_REQUIREMENT`
-- Producer: `architect`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `project_name` | `str` | No | Project name fallback when context is empty |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+No direct SR payload is expected in `input_data`; SR data is read from artifact store.
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Dependencies
+
+Required artifact:
+- `ArtifactType.SYSTEM_REQUIREMENTS`
+
+Missing dependency raises:
+- `ValueError("No SYSTEM_REQUIREMENTS artifact found...")`
+
+## Output
+
+**Artifact Type:** `ArtifactType.ARCHITECTURE_REQUIREMENT`
+
+```json
+{
+  "project_name": "<project>",
+  "overview": "Architecture requirements with <n> ARs covering <m> SRs",
+  "architecture_requirements": [
+    {
+      "id": "AR-SR-0001-1",
+      "description": "...",
+      "source_sr": "SR-0001",
+      "target_layer": "api|business|data|integration",
+      "component_type": "service|component",
+      "estimated_complexity": "low|medium|high"
+    }
+  ],
+  "traceability_matrix": {"SR-0001": ["AR-SR-0001-1", "AR-SR-0001-2"]},
+  "coverage_summary": {"total_srs": 0, "covered_srs": 0, "total_ars": 0, "uncovered_srs": [], "coverage_percentage": 0}
+}
+```
+
+## Decomposition Rules
+
+### Functional SR
+- Generates API-layer AR + Business-layer AR by default
+- Adds Data-layer AR when SR category suggests data/storage/persistence
+
+### Non-functional SR
+- Generates one AR with inferred layer:
+- Performance/Scalability/Caching -> `integration`
+- Security/Auth -> `api`
+- Data/Consistency -> `data`
+- Otherwise -> `business`
+
+## Integration
+
+### Depends On
+- `system_requirement_analysis`
+
+### Consumed By
+- `functional_design`
+- `status_tracking`
+- `architecture_document_generation`

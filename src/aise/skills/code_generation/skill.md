@@ -1,39 +1,85 @@
-# Skill Spec: code_generation
+# Skill: code_generation
 
-## 1. Metadata
-- `skill_id`: `code_generation`
-- `module`: `aise.skills.code_generation.scripts.code_generation`
-- `class`: `CodeGenerationSkill`
-- `implementation`: `src/aise/skills/code_generation/scripts/code_generation.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Generate source code from architecture design and API contracts
+| Field | Value |
+|-------|-------|
+| **Name** | `code_generation` |
+| **Class** | `CodeGenerationSkill` |
+| **Module** | `aise.skills.code_generation.scripts.code_generation` |
+| **Agent** | Developer (`developer`) |
+| **Description** | Generate source code from architecture design and API contracts |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Generates production-quality code scaffolding from architecture design and API contracts. Creates a module for each service component with models, routes, and service layers, plus an application entry point.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.SOURCE_CODE`
-- Producer: `developer`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| *(none)* | — | — | All input is read from the artifact store |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+The skill reads from the artifact store:
+- `ArtifactType.ARCHITECTURE_DESIGN` — service components to generate modules for
+- `ArtifactType.API_CONTRACT` — endpoints to generate route handlers for
+- `ArtifactType.TECH_STACK` — backend language and framework selection
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Output
+
+**Artifact Type:** `ArtifactType.SOURCE_CODE`
+
+```json
+{
+  "modules": [
+    {
+      "name": "feature_name",
+      "component_id": "COMP-001",
+      "language": "Python",
+      "framework": "FastAPI",
+      "files": [
+        { "path": "app/feature_name/models.py", "description": "Data models", "content": "..." },
+        { "path": "app/feature_name/routes.py", "description": "API routes", "content": "..." },
+        { "path": "app/feature_name/service.py", "description": "Business logic", "content": "..." }
+      ]
+    },
+    {
+      "name": "app",
+      "component_id": "COMP-API",
+      "language": "Python",
+      "framework": "FastAPI",
+      "files": [
+        { "path": "app/main.py", "description": "Application entry point", "content": "..." }
+      ]
+    }
+  ],
+  "language": "Python",
+  "framework": "FastAPI",
+  "total_files": 10
+}
+```
+
+## Generated File Structure
+
+For each service component:
+- `app/{module}/models.py` — Dataclass-based models with `id`, `created_at`, `updated_at`
+- `app/{module}/routes.py` — FastAPI router with endpoint handlers
+- `app/{module}/service.py` — Service class with CRUD methods
+
+Application entry point:
+- `app/main.py` — FastAPI app with all routers included
+
+Supports both Python (FastAPI) and Go (Gin) output.
+
+## Integration
+
+### Consumed By
+- `unit_test_writing` — reads modules to generate test suites
+- `code_review` — reads code content for quality checks
+- `architecture_review` — reads modules for architecture alignment
+- `bug_fix` — reads modules to identify affected code
+
+### Depends On
+- `system_design` — reads `ArtifactType.ARCHITECTURE_DESIGN`
+- `api_design` — reads `ArtifactType.API_CONTRACT`
+- `tech_stack_selection` — reads `ArtifactType.TECH_STACK`
