@@ -24,8 +24,8 @@ from ..core.artifact import Artifact, ArtifactType
 from ..core.project import Project, ProjectStatus
 from ..core.project_manager import ProjectManager
 from ..core.workflow import WorkflowEngine
-from ..utils.logging import configure_logging, get_logger
 from ..main import create_team
+from ..utils.logging import configure_logging, get_logger
 
 try:
     from authlib.integrations.starlette_client import OAuth

@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..config import ProjectConfig
-from ..utils.logging import get_logger
 from ..core.agent import AgentRole
+from ..utils.logging import get_logger
 from .project import Project, ProjectStatus
 
 if TYPE_CHECKING:
