@@ -1,31 +1,5 @@
 {% extends "layout.html" %}
 {% block content %}
-<section class="card">
-  <h1>工作流执行详情</h1>
-  <p>项目: <a href="/projects/{{ project.info.project_id }}">{{ project.info.project_name }}</a></p>
-  <p>执行ID: {{ run.run_id }} | 时间: {{ run.started_at }}</p>
-  <p>需求: {{ run.requirement_text }}</p>
-</section>
-
-<section class="card">
-  <h2>节点与任务结果</h2>
-  {% for phase in run.phase_results %}
-  {% set phase_index = loop.index0 %}
-  <article class="phase-card">
-    <h3>{{ phase.phase }} ({{ phase.status }})</h3>
-    {% if phase.tasks %}
-    <ul>
-      {% for key, task in phase.tasks.items() %}
-      <li>
-        {{ key }} - {{ task.status }}
-        <a href="/projects/{{ project.info.project_id }}/runs/{{ run.run_id }}/phases/{{ phase_index }}/tasks/{{ key }}">任务详情</a>
-      </li>
-      {% endfor %}
-    </ul>
-    {% else %}
-    <p>无任务。</p>
-    {% endif %}
-  </article>
-  {% endfor %}
-</section>
+<script id="run-initial-data" type="application/json">{{ {"project": project, "run": run}|tojson }}</script>
+<section id="run-react-root"></section>
 {% endblock %}

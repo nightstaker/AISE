@@ -1,34 +1,5 @@
 {% extends "layout.html" %}
 {% block content %}
-<section class="card narrow">
-  <h1>登录 AISE Web</h1>
-  <p>支持内置管理员账号、Google 或 Microsoft 登录。</p>
-  <form method="post" action="/auth/local-login" class="stack">
-    <label>用户名</label>
-    <input name="username" required value="{{ local_admin_username }}">
-    <label>密码</label>
-    <input name="password" type="password" required placeholder="请输入密码">
-    <button class="btn" type="submit">管理员登录</button>
-  </form>
-  {% if error %}
-  <p class="warning">{{ error }}</p>
-  {% endif %}
-  <p>默认内置账号: <code>admin</code> / <code>123456</code></p>
-  <div class="auth-grid">
-    <a class="btn" href="/auth/google">使用 Google 登录</a>
-    <a class="btn" href="/auth/microsoft">使用 Microsoft 登录</a>
-    {% if configured.dev_login_enabled %}
-    <a class="btn secondary" href="/auth/dev-login">开发环境快速登录</a>
-    {% endif %}
-  </div>
-  {% if not configured.oauth_enabled %}
-  <p class="warning">未安装 OAuth 依赖，请安装 web 依赖后重试。</p>
-  {% endif %}
-  {% if not configured.google %}
-  <p class="warning">GOOGLE_CLIENT_ID 未配置。</p>
-  {% endif %}
-  {% if not configured.microsoft %}
-  <p class="warning">MICROSOFT_CLIENT_ID 未配置。</p>
-  {% endif %}
-</section>
+<script id="login-initial-data" type="application/json">{{ {"local_admin_username": local_admin_username, "error": error, "configured": configured}|tojson }}</script>
+<section id="login-react-root"></section>
 {% endblock %}
