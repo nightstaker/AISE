@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from ..utils.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class PhaseStatus(Enum):
     """Status of a workflow phase."""
@@ -115,17 +119,23 @@ class WorkflowEngine:
 
         phase.status = PhaseStatus.IN_PROGRESS
         results = {}
+        logger.info(
+            "Phase execution started: workflow=%s phase=%s tasks=%d", workflow.name, phase.name, len(phase.tasks)
+        )
 
         for task in phase.tasks:
             task.status = PhaseStatus.IN_PROGRESS
+            logger.debug("Phase task started: task=%s", task.key)
             try:
                 artifact_id = executor(task.agent, task.skill, task.input_data)
                 task.result_artifact_id = artifact_id
                 task.status = PhaseStatus.COMPLETED
                 results[task.key] = {"status": "success", "artifact_id": artifact_id}
+                logger.info("Phase task completed: task=%s artifact_id=%s", task.key, artifact_id)
             except Exception as e:
                 task.status = PhaseStatus.FAILED
                 results[task.key] = {"status": "error", "error": str(e)}
+                logger.warning("Phase task failed: task=%s error=%s", task.key, str(e))
 
         all_succeeded = all(t.status == PhaseStatus.COMPLETED for t in phase.tasks)
 
@@ -136,6 +146,7 @@ class WorkflowEngine:
         else:
             phase.status = PhaseStatus.FAILED
 
+        logger.info("Phase execution finished: phase=%s status=%s", phase.name, phase.status.value)
         return {"phase": phase.name, "status": phase.status.value, "tasks": results}
 
     def run_review(self, workflow: Workflow, executor) -> dict[str, Any]:
@@ -163,6 +174,14 @@ class WorkflowEngine:
 
         for round_num in range(1, iterations + 1):
             try:
+                logger.info(
+                    "Review round started: workflow=%s phase=%s round=%d reviewer=%s skill=%s",
+                    workflow.name,
+                    phase.name,
+                    round_num,
+                    gate.reviewer_agent,
+                    gate.review_skill,
+                )
                 artifact_id = executor(
                     gate.reviewer_agent,
                     gate.review_skill,
@@ -173,19 +192,31 @@ class WorkflowEngine:
                 )
                 rounds.append({"round": round_num, "status": "success", "artifact_id": artifact_id})
                 approved = True
+                logger.info(
+                    "Review round completed: phase=%s round=%d artifact_id=%s", phase.name, round_num, artifact_id
+                )
             except Exception as e:
                 rounds.append({"round": round_num, "status": "failed", "error": str(e)})
                 approved = False
+                logger.warning("Review round failed: phase=%s round=%d error=%s", phase.name, round_num, str(e))
                 break
 
         if approved:
             phase.status = PhaseStatus.COMPLETED
 
-        return {
+        result = {
             "approved": approved,
             "rounds_completed": len(rounds),
             "rounds": rounds,
         }
+        logger.info(
+            "Review gate finished: workflow=%s phase=%s approved=%s rounds=%d",
+            workflow.name,
+            phase.name,
+            approved,
+            len(rounds),
+        )
+        return result
 
     def verify_tests_pass(self, workflow: Workflow, executor) -> dict[str, Any]:
         """Verify that unit tests pass for the current phase.
@@ -202,13 +233,16 @@ class WorkflowEngine:
             return {"passed": True}
 
         try:
+            logger.info("Test verification started: workflow=%s phase=%s", workflow.name, phase.name)
             artifact_id = executor(
                 "developer",
                 "unit_test_execution",
                 {"target_artifact_type": "unit_tests"},
             )
+            logger.info("Test verification passed: phase=%s artifact_id=%s", phase.name, artifact_id)
             return {"passed": True, "artifact_id": artifact_id}
         except Exception as e:
+            logger.warning("Test verification failed: phase=%s error=%s", phase.name, str(e))
             return {"passed": False, "error": str(e)}
 
     @staticmethod

@@ -6,10 +6,13 @@ from enum import Enum
 from typing import Any
 
 from ..config import ModelConfig
+from ..utils.logging import get_logger
 from .artifact import Artifact, ArtifactStore
 from .llm import LLMClient
 from .message import Message, MessageBus, MessageType
 from .skill import Skill, SkillContext
+
+logger = get_logger(__name__)
 
 
 class AgentRole(Enum):
@@ -48,10 +51,18 @@ class Agent:
         self._skills: dict[str, Skill] = {}
 
         self.message_bus.subscribe(self.name, self.handle_message)
+        logger.info(
+            "Agent initialized: name=%s role=%s model=%s/%s",
+            self.name,
+            self.role.value,
+            self.model_config.provider,
+            self.model_config.model,
+        )
 
     def register_skill(self, skill: Skill) -> None:
         """Register a skill with this agent."""
         self._skills[skill.name] = skill
+        logger.debug("Skill registered: agent=%s skill=%s", self.name, skill.name)
 
     def get_skill(self, skill_name: str) -> Skill | None:
         """Get a registered skill by name."""
@@ -75,6 +86,14 @@ class Agent:
         parameters: dict[str, Any] | None = None,
     ) -> Artifact:
         """Execute a named skill and store the resulting artifact."""
+        logger.info(
+            "Skill execution started: agent=%s role=%s skill=%s project=%s input_keys=%s",
+            self.name,
+            self.role.value,
+            skill_name,
+            project_name,
+            sorted(input_data.keys()),
+        )
         skill = self._skills.get(skill_name)
         if skill is None:
             raise ValueError(f"Agent '{self.name}' has no skill '{skill_name}'")
@@ -93,10 +112,25 @@ class Agent:
 
         artifact = skill.execute(input_data, context)
         self.artifact_store.store(artifact)
+        logger.info(
+            "Skill execution completed: agent=%s skill=%s artifact_id=%s artifact_type=%s",
+            self.name,
+            skill_name,
+            artifact.id,
+            artifact.artifact_type.value,
+        )
         return artifact
 
     def handle_message(self, message: Message) -> Message | None:
         """Handle an incoming message. Override in subclasses for custom behavior."""
+        logger.debug(
+            "Message received: agent=%s msg_id=%s type=%s from=%s to=%s",
+            self.name,
+            message.id,
+            message.msg_type.value,
+            message.sender,
+            message.receiver,
+        )
         if message.msg_type == MessageType.REQUEST:
             skill_name = message.content.get("skill")
             input_data = message.content.get("input_data", {})
@@ -105,11 +139,23 @@ class Agent:
             if skill_name and skill_name in self._skills:
                 try:
                     artifact = self.execute_skill(skill_name, input_data, project_name)
+                    logger.info(
+                        "Message request handled: agent=%s msg_id=%s status=success artifact_id=%s",
+                        self.name,
+                        message.id,
+                        artifact.id,
+                    )
                     return message.reply(
                         {"status": "success", "artifact_id": artifact.id},
                         MessageType.RESPONSE,
                     )
                 except (ValueError, KeyError) as e:
+                    logger.warning(
+                        "Message request handled: agent=%s msg_id=%s status=error error=%s",
+                        self.name,
+                        message.id,
+                        str(e),
+                    )
                     return message.reply(
                         {"status": "error", "error": str(e)},
                         MessageType.RESPONSE,
@@ -124,6 +170,13 @@ class Agent:
         content: dict[str, Any],
     ) -> list[Any]:
         """Send a message to another agent."""
+        logger.info(
+            "Message send: from=%s to=%s type=%s content_keys=%s",
+            self.name,
+            receiver,
+            msg_type.value,
+            sorted(content.keys()),
+        )
         message = Message(
             sender=self.name,
             receiver=receiver,

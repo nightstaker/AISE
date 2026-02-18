@@ -24,12 +24,15 @@ from ..core.artifact import Artifact, ArtifactType
 from ..core.project import Project, ProjectStatus
 from ..core.project_manager import ProjectManager
 from ..core.workflow import WorkflowEngine
+from ..utils.logging import configure_logging, get_logger
 from ..main import create_team
 
 try:
     from authlib.integrations.starlette_client import OAuth
 except Exception:  # pragma: no cover - optional dependency
     OAuth = None
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -57,17 +60,20 @@ class WebProjectService:
 
     def __init__(self) -> None:
         self.project_manager = ProjectManager()
+        configure_logging(self.project_manager._global_config.logging, force=True)
         self._runs_by_project: dict[str, list[WorkflowRun]] = {}
         self._requirements_by_project: dict[str, list[RequirementEntry]] = {}
         self._lock = RLock()
         self._state_path = self.project_manager._projects_root / "web_state.json"
         self._restore_projects_from_disk()
         self._load_state()
+        logger.info("WebProjectService initialized: state_path=%s", self._state_path)
 
     def list_projects(self) -> list[dict[str, Any]]:
         with self._lock:
             infos = self.project_manager.get_all_projects_info()
             infos.sort(key=lambda item: item["updated_at"], reverse=True)
+            logger.debug("Web list_projects: count=%d", len(infos))
             return infos
 
     def create_project(
@@ -79,6 +85,7 @@ class WebProjectService:
     ) -> str:
         if not project_name.strip():
             raise ValueError("Project name cannot be empty")
+        logger.info("Web create_project requested: name=%s mode=%s", project_name, development_mode)
         mode = "github" if development_mode == "github" else "local"
         config = self.project_manager.create_default_project_config(project_name)
         config.development_mode = mode
@@ -97,6 +104,7 @@ class WebProjectService:
             initial_text = initial_requirement.strip()
             if initial_text:
                 self.run_requirement(project_id, initial_text)
+            logger.info("Web create_project completed: project_id=%s", project_id)
             return project_id
 
     def get_project(self, project_id: str) -> dict[str, Any] | None:
@@ -123,7 +131,9 @@ class WebProjectService:
                 "info": project.get_info(),
                 "workflow_nodes": workflow_nodes,
                 "runs": [self._serialize_run(run) for run in history],
-                "requirements": [self._serialize_requirement(item) for item in self._list_requirement_history(project_id)],
+                "requirements": [
+                    self._serialize_requirement(item) for item in self._list_requirement_history(project_id)
+                ],
             }
 
     def get_run(self, project_id: str, run_id: str) -> dict[str, Any] | None:
@@ -142,6 +152,11 @@ class WebProjectService:
             requirement = requirement_text.strip()
             if not requirement:
                 raise ValueError("Requirement text cannot be empty")
+            logger.info(
+                "Web requirement dispatch: project_id=%s text_len=%d",
+                project_id,
+                len(requirement),
+            )
 
             requirement_entry = RequirementEntry(
                 requirement_id=uuid.uuid4().hex[:10],
@@ -179,6 +194,7 @@ class WebProjectService:
                     encoding="utf-8",
                 )
             self._save_state()
+            logger.info("Web requirement completed: project_id=%s run_id=%s", project_id, run_id)
             return run_id
 
     def load_global_config_json(self) -> str:
@@ -381,9 +397,7 @@ class WebProjectService:
                 agent_data["enabled"] = bool(item.get("enabled", True))
             payload["agents"] = agents_payload
             payload["agent_model_selection"] = {
-                str(k): str(v).strip()
-                for k, v in agent_model_selection.items()
-                if str(v).strip()
+                str(k): str(v).strip() for k, v in agent_model_selection.items() if str(v).strip()
             }
             updated = ProjectConfig.from_dict(payload)
             updated.to_json_file(self.project_manager._global_config_path)
@@ -579,9 +593,7 @@ def _build_oauth() -> OAuth | None:
     )
     oauth.register(
         name="microsoft",
-        server_metadata_url=(
-            "https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration"
-        ),
+        server_metadata_url=("https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration"),
         client_id=os.environ.get("MICROSOFT_CLIENT_ID", ""),
         client_secret=os.environ.get("MICROSOFT_CLIENT_SECRET", ""),
         client_kwargs={"scope": "openid profile email User.Read"},
@@ -609,6 +621,28 @@ def create_app() -> FastAPI:
     dev_login_enabled = os.environ.get("AISE_WEB_ENABLE_DEV_LOGIN", "").lower() in {"1", "true", "yes"}
     local_admin_username = os.environ.get("AISE_ADMIN_USERNAME", "admin")
     local_admin_password = os.environ.get("AISE_ADMIN_PASSWORD", "123456")
+
+    @app.middleware("http")
+    async def log_request_response(request: Request, call_next):
+        request_id = uuid.uuid4().hex[:10]
+        logger.info(
+            "HTTP request: request_id=%s method=%s path=%s",
+            request_id,
+            request.method,
+            request.url.path,
+        )
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.exception("HTTP request failed: request_id=%s path=%s", request_id, request.url.path)
+            raise
+        logger.info(
+            "HTTP response: request_id=%s status=%s path=%s",
+            request_id,
+            response.status_code,
+            request.url.path,
+        )
+        return response
 
     def require_login(request: Request) -> dict[str, Any]:
         user = request.session.get("user")
@@ -669,6 +703,20 @@ def create_app() -> FastAPI:
         }
         return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
 
+    @app.get("/auth/dev-login")
+    async def dev_login(request: Request, name: str = "Dev User", email: str = "dev@aise.local"):
+        if not dev_login_enabled:
+            raise HTTPException(status_code=404, detail="Not found")
+        request.session["user"] = {
+            "id": "dev-user",
+            "name": name,
+            "email": email,
+            "provider": "dev",
+            "role": "super_admin",
+            "permissions": ["super_admin", "rd_director"],
+        }
+        return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+
     @app.get("/auth/{provider}")
     async def auth_login(request: Request, provider: str):
         if oauth is None:
@@ -714,20 +762,6 @@ def create_app() -> FastAPI:
             "provider": provider,
             "role": "user",
             "permissions": [],
-        }
-        return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
-
-    @app.get("/auth/dev-login")
-    async def dev_login(request: Request, name: str = "Dev User", email: str = "dev@aise.local"):
-        if not dev_login_enabled:
-            raise HTTPException(status_code=404, detail="Not found")
-        request.session["user"] = {
-            "id": "dev-user",
-            "name": name,
-            "email": email,
-            "provider": "dev",
-            "role": "super_admin",
-            "permissions": ["super_admin", "rd_director"],
         }
         return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
 

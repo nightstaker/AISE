@@ -151,9 +151,7 @@ class ProjectConfig:
     default_model: ModelConfig = field(default_factory=ModelConfig)
     model_providers: list[ModelProvider] = field(default_factory=list)
     models: list[ModelDefinition] = field(default_factory=list)
-    model_catalog: list[ModelOption] = field(
-        default_factory=lambda: [ModelOption(id="openai:gpt-4o", is_default=True)]
-    )
+    model_catalog: list[ModelOption] = field(default_factory=lambda: [ModelOption(id="openai:gpt-4o", is_default=True)])
     agent_model_selection: dict[str, str] = field(default_factory=dict)
     agents: dict[str, AgentConfig] = field(
         default_factory=lambda: {
@@ -429,10 +427,7 @@ class ProjectConfig:
         if default_chain:
             self.default_model = default_chain[0]
 
-        self.model_catalog = [
-            ModelOption(id=item.id, is_default=item.is_default)
-            for item in self.models
-        ]
+        self.model_catalog = [ModelOption(id=item.id, is_default=item.is_default) for item in self.models]
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize project config to a JSON-compatible dictionary."""
@@ -461,9 +456,7 @@ class ProjectConfig:
                 "max_tokens": self.default_model.max_tokens,
                 "extra": self.default_model.extra,
             },
-            "model_catalog": [
-                {"id": item.id, "default": item.is_default} for item in dedup_catalog
-            ],
+            "model_catalog": [{"id": item.id, "default": item.is_default} for item in dedup_catalog],
             "models": [
                 {
                     "id": model.id,
@@ -645,9 +638,7 @@ class ProjectConfig:
 
         selection_data = data.get("agent_model_selection", {})
         if isinstance(selection_data, dict):
-            config.agent_model_selection = {
-                str(agent): str(model_id) for agent, model_id in selection_data.items()
-            }
+            config.agent_model_selection = {str(agent): str(model_id) for agent, model_id in selection_data.items()}
 
         agents_data = data.get("agents", {})
         if isinstance(agents_data, dict):

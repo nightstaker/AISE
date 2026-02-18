@@ -258,18 +258,31 @@ class SessionManager:
             session.status = SessionStatus.TESTING
             session.touch()
 
-            artifact = await asyncio.to_thread(
-                self.orchestrator.execute_task,
-                "developer",
-                "tdd_session",
-                {
-                    "element_id": task.element_id,
-                    "element_type": task.element_type,
-                    "description": task.description,
-                    "working_dir": working_dir,
-                },
-                self.config.project_name,
-            )
+            if self.config.is_local_mode:
+                artifact = self.orchestrator.execute_task(
+                    "developer",
+                    "tdd_session",
+                    {
+                        "element_id": task.element_id,
+                        "element_type": task.element_type,
+                        "description": task.description,
+                        "working_dir": working_dir,
+                    },
+                    self.config.project_name,
+                )
+            else:
+                artifact = await asyncio.to_thread(
+                    self.orchestrator.execute_task,
+                    "developer",
+                    "tdd_session",
+                    {
+                        "element_id": task.element_id,
+                        "element_type": task.element_type,
+                        "description": task.description,
+                        "working_dir": working_dir,
+                    },
+                    self.config.project_name,
+                )
             session.touch()
 
             # Check results
@@ -302,7 +315,7 @@ class SessionManager:
 
             else:
                 # Local mode: direct commit
-                await asyncio.to_thread(self._local_commit, task)
+                self._local_commit(task)
 
             # Mark completed
             self._status_updater.mark_completed(task.element_id)

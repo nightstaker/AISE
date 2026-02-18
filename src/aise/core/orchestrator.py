@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..utils.logging import get_logger
 from .agent import Agent, AgentRole
 from .artifact import ArtifactStore
 from .message import MessageBus
 from .workflow import Workflow, WorkflowEngine
+
+logger = get_logger(__name__)
 
 
 class Orchestrator:
@@ -24,10 +27,12 @@ class Orchestrator:
         self._agents: dict[str, Agent] = {}
         # Routing state for multi-agent task distribution
         self._routing_state: dict[AgentRole, dict[str, Any]] = {}
+        logger.info("Orchestrator initialized")
 
     def register_agent(self, agent: Agent) -> None:
         """Register an agent with the orchestrator."""
         self._agents[agent.name] = agent
+        logger.info("Agent registered: name=%s role=%s", agent.name, agent.role.value)
 
     def get_agent(self, name: str) -> Agent | None:
         return self._agents.get(name)
@@ -47,11 +52,24 @@ class Orchestrator:
         project_name: str = "",
     ) -> str:
         """Execute a task on a specific agent and return the artifact ID."""
+        logger.info(
+            "Task dispatch: agent=%s skill=%s project=%s input_keys=%s",
+            agent_name,
+            skill_name,
+            project_name,
+            sorted(input_data.keys()),
+        )
         agent = self._agents.get(agent_name)
         if agent is None:
             raise ValueError(f"No agent registered with name '{agent_name}'")
 
         artifact = agent.execute_skill(skill_name, input_data, project_name)
+        logger.info(
+            "Task completed: agent=%s skill=%s artifact_id=%s",
+            agent_name,
+            skill_name,
+            artifact.id,
+        )
         return artifact.id
 
     def run_workflow(
@@ -72,6 +90,7 @@ class Orchestrator:
         """
         results = []
         current_input = dict(project_input)
+        logger.info("Workflow run started: workflow=%s project=%s", workflow.name, project_name)
 
         while not workflow.is_complete:
             phase = workflow.current_phase
@@ -87,6 +106,12 @@ class Orchestrator:
 
             phase_result = self.workflow_engine.execute_phase(workflow, executor)
             results.append(phase_result)
+            logger.info(
+                "Workflow phase finished: workflow=%s phase=%s status=%s",
+                workflow.name,
+                phase_result.get("phase"),
+                phase_result.get("status"),
+            )
 
             if phase_result["status"] == "failed":
                 break
@@ -96,6 +121,12 @@ class Orchestrator:
                 test_result = self.workflow_engine.verify_tests_pass(workflow, executor)
                 phase_result["test_verification"] = test_result
                 if not test_result.get("passed", False):
+                    logger.warning(
+                        "Workflow phase test verification failed: workflow=%s phase=%s error=%s",
+                        workflow.name,
+                        phase.name,
+                        test_result.get("error", ""),
+                    )
                     break
 
             # Run review gate if present (enforces min_review_rounds)
@@ -103,10 +134,19 @@ class Orchestrator:
                 review_result = self.workflow_engine.run_review(workflow, executor)
                 phase_result["review"] = review_result
                 if not review_result.get("approved", False):
+                    logger.warning(
+                        "Workflow review failed: workflow=%s phase=%s rounds=%s",
+                        workflow.name,
+                        phase.name,
+                        review_result.get("rounds_completed"),
+                    )
                     break
 
             workflow.advance()
 
+        logger.info(
+            "Workflow run completed: workflow=%s project=%s phases=%d", workflow.name, project_name, len(results)
+        )
         return results
 
     def run_default_workflow(
@@ -151,6 +191,13 @@ class Orchestrator:
 
         # Select agent based on strategy
         agent = self._select_agent(agents, role, routing_strategy)
+        logger.info(
+            "Auto route selected: role=%s strategy=%s agent=%s skill=%s",
+            role.value,
+            routing_strategy,
+            agent.name,
+            skill_name,
+        )
 
         return self.execute_task(agent.name, skill_name, input_data, project_name)
 

@@ -21,6 +21,7 @@ from .core.agent import AgentRole
 from .core.multi_project_session import MultiProjectSession
 from .core.orchestrator import Orchestrator
 from .core.session import OnDemandSession
+from .utils.logging import configure_logging
 from .whatsapp.client import WhatsAppConfig
 from .whatsapp.session import WhatsAppGroupSession
 
@@ -67,6 +68,7 @@ def create_team(
         An Orchestrator with all agents registered and ready.
     """
     config = config or ProjectConfig()
+    configure_logging(config.logging)
 
     # Default: 1 agent per role (backward compatible).
     # Reviewer is only included in GitHub mode.
@@ -241,6 +243,7 @@ def _apply_github_config(args: argparse.Namespace, config: ProjectConfig) -> Non
 
 def main() -> None:
     """CLI entry point."""
+    configure_logging(ProjectConfig().logging)
     parser = argparse.ArgumentParser(
         description="AISE - Multi-Agent Software Development Team",
     )
@@ -372,6 +375,7 @@ def main() -> None:
 
         config = ProjectConfig(project_name=args.project_name)
         _apply_github_config(args, config)
+        configure_logging(config.logging, force=True)
         orchestrator = create_team(config)
         results = orchestrator.run_default_workflow(
             project_input={"raw_requirements": requirements},
@@ -392,6 +396,7 @@ def main() -> None:
                     print(f"  {task_key}: {task_result.get('status', 'unknown')}")
 
     elif args.command == "demand":
+        configure_logging(ProjectConfig(project_name=args.project_name).logging, force=True)
         session = start_demand_session(args.project_name)
 
         # Seed with initial requirements if provided
@@ -417,6 +422,7 @@ def main() -> None:
         if args.verify_token:
             config.whatsapp.verify_token = args.verify_token
         config.whatsapp.webhook_port = args.webhook_port
+        configure_logging(config.logging, force=True)
 
         session = start_whatsapp_session(
             project_name=args.project_name,
@@ -440,6 +446,7 @@ def main() -> None:
         session.start(start_webhook=args.webhook)
 
     elif args.command == "team":
+        configure_logging(ProjectConfig().logging, force=True)
         orchestrator = create_team()
         print("AISE Development Team")
         print("=" * 40)
@@ -450,6 +457,7 @@ def main() -> None:
                     print(f"  - {skill_name}: {skill.description}")
 
     elif args.command == "multi-project":
+        configure_logging(ProjectConfig().logging, force=True)
         session = start_multi_project_session()
         session.start()
 
@@ -467,6 +475,7 @@ def main() -> None:
         )
         config.session.max_concurrent_sessions = args.max_sessions
         _apply_github_config(args, config)
+        configure_logging(config.logging, force=True)
 
         # For local mode, enforce single session
         effective_sessions = args.max_sessions

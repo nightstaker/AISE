@@ -6,3 +6,7 @@ dist/
 build/
 *.egg
 *.venv
+logs/
+projects/
+config/global_project_config.json
+

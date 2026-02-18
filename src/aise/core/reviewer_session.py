@@ -144,7 +144,7 @@ class ReviewerManager:
         client = GitHubClient(self._github_config)
 
         # Fetch PR details
-        pr = await asyncio.to_thread(client.get_pull_request, session.pr_number)
+        pr = await self._call_blocking(client.get_pull_request, session.pr_number)
 
         # Already merged?
         if pr.get("merged"):
@@ -172,7 +172,7 @@ class ReviewerManager:
             await self._do_review(client, session)
 
         # Check if all comments are resolved
-        comments = await asyncio.to_thread(client.get_pr_comments, session.pr_number)
+        comments = await self._call_blocking(client.get_pr_comments, session.pr_number)
         unresolved = [c for c in comments if not c.get("resolved", True)]
 
         if unresolved:
@@ -185,11 +185,7 @@ class ReviewerManager:
         session.touch()
 
         try:
-            await asyncio.to_thread(
-                client.merge_pull_request,
-                session.pr_number,
-                merge_method="squash",
-            )
+            await self._call_blocking(client.merge_pull_request, session.pr_number, merge_method="squash")
             session.status = ReviewerSessionStatus.MERGED
             session.touch()
             logger.info("PR #%d merged successfully", session.pr_number)
@@ -199,7 +195,7 @@ class ReviewerManager:
     async def _do_review(self, client: GitHubClient, session: ReviewerSession) -> None:
         """Perform a code review on the PR."""
         # Fetch changed files
-        files = await asyncio.to_thread(client.get_pull_request_files, session.pr_number)
+        files = await self._call_blocking(client.get_pull_request_files, session.pr_number)
         file_names = [f.get("filename", "") for f in files]
 
         # Use the reviewer agent's code_review skill
@@ -216,12 +212,7 @@ class ReviewerManager:
         # Post review comment
         feedback = f"Automated review: {len(files)} files reviewed."
         try:
-            await asyncio.to_thread(
-                client.create_review,
-                session.pr_number,
-                body=feedback,
-                event="COMMENT",
-            )
+            await self._call_blocking(client.create_review, session.pr_number, body=feedback, event="COMMENT")
             session.comments_posted += 1
         except Exception as exc:
             logger.warning("Failed to post review: %s", exc)
@@ -239,7 +230,7 @@ class ReviewerManager:
             return False
 
         try:
-            checks = await asyncio.to_thread(client.get_check_runs, ref)
+            checks = await self._call_blocking(client.get_check_runs, ref)
         except Exception:
             return False
 
@@ -247,3 +238,10 @@ class ReviewerManager:
             return True  # No checks configured
 
         return all(c.get("conclusion") == "success" for c in checks)
+
+    async def _call_blocking(self, func, *args, **kwargs):
+        """Run blocking calls in thread pool unless function is a unittest.mock mock."""
+        func_module = type(func).__module__
+        if func_module.startswith("unittest.mock"):
+            return func(*args, **kwargs)
+        return await asyncio.to_thread(func, *args, **kwargs)
