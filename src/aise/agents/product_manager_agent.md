@@ -26,7 +26,7 @@ Skills execute in order 1→2→3→4. Skill 4 is the review gate that approves/
 ## Downstream Handoff
 
 - **Architect** consumes REQUIREMENTS and PRD for system_design
-- **Team Lead** consumes REQUIREMENTS for conflict_resolution
+- **Project Manager** consumes REQUIREMENTS for conflict_resolution
 
 ## Quick Reference
 

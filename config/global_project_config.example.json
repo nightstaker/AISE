@@ -68,16 +68,16 @@
     "architect": "claude-sonnet-4-20250514",
     "developer": "gpt-4o",
     "qa_engineer": "gpt-4o",
-    "team_lead": "gpt-4o",
-    "team_manager": "gpt-4o"
+    "project_manager": "gpt-4o",
+    "rd_director": "gpt-4o"
   },
   "agents": {
     "product_manager": { "name": "product_manager", "enabled": true },
     "architect": { "name": "architect", "enabled": true },
     "developer": { "name": "developer", "enabled": true },
     "qa_engineer": { "name": "qa_engineer", "enabled": true },
-    "team_lead": { "name": "team_lead", "enabled": true },
-    "team_manager": { "name": "team_manager", "enabled": true }
+    "project_manager": { "name": "project_manager", "enabled": true },
+    "rd_director": { "name": "rd_director", "enabled": true }
   },
   "agent_counts": {},
   "workflow": {

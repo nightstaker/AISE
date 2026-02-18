@@ -1,54 +1,39 @@
 """All agent skills."""
 
-from .architect import (
-    APIDesignSkill,
-    ArchitectureDocumentGenerationSkill,
-    ArchitectureRequirementSkill,
-    ArchitectureReviewSkill,
-    FunctionalDesignSkill,
-    StatusTrackingSkill,
-    SystemDesignSkill,
-    TechStackSelectionSkill,
-)
-from .developer import (
-    BugFixSkill,
-    CodeGenerationSkill,
-    CodeReviewSkill,
-    TDDSessionSkill,
-    UnitTestWritingSkill,
-)
-from .github import (
-    PRMergeSkill,
-    PRReviewSkill,
-)
-from .lead import (
-    ConflictResolutionSkill,
-    ProgressTrackingSkill,
-    TeamHealthSkill,
-    VersionReleaseSkill,
-)
-from .manager import (
-    RequirementDistributionSkill,
-    TeamFormationSkill,
-)
-from .pm import (
-    DocumentGenerationSkill,
-    ProductDesignSkill,
-    ProductReviewSkill,
-    RequirementAnalysisSkill,
-    SystemFeatureAnalysisSkill,
-    SystemRequirementAnalysisSkill,
-    UserStoryWritingSkill,
-)
-from .qa import (
-    TestAutomationSkill,
-    TestCaseDesignSkill,
-    TestPlanDesignSkill,
-    TestReviewSkill,
-)
+from .api_design import APIDesignSkill
+from .architecture_document_generation import ArchitectureDocumentGenerationSkill
+from .architecture_requirement import ArchitectureRequirementSkill
+from .architecture_review import ArchitectureReviewSkill
+from .bug_fix import BugFixSkill
+from .code_generation import CodeGenerationSkill
+from .code_review import CodeReviewSkill
+from .conflict_resolution import ConflictResolutionSkill
+from .document_generation import DocumentGenerationSkill
+from .functional_design import FunctionalDesignSkill
+from .pr_merge import PRMergeSkill
+from .pr_review import PRReviewSkill
+from .product_design import ProductDesignSkill
+from .product_review import ProductReviewSkill
+from .progress_tracking import ProgressTrackingSkill
+from .requirement_analysis import RequirementAnalysisSkill
+from .requirement_distribution import RequirementDistributionSkill
+from .status_tracking import StatusTrackingSkill
+from .system_design import SystemDesignSkill
+from .system_feature_analysis import SystemFeatureAnalysisSkill
+from .system_requirement_analysis import SystemRequirementAnalysisSkill
+from .tdd_session import TDDSessionSkill
+from .team_formation import TeamFormationSkill
+from .team_health import TeamHealthSkill
+from .tech_stack_selection import TechStackSelectionSkill
+from .test_automation import TestAutomationSkill
+from .test_case_design import TestCaseDesignSkill
+from .test_plan_design import TestPlanDesignSkill
+from .test_review import TestReviewSkill
+from .unit_test_writing import UnitTestWritingSkill
+from .user_story_writing import UserStoryWritingSkill
+from .version_release import VersionReleaseSkill
 
 __all__ = [
-    # PM
     "RequirementAnalysisSkill",
     "UserStoryWritingSkill",
     "ProductDesignSkill",
@@ -56,7 +41,6 @@ __all__ = [
     "SystemFeatureAnalysisSkill",
     "SystemRequirementAnalysisSkill",
     "DocumentGenerationSkill",
-    # Architect
     "SystemDesignSkill",
     "APIDesignSkill",
     "ArchitectureReviewSkill",
@@ -65,26 +49,21 @@ __all__ = [
     "FunctionalDesignSkill",
     "StatusTrackingSkill",
     "ArchitectureDocumentGenerationSkill",
-    # Developer
     "CodeGenerationSkill",
     "UnitTestWritingSkill",
     "CodeReviewSkill",
     "BugFixSkill",
     "TDDSessionSkill",
-    # QA
     "TestPlanDesignSkill",
     "TestCaseDesignSkill",
     "TestAutomationSkill",
     "TestReviewSkill",
-    # Project Manager
     "ConflictResolutionSkill",
     "ProgressTrackingSkill",
     "VersionReleaseSkill",
     "TeamHealthSkill",
-    # RD Director
     "TeamFormationSkill",
     "RequirementDistributionSkill",
-    # GitHub
     "PRReviewSkill",
     "PRMergeSkill",
 ]

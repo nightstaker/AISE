@@ -6,17 +6,17 @@ from ..config import ModelConfig
 from ..core.agent import Agent, AgentRole
 from ..core.artifact import ArtifactStore
 from ..core.message import MessageBus
-from ..skills.architect import (
+from ..skills import (
     APIDesignSkill,
     ArchitectureDocumentGenerationSkill,
     ArchitectureRequirementSkill,
     ArchitectureReviewSkill,
     FunctionalDesignSkill,
+    PRReviewSkill,
     StatusTrackingSkill,
     SystemDesignSkill,
     TechStackSelectionSkill,
 )
-from ..skills.github import PRReviewSkill
 
 
 class ArchitectAgent(Agent):

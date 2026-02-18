@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from aise.core.artifact import ArtifactStore, ArtifactType
 from aise.core.skill import SkillContext
-from aise.skills.developer.tdd_session import TDDSessionSkill
+from aise.skills import TDDSessionSkill
 
 
 class TestTDDSessionSkill:
@@ -112,20 +112,20 @@ class TestTDDSessionSkill:
         assert result["source_file"] == "src/ar_0001.py"
         assert "Auth module" in result["source_code"]
 
-    @patch("aise.skills.developer.tdd_session.subprocess.run")
+    @patch("aise.skills.tdd_session.scripts.tdd_session.subprocess.run")
     def test_run_tests_success(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="3 passed", stderr="")
         result = TDDSessionSkill._run_tests("/tmp")
         assert result["passed"] is True
         assert "3 passed" in result["output"]
 
-    @patch("aise.skills.developer.tdd_session.subprocess.run")
+    @patch("aise.skills.tdd_session.scripts.tdd_session.subprocess.run")
     def test_run_tests_failure(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stdout="1 failed", stderr="")
         result = TDDSessionSkill._run_tests("/tmp")
         assert result["passed"] is False
 
-    @patch("aise.skills.developer.tdd_session.subprocess.run")
+    @patch("aise.skills.tdd_session.scripts.tdd_session.subprocess.run")
     def test_run_tests_timeout(self, mock_run):
         import subprocess
 
@@ -134,13 +134,13 @@ class TestTDDSessionSkill:
         assert result["passed"] is False
         assert "timed out" in result["errors"]
 
-    @patch("aise.skills.developer.tdd_session.subprocess.run")
+    @patch("aise.skills.tdd_session.scripts.tdd_session.subprocess.run")
     def test_run_linting_success(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         result = TDDSessionSkill._run_linting("/tmp")
         assert result["passed"] is True
 
-    @patch("aise.skills.developer.tdd_session.subprocess.run")
+    @patch("aise.skills.tdd_session.scripts.tdd_session.subprocess.run")
     def test_run_linting_failure(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stdout="E501 line too long", stderr="")
         result = TDDSessionSkill._run_linting("/tmp")

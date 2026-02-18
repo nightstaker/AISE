@@ -8,10 +8,10 @@ The Product Manager agent now includes enhanced capabilities for systematic syst
 
 ### 1. System Feature Analysis (`system_feature_analysis`)
 
-**Purpose**: Analyze Team Leader's raw requirements and produce a structured list of System Features (SF).
+**Purpose**: Analyze raw requirements and produce a structured list of System Features (SF).
 
 **Input**:
-- `raw_requirements`: String or list of raw requirement descriptions from Team Leader
+- `raw_requirements`: String or list of raw requirement descriptions from the requester
 - `project_name`: (Optional) Name of the project
 
 **Output**: Artifact of type `SYSTEM_DESIGN` containing:

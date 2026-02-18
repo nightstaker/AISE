@@ -8,7 +8,7 @@ from ..config import ModelConfig
 from ..core.agent import Agent, AgentRole
 from ..core.artifact import ArtifactStore
 from ..core.message import MessageBus, MessageType
-from ..skills.manager import RequirementDistributionSkill, TeamFormationSkill
+from ..skills import RequirementDistributionSkill, TeamFormationSkill
 
 
 class RDDirectorAgent(Agent):

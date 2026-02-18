@@ -6,14 +6,14 @@ from ..config import ModelConfig
 from ..core.agent import Agent, AgentRole
 from ..core.artifact import ArtifactStore
 from ..core.message import MessageBus
-from ..skills.developer import (
+from ..skills import (
     BugFixSkill,
     CodeGenerationSkill,
     CodeReviewSkill,
+    PRReviewSkill,
     TDDSessionSkill,
     UnitTestWritingSkill,
 )
-from ..skills.github import PRReviewSkill
 
 
 class DeveloperAgent(Agent):
