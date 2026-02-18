@@ -6,8 +6,8 @@ from ..config import ModelConfig
 from ..core.agent import Agent, AgentRole
 from ..core.artifact import ArtifactStore
 from ..core.message import MessageBus
-from ..skills.github import PRReviewSkill
-from ..skills.qa import (
+from ..skills import (
+    PRReviewSkill,
     TestAutomationSkill,
     TestCaseDesignSkill,
     TestPlanDesignSkill,

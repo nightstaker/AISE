@@ -8,10 +8,11 @@ from ..config import ModelConfig
 from ..core.agent import Agent, AgentRole
 from ..core.artifact import ArtifactStore
 from ..core.message import Message, MessageBus, MessageType
-from ..skills.github import PRMergeSkill, PRReviewSkill
-from ..skills.lead import (
+from ..skills import (
     ConflictResolutionSkill,
+    PRMergeSkill,
     ProgressTrackingSkill,
+    PRReviewSkill,
     TeamHealthSkill,
     VersionReleaseSkill,
 )
@@ -31,7 +32,7 @@ class ProjectManagerAgent(Agent):
     The PM listens for ``NOTIFICATION`` messages with ``event`` set to
     ``"agent_crashed"`` or ``"agent_stuck"`` and responds by broadcasting a
     recovery directive to the team.  The underlying detection logic lives in
-    :class:`~aise.skills.lead.TeamHealthSkill`.
+    :class:`~aise.skills.TeamHealthSkill`.
     """
 
     def __init__(

@@ -6,7 +6,7 @@ from aise.core.agent import AgentRole
 from aise.core.artifact import ArtifactStore, ArtifactType
 from aise.core.skill import SkillContext
 from aise.github.permissions import PermissionDeniedError
-from aise.skills.github import PRMergeSkill, PRReviewSkill
+from aise.skills import PRMergeSkill, PRReviewSkill
 
 
 def _make_context(**kwargs):

@@ -41,7 +41,7 @@ class TestCheckPermission:
     def test_all_roles_can_comment(self, role):
         assert check_permission(role, GitHubPermission.COMMENT_PR) is True
 
-    # -- Merge permissions (PM, Team Lead, and Reviewer) --
+    # -- Merge permissions (PM, Project Manager, and Reviewer) --
 
     def test_product_manager_can_merge(self):
         assert check_permission(AgentRole.PRODUCT_MANAGER, GitHubPermission.MERGE_PR) is True

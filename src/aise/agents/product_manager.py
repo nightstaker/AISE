@@ -6,11 +6,12 @@ from ..config import ModelConfig
 from ..core.agent import Agent, AgentRole
 from ..core.artifact import ArtifactStore
 from ..core.message import MessageBus
-from ..skills.github import PRMergeSkill, PRReviewSkill
-from ..skills.pm import (
+from ..skills import (
     DocumentGenerationSkill,
+    PRMergeSkill,
     ProductDesignSkill,
     ProductReviewSkill,
+    PRReviewSkill,
     RequirementAnalysisSkill,
     SystemFeatureAnalysisSkill,
     SystemRequirementAnalysisSkill,
