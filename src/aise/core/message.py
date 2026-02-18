@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from ..utils.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class MessageType(Enum):
     """Types of messages exchanged between agents."""
@@ -53,16 +57,25 @@ class MessageBus:
     def subscribe(self, agent_name: str, handler) -> None:
         """Subscribe an agent to receive messages."""
         self._subscribers.setdefault(agent_name, []).append(handler)
+        logger.debug("Message subscriber added: agent=%s", agent_name)
 
     def unsubscribe(self, agent_name: str) -> None:
         """Remove all subscriptions for an agent."""
         self._subscribers.pop(agent_name, None)
+        logger.debug("Message subscribers removed: agent=%s", agent_name)
 
     def publish(self, message: Message) -> list[Any]:
         """Publish a message and return responses from handlers."""
         self._history.append(message)
         results = []
         target = message.receiver
+        logger.info(
+            "Message publish: msg_id=%s type=%s from=%s to=%s",
+            message.id,
+            message.msg_type.value,
+            message.sender,
+            message.receiver,
+        )
 
         if target == "broadcast":
             for name, handlers in self._subscribers.items():
@@ -73,6 +86,7 @@ class MessageBus:
             for handler in self._subscribers[target]:
                 results.append(handler(message))
 
+        logger.debug("Message publish completed: msg_id=%s responses=%d", message.id, len(results))
         return results
 
     def get_history(self, agent_name: str | None = None) -> list[Message]:

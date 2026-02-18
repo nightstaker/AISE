@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or "AISE Web" }}</title>
+  <link rel="stylesheet" href="/static/main.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">AISE 控制台</a>
+    <nav class="topnav">
+      {% if user %}
+      <details class="user-menu">
+        <summary>
+          {{ user.name }}
+          {% if user.role %}<span class="role-tag">{{ user.role }}</span>{% endif %}
+        </summary>
+        <div class="user-menu-pop">
+          <div class="user-meta">{{ user.provider }}</div>
+          <a href="/config/global/models">Settings / Models</a>
+          <a href="/config/global/agents">Settings / Agents</a>
+          <a href="/config/global/workspace">Settings / Workspace</a>
+          <a href="/config/global/logging">Settings / Logging</a>
+          <a href="/config/global/json">Settings / Raw JSON</a>
+          <hr>
+          <a href="/logout">退出</a>
+        </div>
+      </details>
+      {% else %}
+      <a href="/login">登录</a>
+      {% endif %}
+    </nav>
+  </header>
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+  <script src="/static/app.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

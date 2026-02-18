@@ -14,6 +14,7 @@ from .main import (
     run_project,
     start_demand_session,
     start_multi_project_session,
+    start_web_app,
     start_whatsapp_session,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "run_project",
     "start_demand_session",
     "start_multi_project_session",
+    "start_web_app",
     "start_whatsapp_session",
 ]

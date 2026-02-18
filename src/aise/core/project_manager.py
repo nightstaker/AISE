@@ -7,10 +7,13 @@ from typing import TYPE_CHECKING, Any
 
 from ..config import ProjectConfig
 from ..core.agent import AgentRole
+from ..utils.logging import get_logger
 from .project import Project, ProjectStatus
 
 if TYPE_CHECKING:
     pass
+
+logger = get_logger(__name__)
 
 
 class ProjectManager:
@@ -32,6 +35,11 @@ class ProjectManager:
         self._projects_root = Path(projects_root)
         self._global_config_path = Path(global_config_path)
         self._global_config = self._load_global_config()
+        logger.info(
+            "ProjectManager initialized: projects_root=%s global_config=%s",
+            self._projects_root,
+            self._global_config_path,
+        )
 
     def create_project(
         self,
@@ -89,6 +97,13 @@ class ProjectManager:
 
         # Store project
         self._projects[project_id] = project
+        logger.info(
+            "Project created: project_id=%s name=%s mode=%s agents=%d",
+            project_id,
+            project_name,
+            project.development_mode,
+            project.agent_count,
+        )
 
         return project_id
 
@@ -101,7 +116,9 @@ class ProjectManager:
     def _load_global_config(self) -> ProjectConfig:
         """Load global config if available, otherwise use built-in defaults."""
         if not self._global_config_path.exists():
+            logger.info("Global config not found, using defaults: path=%s", self._global_config_path)
             return ProjectConfig()
+        logger.info("Loading global config: path=%s", self._global_config_path)
         return ProjectConfig.from_json_file(self._global_config_path)
 
     def _prepare_project_root(self, project_id: str, project_name: str) -> Path:
@@ -178,6 +195,7 @@ class ProjectManager:
         if project is None:
             raise ValueError(f"Project {project_id} not found")
 
+        logger.info("Project workflow started: project_id=%s name=%s", project_id, project.project_name)
         return project.orchestrator.run_default_workflow(
             requirements,
             project.project_name,

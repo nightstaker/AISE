@@ -192,6 +192,73 @@ aise demand --project-name "MyProject"
 aise whatsapp --project-name "MyProject" --owner "Alice"
 ```
 
+### Start the Web project management system
+
+Install web dependencies first:
+
+```bash
+pip install -e ".[web]"
+```
+
+Run:
+
+```bash
+aise web --host 0.0.0.0 --port 8000
+```
+
+OAuth environment variables:
+
+```bash
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+MICROSOFT_CLIENT_ID=...
+MICROSOFT_CLIENT_SECRET=...
+```
+
+Web features:
+- Dashboard with all project overviews
+- Global config editor and new-project entry
+- Project detail with workflow nodes, per-node tasks, and task details
+- Historical requirements and requirement dispatch
+- Google/Microsoft account login
+- JSON API endpoints for async frontend updates
+- Persistent run/requirement history in `projects/web_state.json`
+- Built-in local super admin account (`admin` / `123456`) with `rd_director` permission
+- Friendly global-config UI for model catalog management
+- Agent model dropdown selection on project creation
+- Global config center with left navigation: `Models / Agents / Workspace / Logging / Raw JSON`
+- `Models` supports multiple providers per model, default provider selection, and provider failover order
+- `Models` now separates `Providers` configuration from `Models` binding; local models can be marked `is_local` and skip providers
+- `Models` supports OpenAI-style model metadata (`name`, `api_model`, `extra`)
+- Project creation supports optional `initial_requirement`; if provided, workflow is executed immediately
+
+Main JSON APIs:
+- `GET /api/projects`
+- `POST /api/projects`
+- `GET /api/projects/{project_id}`
+- `GET /api/projects/{project_id}/requirements`
+- `POST /api/projects/{project_id}/requirements`
+- `GET /api/projects/{project_id}/runs`
+- `GET /api/projects/{project_id}/runs/{run_id}`
+- `GET /api/projects/{project_id}/runs/{run_id}/phases/{phase_idx}/tasks/{task_key}`
+- `GET /api/config/global`
+- `POST /api/config/global`
+- `GET /api/config/global/data`
+- `POST /api/config/global/data`
+
+Optional dev login for local testing:
+
+```bash
+export AISE_WEB_ENABLE_DEV_LOGIN=true
+```
+
+Override built-in admin credentials (recommended for non-local environments):
+
+```bash
+export AISE_ADMIN_USERNAME=admin
+export AISE_ADMIN_PASSWORD=change-me
+```
+
 ### View team information
 
 ```bash

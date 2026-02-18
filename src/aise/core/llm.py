@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from ..config import ModelConfig
+from ..utils.logging import format_inference_result, get_logger
+
+logger = get_logger(__name__)
 
 
 class LLMClient:
@@ -41,7 +44,21 @@ class LLMClient:
         implementation returns a placeholder so the deterministic skills
         keep working without an API key.
         """
-        return ""
+        logger.debug(
+            "Inference request: provider=%s model=%s messages=%d extra_keys=%s",
+            self.provider,
+            self.model,
+            len(messages),
+            sorted(kwargs.keys()),
+        )
+        result = ""
+        logger.info(
+            "Inference response: provider=%s model=%s result=%s",
+            self.provider,
+            self.model,
+            format_inference_result(result),
+        )
+        return result
 
     def __repr__(self) -> str:
         return f"LLMClient(provider={self.config.provider!r}, model={self.config.model!r})"
