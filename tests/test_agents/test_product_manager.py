@@ -38,6 +38,33 @@ class TestProductManagerAgent:
         assert len(content["functional_requirements"]) == 2
         assert len(content["non_functional_requirements"]) == 1
 
+    def test_requirement_analysis_writes_system_requirements_doc(self, tmp_path):
+        agent, store = self._make_agent()
+        project_root = tmp_path / "project_0-demo"
+        project_root.mkdir(parents=True, exist_ok=True)
+
+        artifact = agent.execute_skill(
+            "requirement_analysis",
+            {
+                "raw_requirements": "User login\nPerformance must be under 200ms",
+            },
+            parameters={"project_root": str(project_root)},
+        )
+        assert artifact is not None
+
+        doc_path = project_root / "docs" / "system-requirements.md"
+        assert doc_path.exists()
+        content = doc_path.read_text(encoding="utf-8")
+        assert "Status: Completed" in content
+        assert "## Functional Requirements" in content
+        assert "## Non-Functional Requirements" in content
+        assert "## Detailed Requirement Specifications" in content
+        assert "### FR-001" in content
+        assert "#### Normal Scenario" in content
+        assert "#### Exception Scenario" in content
+        assert "#### Specification" in content
+        assert "#### Performance" in content
+
     def test_user_story_writing(self):
         agent, store = self._make_agent()
         # First create requirements
@@ -152,7 +179,7 @@ class TestProductManagerAgent:
 
             # Check that files exist
             design_doc = Path(tmpdir) / "system-design.md"
-            req_doc = Path(tmpdir) / "system-requirements.md"
+            req_doc = Path(tmpdir) / "System-Requirements.md"
 
             assert design_doc.exists()
             assert req_doc.exists()

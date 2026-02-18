@@ -62,6 +62,10 @@ class TestProjectManagerGlobalConfig:
         assert persisted.default_model.model == "claude-opus-4"
         assert persisted.workflow.fail_on_review_rejection is True
 
+        assert (Path(project.project_root) / "docs").exists()
+        assert (Path(project.project_root) / "src").exists()
+        assert (Path(project.project_root) / "tests").exists()
+
     def test_create_default_project_config_returns_global_template_copy(self, tmp_path):
         global_config_path = tmp_path / "config/global_project_config.json"
         _write_global_config(global_config_path)

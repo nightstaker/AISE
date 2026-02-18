@@ -20,11 +20,12 @@ class Orchestrator:
     and drives the workflow phases to completion.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, project_root: str | None = None) -> None:
         self.message_bus = MessageBus()
         self.artifact_store = ArtifactStore()
         self.workflow_engine = WorkflowEngine()
         self._agents: dict[str, Agent] = {}
+        self.project_root = project_root
         # Routing state for multi-agent task distribution
         self._routing_state: dict[AgentRole, dict[str, Any]] = {}
         logger.info("Orchestrator initialized")
@@ -50,6 +51,7 @@ class Orchestrator:
         skill_name: str,
         input_data: dict[str, Any],
         project_name: str = "",
+        parameters: dict[str, Any] | None = None,
     ) -> str:
         """Execute a task on a specific agent and return the artifact ID."""
         logger.info(
@@ -63,7 +65,11 @@ class Orchestrator:
         if agent is None:
             raise ValueError(f"No agent registered with name '{agent_name}'")
 
-        artifact = agent.execute_skill(skill_name, input_data, project_name)
+        skill_parameters = dict(parameters or {})
+        if self.project_root:
+            skill_parameters.setdefault("project_root", self.project_root)
+
+        artifact = agent.execute_skill(skill_name, input_data, project_name, parameters=skill_parameters)
         logger.info(
             "Task completed: agent=%s skill=%s artifact_id=%s",
             agent_name,

@@ -218,6 +218,77 @@ class TestLLMClient:
         result = client.complete([{"role": "user", "content": "hello"}])
         assert result == ""
 
+    def test_complete_uses_openai_compatible_path_for_any_provider(self, monkeypatch):
+        client = LLMClient(ModelConfig(provider="anthropic", model="claude-sonnet-4-20250514"))
+
+        def fake_complete(_messages, **_kwargs):
+            return "ok"
+
+        monkeypatch.setattr(client, "_complete_openai_compatible", fake_complete)
+        result = client.complete([{"role": "user", "content": "hello"}])
+        assert result == "ok"
+
+    def test_extract_response_text_from_sdk_like_object(self):
+        client = LLMClient(ModelConfig())
+
+        class Part:
+            def __init__(self, text: str):
+                self.text = text
+
+        class Item:
+            def __init__(self, content):
+                self.content = content
+
+        class Response:
+            def __init__(self):
+                self.output = [Item([Part("hello "), Part("world")])]
+
+        result = client._extract_response_text(Response())
+        assert result == "hello world"
+
+    def test_complete_filters_unsupported_extra_kwargs(self):
+        cfg = ModelConfig(
+            provider="OpenRouter",
+            model="moonshotai/kimi-k2.5",
+            api_key="sk-test",
+            base_url="https://example.com/v1",
+            extra={"model_id": "gpt-4o", "model_name": "TestModel"},
+        )
+        client = LLMClient(cfg)
+
+        class _Message:
+            content = "ok"
+
+        class _Choice:
+            message = _Message()
+
+        class _Response:
+            choices = [_Choice()]
+
+        class _Completions:
+            def create(self, **kwargs):
+                if "model_id" in kwargs:
+                    raise TypeError("Completions.create() got an unexpected keyword argument 'model_id'")
+                if "model_name" in kwargs:
+                    raise TypeError("Completions.create() got an unexpected keyword argument 'model_name'")
+                return _Response()
+
+        class _Chat:
+            completions = _Completions()
+
+        class _Client:
+            chat = _Chat()
+
+            class responses:
+                @staticmethod
+                def create(**kwargs):
+                    raise RuntimeError("force fallback to chat")
+
+        client._build_openai_client = lambda: _Client()  # type: ignore[method-assign]
+
+        result = client.complete([{"role": "user", "content": "hello"}])
+        assert result == "ok"
+
     def test_repr(self):
         client = LLMClient(ModelConfig(provider="openai", model="gpt-4o"))
         r = repr(client)

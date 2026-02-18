@@ -198,12 +198,41 @@ class OnDemandSession:
             except Exception:
                 pass  # non-critical
 
+            sf_id = None
+            sr_id = None
+            doc_id = None
+            try:
+                sf_id = self.orchestrator.execute_task(
+                    "product_manager",
+                    "system_feature_analysis",
+                    {"raw_requirements": text},
+                    self.project_name,
+                )
+                sr_id = self.orchestrator.execute_task(
+                    "product_manager",
+                    "system_requirement_analysis",
+                    {},
+                    self.project_name,
+                )
+                doc_id = self.orchestrator.execute_task(
+                    "product_manager",
+                    "document_generation",
+                    {"output_dir": "."},
+                    self.project_name,
+                )
+            except Exception:
+                pass  # non-critical
+
             output_lines = [
                 f"Requirement added and analysed (artifact {artifact_id}).",
                 f"  Functional: {n_func}  |  Non-functional: {n_nfunc}",
             ]
             if story_id:
                 output_lines.append(f"  User stories generated (artifact {story_id}).")
+            if sf_id and sr_id:
+                output_lines.append(f"  System feature/requirement analysis generated ({sf_id}, {sr_id}).")
+            if doc_id:
+                output_lines.append("  Requirement documentation generated: System-Requirements.md")
 
             # Notify all agents via message bus
             self.orchestrator.message_bus.publish(

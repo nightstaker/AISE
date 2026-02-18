@@ -89,6 +89,9 @@ class TestWorkflowEngine:
         assert len(wf.phases) == 4
         phase_names = [p.name for p in wf.phases]
         assert phase_names == ["requirements", "design", "implementation", "testing"]
+        requirement_skills = [task.skill for task in wf.phases[0].tasks]
+        assert "system_requirement_analysis" in requirement_skills
+        assert "document_generation" in requirement_skills
 
     def test_create_default_workflow_design_min_review_rounds(self):
         wf = WorkflowEngine.create_default_workflow()
