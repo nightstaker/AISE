@@ -1,39 +1,83 @@
-# Skill Spec: progress_tracking
+# Skill: progress_tracking
 
-## 1. Metadata
-- `skill_id`: `progress_tracking`
-- `module`: `aise.skills.progress_tracking.scripts.progress_tracking`
-- `class`: `ProgressTrackingSkill`
-- `implementation`: `src/aise/skills/progress_tracking/scripts/progress_tracking.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Track and report project progress across all development phases
+| Field | Value |
+|-------|-------|
+| **Name** | `progress_tracking` |
+| **Class** | `ProgressTrackingSkill` |
+| **Module** | `aise.skills.progress_tracking.scripts.progress_tracking` |
+| **Agent** | Project Manager (`project_manager`) |
+| **Description** | Track and report project progress across all development phases |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Tracks overall project status by inspecting the artifact store for all expected artifacts across the four development phases. Reports per-phase completion, artifact statuses, review feedback summaries, and overall progress percentage.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.PROGRESS_REPORT`
-- Producer: `project_manager`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| *(none)* | — | — | All input is read from the artifact store |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+The skill reads all artifact types from the store to compute status.
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Output
+
+**Artifact Type:** `ArtifactType.PROGRESS_REPORT`
+
+```json
+{
+  "phases": {
+    "requirements": {
+      "artifacts": { "requirements": "approved", "user_stories": "draft", "prd": "approved" },
+      "complete": true
+    },
+    "design": {
+      "artifacts": { "architecture": "approved", "api_contract": "draft", "tech_stack": "draft" },
+      "complete": true
+    },
+    "implementation": {
+      "artifacts": { "source_code": "approved", "unit_tests": "draft" },
+      "complete": true
+    },
+    "testing": {
+      "artifacts": { "test_plan": "draft", "test_cases": "draft", "automated_tests": "approved" },
+      "complete": true
+    }
+  },
+  "completed_phases": 4,
+  "total_phases": 4,
+  "progress_percentage": 100.0,
+  "total_artifacts": 12,
+  "review_summary": {
+    "total_reviews": 3,
+    "approved": 2,
+    "rejected": 1
+  },
+  "project_name": "My Project"
+}
+```
+
+## Phase Completion Logic
+
+### Requirements Phase
+Complete when `REQUIREMENTS` artifact exists and all present artifacts (requirements, user_stories, PRD) have status `approved`, `draft`, or `revised`.
+
+### Design Phase
+Complete when `ARCHITECTURE_DESIGN` artifact exists and all present artifacts (architecture, api_contract, tech_stack) have status `approved`, `draft`, or `revised`.
+
+### Implementation Phase
+Complete when both `SOURCE_CODE` and `UNIT_TESTS` artifacts exist.
+
+### Testing Phase
+Complete when `TEST_PLAN`, `TEST_CASES`, and `AUTOMATED_TESTS` all exist.
+
+## Integration
+
+### Consumed By
+- Orchestrator — uses progress reports to determine workflow status
+- External reporting — provides structured status for dashboards
+
+### Depends On
+- All other skills indirectly — reads their output artifacts from the store

@@ -1,39 +1,68 @@
-# Skill Spec: requirement_distribution
+# Skill: requirement_distribution
 
-## 1. Metadata
-- `skill_id`: `requirement_distribution`
-- `module`: `aise.skills.requirement_distribution.scripts.requirement_distribution`
-- `class`: `RequirementDistributionSkill`
-- `implementation`: `src/aise/skills/requirement_distribution/scripts/requirement_distribution.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Distribute original product and architecture requirements to the project team
+| Field | Value |
+|-------|-------|
+| **Name** | `requirement_distribution` |
+| **Class** | `RequirementDistributionSkill` |
+| **Module** | `aise.skills.requirement_distribution.scripts.requirement_distribution` |
+| **Agent** | RD Director (`rd_director`) |
+| **Description** | Distribute original product and architecture requirements to the project team |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: `product_requirements`
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Creates a single authoritative `REQUIREMENTS` artifact from the raw requirements provided by the RD Director. Product requirements describe *what* to build; architecture requirements describe *how* to build it. Downstream agents (Product Manager, Architect, etc.) read this artifact as their starting point.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.REQUIREMENTS`
-- Producer: `rd_director`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `product_requirements` | `str \| list[str]` | Yes | Product/feature requirements |
+| `architecture_requirements` | `str \| list[str]` | No | Technical/architecture constraints |
+| `project_name` | `str` | No | Project name (falls back to `context.project_name`) |
+| `recipients` | `list[str]` | No | Agent names to notify (default: PM, Architect, Developer, QA) |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+String inputs are normalised to single-element lists internally.
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+### Input Validation
+
+- `product_requirements` must be present and non-empty.
+
+## Output
+
+**Artifact Type:** `ArtifactType.REQUIREMENTS`
+
+```json
+{
+  "report_type": "requirement_distribution",
+  "distribution": {
+    "project_name": "MyProject",
+    "product_requirements": ["Users can register", "Users can purchase products"],
+    "architecture_requirements": ["Use PostgreSQL", "Deploy on K8s"],
+    "recipients": ["product_manager", "architect", "developer", "qa_engineer"],
+    "product_requirement_count": 2,
+    "architecture_requirement_count": 2
+  },
+  "raw_input": "Users can register\nUsers can purchase products\nUse PostgreSQL\nDeploy on K8s",
+  "functional_requirements": [
+    {"id": "PR-1", "type": "functional", "description": "Users can register"},
+    {"id": "PR-2", "type": "functional", "description": "Users can purchase products"}
+  ],
+  "non_functional_requirements": [
+    {"id": "AR-1", "type": "architecture", "description": "Use PostgreSQL"},
+    {"id": "AR-2", "type": "architecture", "description": "Deploy on K8s"}
+  ],
+  "constraints": []
+}
+```
+
+## Integration
+
+### Consumed By
+- `requirement_analysis` (Product Manager) — reads `REQUIREMENTS` as its source of truth
+- `system_design` (Architect) — reads `REQUIREMENTS` for architecture decisions
+- `conflict_resolution` (Project Manager) — reads `REQUIREMENTS` for NFR heuristics
+
+### Depends On
+- `team_formation` — logical predecessor (no hard artifact dependency)

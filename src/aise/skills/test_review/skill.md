@@ -1,39 +1,84 @@
-# Skill Spec: test_review
+# Skill: test_review
 
-## 1. Metadata
-- `skill_id`: `test_review`
-- `module`: `aise.skills.test_review.scripts.test_review`
-- `class`: `TestReviewSkill`
-- `implementation`: `src/aise/skills/test_review/scripts/test_review.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Review test coverage, quality, and identify testing gaps
+| Field | Value |
+|-------|-------|
+| **Name** | `test_review` |
+| **Class** | `TestReviewSkill` |
+| **Module** | `aise.skills.test_review.scripts.test_review` |
+| **Agent** | QA Engineer (`qa_engineer`) |
+| **Description** | Review test coverage, quality, and identify testing gaps |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Acts as a review gate for the testing phase. Reviews test coverage by checking endpoint coverage against API contracts, automation rates, unit test counts, and test type balance (integration, e2e, regression).
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.REVIEW_FEEDBACK`
-- Producer: `qa_engineer`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| *(none)* | — | — | All input is read from the artifact store |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+The skill reads from the artifact store:
+- `ArtifactType.TEST_PLAN` — test plan for subsystem coverage
+- `ArtifactType.TEST_CASES` — test cases for coverage metrics
+- `ArtifactType.AUTOMATED_TESTS` — automated scripts for automation rate
+- `ArtifactType.UNIT_TESTS` — unit test count
+- `ArtifactType.API_CONTRACT` — endpoints for coverage calculation
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Output
+
+**Artifact Type:** `ArtifactType.REVIEW_FEEDBACK`
+
+```json
+{
+  "approved": true,
+  "metrics": {
+    "planned_subsystems": 3,
+    "endpoint_coverage": 85.0,
+    "total_endpoints": 15,
+    "covered_endpoints": 13,
+    "automation_rate": 80.0,
+    "total_test_cases": 15,
+    "automated_scripts": 12,
+    "unit_test_count": 12
+  },
+  "issues": [
+    { "type": "low_coverage", "severity": "medium", "description": "Endpoint test coverage is 65% (target: 70%)" },
+    { "type": "missing_test_type", "severity": "medium", "description": "No E2E test cases defined" }
+  ],
+  "summary": "Test review: Approved, 0 issues found."
+}
+```
+
+## Side Effects
+
+- Sets `AUTOMATED_TESTS` artifact status to `ArtifactStatus.APPROVED` or `ArtifactStatus.REJECTED`
+
+## Review Checks
+
+1. **Test plan exists** — severity `high` if missing
+2. **Endpoint coverage** — severity `medium` if below 70%
+3. **Automation rate** — severity `medium` if below 60%
+4. **Unit tests exist** — severity `high` if missing
+5. **E2E tests defined** — severity `medium` if missing
+6. **Regression tests defined** — severity `low` if missing
+
+## Approval Logic
+
+- **Approved**: No issues with severity `critical` or `high`
+- **Rejected**: Any issue with severity `critical` or `high`
+
+## Integration
+
+### Consumed By
+- `progress_tracking` — checks review feedback for progress reporting
+- Workflow review gates — orchestrator uses approval status to decide phase progression
+
+### Depends On
+- `test_plan_design` — reads `ArtifactType.TEST_PLAN`
+- `test_case_design` — reads `ArtifactType.TEST_CASES`
+- `test_automation` — reads `ArtifactType.AUTOMATED_TESTS`
+- `unit_test_writing` — reads `ArtifactType.UNIT_TESTS`
+- `api_design` — reads `ArtifactType.API_CONTRACT`

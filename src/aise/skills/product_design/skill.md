@@ -1,39 +1,67 @@
-# Skill Spec: product_design
+# Skill: product_design
 
-## 1. Metadata
-- `skill_id`: `product_design`
-- `module`: `aise.skills.product_design.scripts.product_design`
-- `class`: `ProductDesignSkill`
-- `implementation`: `src/aise/skills/product_design/scripts/product_design.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Create a PRD with feature specifications, user flows, and priority rankings
+| Field | Value |
+|-------|-------|
+| **Name** | `product_design` |
+| **Class** | `ProductDesignSkill` |
+| **Module** | `aise.skills.product_design.scripts.product_design` |
+| **Agent** | Product Manager (`product_manager`) |
+| **Description** | Create a PRD with feature specifications, user flows, and priority rankings |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Produces a Product Requirement Document (PRD) by aggregating functional requirements, non-functional requirements, and user stories into a unified document with features, user flows, and a priority matrix.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.PRD`
-- Producer: `product_manager`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `project_name` | `str` | No | Fallback project name if not set in context |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+The skill reads primarily from the artifact store:
+- `ArtifactType.REQUIREMENTS` — functional and non-functional requirements
+- `ArtifactType.USER_STORIES` — user stories linked to features
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Output
+
+**Artifact Type:** `ArtifactType.PRD`
+
+```json
+{
+  "project_name": "My Project",
+  "overview": "Product with N features derived from M requirements.",
+  "features": [
+    {
+      "name": "Feature short name",
+      "description": "Full requirement description",
+      "priority": "medium",
+      "user_stories": ["US-FR-001"]
+    }
+  ],
+  "user_flows": [
+    {
+      "id": "UF-001",
+      "name": "Flow for: Feature name",
+      "steps": ["User initiates action", "System processes...", "System returns result", "User sees confirmation"]
+    }
+  ],
+  "non_functional_requirements": [...],
+  "priority_matrix": {
+    "high": [...],
+    "medium": [...],
+    "low": [...]
+  }
+}
+```
+
+## Integration
+
+### Consumed By
+- `product_review` — validates PRD coverage against requirements
+- `system_design` — reads PRD features to derive system components
+
+### Depends On
+- `requirement_analysis` — reads `ArtifactType.REQUIREMENTS`
+- `user_story_writing` — reads `ArtifactType.USER_STORIES`

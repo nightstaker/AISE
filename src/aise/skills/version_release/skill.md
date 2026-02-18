@@ -1,39 +1,79 @@
-# Skill Spec: version_release
+# Skill: version_release
 
-## 1. Metadata
-- `skill_id`: `version_release`
-- `module`: `aise.skills.version_release.scripts.version_release`
-- `class`: `VersionReleaseSkill`
-- `implementation`: `src/aise/skills/version_release/scripts/version_release.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Coordinate a project version release and record release notes
+| Field | Value |
+|-------|-------|
+| **Name** | `version_release` |
+| **Class** | `VersionReleaseSkill` |
+| **Module** | `aise.skills.version_release.scripts.version_release` |
+| **Agent** | Project Manager (`project_manager`) |
+| **Description** | Coordinate a project version release and record release notes |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Validates that all required delivery artifacts are present, records a versioned release, and produces a report that includes readiness checks, any blockers, and release metadata. If any required artifact is missing the release is marked `blocked`.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.PROGRESS_REPORT`
-- Producer: `project_manager`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `version` | `str` | Yes | Semantic version string, e.g. `"1.2.0"` |
+| `release_notes` | `str` | No | Human-readable description of what changed |
+| `release_type` | `str` | No | `"major"`, `"minor"`, or `"patch"` (default: `"minor"`) |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+### Input Validation
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+- `version` must be present and non-empty.
+
+## Output
+
+**Artifact Type:** `ArtifactType.PROGRESS_REPORT`
+
+```json
+{
+  "report_type": "version_release",
+  "version": "1.0.0",
+  "release_type": "major",
+  "release_notes": "Initial release",
+  "readiness_checks": {
+    "requirements": true,
+    "architecture_design": true,
+    "source_code": true,
+    "unit_tests": true
+  },
+  "blockers": [],
+  "is_ready": true,
+  "status": "released",
+  "project_name": "MyProject"
+}
+```
+
+When artifacts are missing:
+
+```json
+{
+  "is_ready": false,
+  "status": "blocked",
+  "blockers": ["Missing artifact: source_code", "Missing artifact: unit_tests"]
+}
+```
+
+## Readiness Checks
+
+The following artifact types must exist in the artifact store for a release to proceed:
+
+| Artifact | Enum |
+|----------|------|
+| Requirements | `REQUIREMENTS` |
+| Architecture Design | `ARCHITECTURE_DESIGN` |
+| Source Code | `SOURCE_CODE` |
+| Unit Tests | `UNIT_TESTS` |
+
+## Integration
+
+### Depends On
+- `requirement_analysis` or `requirement_distribution` — produces `REQUIREMENTS`
+- `system_design` — produces `ARCHITECTURE_DESIGN`
+- `code_generation` — produces `SOURCE_CODE`
+- `unit_test_writing` — produces `UNIT_TESTS`

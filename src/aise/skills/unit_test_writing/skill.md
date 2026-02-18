@@ -1,39 +1,66 @@
-# Skill Spec: unit_test_writing
+# Skill: unit_test_writing
 
-## 1. Metadata
-- `skill_id`: `unit_test_writing`
-- `module`: `aise.skills.unit_test_writing.scripts.unit_test_writing`
-- `class`: `UnitTestWritingSkill`
-- `implementation`: `src/aise/skills/unit_test_writing/scripts/unit_test_writing.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Generate unit tests for source code modules with edge-case coverage
+| Field | Value |
+|-------|-------|
+| **Name** | `unit_test_writing` |
+| **Class** | `UnitTestWritingSkill` |
+| **Module** | `aise.skills.unit_test_writing.scripts.unit_test_writing` |
+| **Agent** | Developer (`developer`) |
+| **Description** | Generate unit tests for source code modules with edge-case coverage |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Generates unit test suites for each source code module. Creates test cases for service methods (GET, POST, DELETE) and model validation, using pytest as the test framework.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.UNIT_TESTS`
-- Producer: `developer`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| *(none)* | — | — | All input is read from the artifact store |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+The skill reads from the artifact store:
+- `ArtifactType.SOURCE_CODE` — modules and language to generate tests for
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Output
+
+**Artifact Type:** `ArtifactType.UNIT_TESTS`
+
+```json
+{
+  "test_suites": [
+    {
+      "module": "feature_name",
+      "test_file": "tests/test_feature_name.py",
+      "test_cases": [
+        { "name": "test_feature_name_get_returns_list", "description": "...", "type": "positive", "code": "..." },
+        { "name": "test_feature_name_post_returns_dict", "description": "...", "type": "positive", "code": "..." },
+        { "name": "test_feature_name_delete_returns_none", "description": "...", "type": "positive", "code": "..." },
+        { "name": "test_feature_name_model_has_id", "description": "...", "type": "unit", "code": "..." }
+      ]
+    }
+  ],
+  "language": "Python",
+  "framework": "pytest",
+  "total_test_cases": 12
+}
+```
+
+## Generated Tests Per Module
+
+1. **GET returns list** — Verifies service `.get()` returns a list
+2. **POST returns dict** — Verifies service `.post()` returns a dict
+3. **DELETE returns None** — Verifies service `.delete()` returns None
+4. **Model has id** — Verifies the model dataclass has an `id` attribute
+
+The `app` module is skipped (entry point only).
+
+## Integration
+
+### Consumed By
+- `code_review` — checks test coverage per module
+- `test_review` — checks unit test count for overall coverage metrics
+
+### Depends On
+- `code_generation` — reads `ArtifactType.SOURCE_CODE`

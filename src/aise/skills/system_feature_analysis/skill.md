@@ -1,39 +1,60 @@
-# Skill Spec: system_feature_analysis
+# Skill: system_feature_analysis
 
-## 1. Metadata
-- `skill_id`: `system_feature_analysis`
-- `module`: `aise.skills.system_feature_analysis.scripts.system_feature_analysis`
-- `class`: `SystemFeatureAnalysisSkill`
-- `implementation`: `src/aise/skills/system_feature_analysis/scripts/system_feature_analysis.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Analyze requirements and produce System Features (SF) with external and internal DFX characteristics
+| Field | Value |
+|-------|-------|
+| **Name** | `system_feature_analysis` |
+| **Class** | `SystemFeatureAnalysisSkill` |
+| **Module** | `aise.skills.system_feature_analysis.scripts.system_feature_analysis` |
+| **Agent** | Product Manager (`product_manager`) |
+| **Description** | Analyze requirements and produce System Features (SF) with external and internal DFX characteristics |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: `raw_requirements`
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Parses raw requirements into structured System Features (SF), separating externally visible features from internal DFX concerns (performance/security/maintainability/etc.) and assigning category labels for downstream requirement decomposition.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.SYSTEM_DESIGN`
-- Producer: `product_manager`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `raw_requirements` | `str` or `list` | Yes | Raw requirement lines or requirement list |
+| `project_name` | `str` | No | Project name fallback when context is empty |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+### Validation
+- `raw_requirements` must exist and be non-empty.
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Output
+
+**Artifact Type:** `ArtifactType.SYSTEM_DESIGN`
+
+```json
+{
+  "project_name": "<project>",
+  "overview": "System design with <n> features (<x> external, <y> internal DFX)",
+  "external_features": [{"id": "SF-001", "description": "...", "type": "external", "category": "..."}],
+  "internal_dfx_features": [{"id": "SF-010", "description": "...", "type": "internal_dfx", "category": "..."}],
+  "all_features": [...],
+  "raw_input": "..."
+}
+```
+
+## Classification Logic
+
+### External vs Internal DFX
+- Internal DFX keywords include: `performance`, `security`, `scalability`, `reliability`, `maintainability`, `testability`, `observability`, `availability`, `logging`, `monitoring`, `dfx`
+- Requirements not matching DFX keywords are treated as external features
+
+### Category Heuristics
+- External: `User Management`, `Data Management`, `API/Interface`, `User Interface`, fallback `Functional`
+- Internal DFX: `Performance`, `Security`, `Scalability`, `Reliability`, `Maintainability`, `Testability`, fallback `DFX`
+
+## Integration
+
+### Consumed By
+- `system_requirement_analysis` (SF -> SR decomposition)
+- `document_generation` (`system-design.md`)
+- `status_tracking`
+
+### Depends On
+- None (typically first PM-stage decomposition step)

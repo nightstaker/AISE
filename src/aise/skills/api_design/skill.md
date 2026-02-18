@@ -1,39 +1,69 @@
-# Skill Spec: api_design
+# Skill: api_design
 
-## 1. Metadata
-- `skill_id`: `api_design`
-- `module`: `aise.skills.api_design.scripts.api_design`
-- `class`: `APIDesignSkill`
-- `implementation`: `src/aise/skills/api_design/scripts/api_design.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Design API contracts (endpoints, request/response schemas, error codes)
+| Field | Value |
+|-------|-------|
+| **Name** | `api_design` |
+| **Class** | `APIDesignSkill` |
+| **Module** | `aise.skills.api_design.scripts.api_design` |
+| **Agent** | Architect (`architect`) |
+| **Description** | Design API contracts (endpoints, request/response schemas, error codes) |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Defines RESTful API contracts by generating CRUD endpoints for each service component, creating request/response schemas (OpenAPI 3.0 style), and defining a standard error schema and JWT authentication.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.API_CONTRACT`
-- Producer: `architect`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| *(none)* | — | — | All input is read from the artifact store |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+The skill reads from the artifact store:
+- `ArtifactType.ARCHITECTURE_DESIGN` — service components to generate endpoints for
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Output
+
+**Artifact Type:** `ArtifactType.API_CONTRACT`
+
+```json
+{
+  "openapi": "3.0.0",
+  "info": { "title": "Project API", "version": "1.0.0" },
+  "endpoints": [
+    { "method": "GET", "path": "/api/v1/resources", "description": "List all resources", "response_schema": "resource_list", "status_codes": { "200": "Success", "401": "Unauthorized" } },
+    { "method": "POST", "path": "/api/v1/resources", "description": "Create a new resource", "request_schema": "resource_create", "response_schema": "resource_detail", "status_codes": { "201": "Created", "400": "Bad Request", "401": "Unauthorized" } },
+    { "method": "GET", "path": "/api/v1/resources/{id}", "description": "Get resource by ID", "response_schema": "resource_detail", "status_codes": { "200": "Success", "404": "Not Found" } },
+    { "method": "PUT", "path": "/api/v1/resources/{id}", "description": "Update resource", "request_schema": "resource_update", "response_schema": "resource_detail", "status_codes": { "200": "Success", "400": "Bad Request", "404": "Not Found" } },
+    { "method": "DELETE", "path": "/api/v1/resources/{id}", "description": "Delete resource", "status_codes": { "204": "No Content", "404": "Not Found" } }
+  ],
+  "schemas": {
+    "resource_detail": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" }, "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" } } },
+    "error": { "type": "object", "properties": { "code": { "type": "string" }, "message": { "type": "string" }, "details": { "type": "object" } }, "required": ["code", "message"] }
+  },
+  "authentication": { "type": "bearer", "scheme": "JWT" }
+}
+```
+
+## Endpoint Generation
+
+For each service component, 5 CRUD endpoints are generated:
+- `GET /api/v1/{resource}s` — List all
+- `POST /api/v1/{resource}s` — Create
+- `GET /api/v1/{resource}s/{id}` — Get by ID
+- `PUT /api/v1/{resource}s/{id}` — Update
+- `DELETE /api/v1/{resource}s/{id}` — Delete
+
+Infrastructure components (type != "service") are skipped.
+
+## Integration
+
+### Consumed By
+- `architecture_review` — validates API contract exists and has endpoints
+- `code_generation` — reads endpoints to generate route handlers
+- `test_case_design` — reads endpoints to generate integration test cases
+- `test_review` — reads endpoints to measure test coverage
+
+### Depends On
+- `system_design` — reads `ArtifactType.ARCHITECTURE_DESIGN`

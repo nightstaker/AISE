@@ -1,39 +1,73 @@
-# Skill Spec: architecture_review
+# Skill: architecture_review
 
-## 1. Metadata
-- `skill_id`: `architecture_review`
-- `module`: `aise.skills.architecture_review.scripts.architecture_review`
-- `class`: `ArchitectureReviewSkill`
-- `implementation`: `src/aise/skills/architecture_review/scripts/architecture_review.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Review artifacts against architectural design for consistency and violations
+| Field | Value |
+|-------|-------|
+| **Name** | `architecture_review` |
+| **Class** | `ArchitectureReviewSkill` |
+| **Module** | `aise.skills.architecture_review.scripts.architecture_review` |
+| **Agent** | Architect (`architect`) |
+| **Description** | Review artifacts against architectural design for consistency and violations |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Acts as a review gate for the design phase. Validates that the architecture design is complete (has components and data flows), that API contracts exist with endpoints, and that source code modules align with architecture components.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.REVIEW_FEEDBACK`
-- Producer: `architect`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| *(none)* | — | — | All input is read from the artifact store |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+The skill reads from the artifact store:
+- `ArtifactType.ARCHITECTURE_DESIGN` — architecture to review
+- `ArtifactType.API_CONTRACT` — API contract to validate
+- `ArtifactType.SOURCE_CODE` — code modules to check alignment (optional)
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Output
+
+**Artifact Type:** `ArtifactType.REVIEW_FEEDBACK`
+
+```json
+{
+  "approved": true,
+  "checks": [
+    { "check": "component_coverage", "status": "pass", "detail": "5 components defined" },
+    { "check": "data_flow_defined", "status": "pass", "detail": "10 data flows defined" },
+    { "check": "api_endpoints_defined", "status": "pass", "detail": "25 API endpoints defined" }
+  ],
+  "issues": [
+    { "type": "missing_artifact", "severity": "critical", "description": "No architecture design artifact found" },
+    { "type": "missing_implementation", "severity": "high", "description": "Component 'X' has no corresponding code module" }
+  ],
+  "summary": "Architecture review: Approved, 3 checks, 0 issues."
+}
+```
+
+## Side Effects
+
+- Sets `ARCHITECTURE_DESIGN` artifact status to `ArtifactStatus.APPROVED` or `ArtifactStatus.REJECTED`
+
+## Review Checks
+
+1. **Component coverage** — Architecture has at least one component defined
+2. **Data flow defined** — Architecture has at least one data flow defined
+3. **API endpoints defined** — API contract has at least one endpoint
+4. **Code alignment** — Each service component has a corresponding code module (only if source code exists)
+
+## Approval Logic
+
+- **Approved**: No issues with severity `critical` or `high`
+- **Rejected**: Any issue with severity `critical` or `high`
+
+## Integration
+
+### Consumed By
+- `progress_tracking` — checks review feedback for progress reporting
+- Workflow review gates — orchestrator uses approval status to decide phase progression
+
+### Depends On
+- `system_design` — reads `ArtifactType.ARCHITECTURE_DESIGN`
+- `api_design` — reads `ArtifactType.API_CONTRACT`
+- `code_generation` — reads `ArtifactType.SOURCE_CODE` (optional)

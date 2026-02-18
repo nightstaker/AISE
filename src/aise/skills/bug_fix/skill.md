@@ -1,39 +1,71 @@
-# Skill Spec: bug_fix
+# Skill: bug_fix
 
-## 1. Metadata
-- `skill_id`: `bug_fix`
-- `module`: `aise.skills.bug_fix.scripts.bug_fix`
-- `class`: `BugFixSkill`
-- `implementation`: `src/aise/skills/bug_fix/scripts/bug_fix.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Triage bug reports or failing tests and produce analysis
+| Field | Value |
+|-------|-------|
+| **Name** | `bug_fix` |
+| **Class** | `BugFixSkill` |
+| **Module** | `aise.skills.bug_fix.scripts.bug_fix` |
+| **Agent** | Developer (`developer`) |
+| **Description** | Analyze bug reports or failing tests and produce fixes |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: `failing_tests`
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Diagnoses and produces fixes for bugs reported via bug reports or failing test results. Identifies affected modules by matching bug descriptions against source code modules, and generates fix records with root cause analysis.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.BUG_REPORT`
-- Producer: `developer`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `bug_reports` | `list[dict]` | Conditional | List of bug report objects with `id` and `description` fields |
+| `failing_tests` | `list[dict]` | Conditional | List of failing test objects with `name`, `error`, and `file` fields |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+At least one of `bug_reports` or `failing_tests` must be provided.
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+### Input Validation
+
+- Either `bug_reports` or `failing_tests` must be present.
+
+## Output
+
+**Artifact Type:** `ArtifactType.BUG_REPORT`
+
+```json
+{
+  "fixes": [
+    {
+      "bug_id": "BUG-001",
+      "description": "...",
+      "root_cause": "Analysis of: ...",
+      "fix_description": "Fix applied for: ...",
+      "files_changed": ["app/feature/service.py"],
+      "status": "fixed"
+    },
+    {
+      "test_name": "test_feature_get",
+      "error": "AssertionError",
+      "root_cause": "Test failure analysis: ...",
+      "fix_description": "Fix for failing test: ...",
+      "files_changed": ["tests/test_feature.py"],
+      "status": "fixed"
+    }
+  ],
+  "total_bugs": 2,
+  "fixed_count": 1,
+  "needs_investigation": 1
+}
+```
+
+## Fix Resolution Logic
+
+- **Bug reports**: Matches bug description against source code module names. If a matching module is found, the service file is marked as changed. If no match is found, status is set to `needs_investigation`.
+- **Failing tests**: Uses the test file path directly as the affected file.
+
+## Integration
+
+### Consumed By
+- `progress_tracking` — tracks bug fix status
+
+### Depends On
+- `code_generation` — reads `ArtifactType.SOURCE_CODE` to identify affected modules

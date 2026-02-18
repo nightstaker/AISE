@@ -1,39 +1,87 @@
-# Skill Spec: status_tracking
+# Skill: status_tracking
 
-## 1. Metadata
-- `skill_id`: `status_tracking`
-- `module`: `aise.skills.status_tracking.scripts.status_tracking`
-- `class`: `StatusTrackingSkill`
-- `implementation`: `src/aise/skills/status_tracking/scripts/status_tracking.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Generate complete SF-SR-AR-FN traceability and status information
+| Field | Value |
+|-------|-------|
+| **Name** | `status_tracking` |
+| **Class** | `StatusTrackingSkill` |
+| **Module** | `aise.skills.status_tracking.scripts.status_tracking` |
+| **Agent** | Architect (`architect`) |
+| **Description** | Generate complete SF-SR-AR-FN traceability and status information |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: 无强制字段
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Builds a unified, hierarchical status registry covering SF -> SR -> AR -> FN links, computes bottom-up completion percentages, and outputs an aggregate progress artifact suitable for dashboards/report generation.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.STATUS_TRACKING`
-- Producer: `architect`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `project_name` | `str` | No | Project name fallback when context is empty |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+No direct element lists are expected in `input_data`; data is read from artifact store.
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+## Dependencies
+
+Required artifacts:
+- `ArtifactType.SYSTEM_DESIGN`
+- `ArtifactType.SYSTEM_REQUIREMENTS`
+- `ArtifactType.ARCHITECTURE_REQUIREMENT`
+- `ArtifactType.FUNCTIONAL_DESIGN`
+
+If any dependency is missing, execution fails with explicit pipeline guidance.
+
+## Output
+
+**Artifact Type:** `ArtifactType.STATUS_TRACKING`
+
+```json
+{
+  "project_name": "<project>",
+  "last_updated": "2026-...Z",
+  "elements": {
+    "SF-001": {"type": "system_feature", "status": "未开始|进行中|已完成", "children": ["SR-..."]},
+    "SR-0001": {"type": "system_requirement", "parent": "SF-001", "children": ["AR-..."]},
+    "AR-SR-...": {"type": "architecture_requirement", "parent": "SR-...", "children": ["FN-..."]},
+    "FN-...": {
+      "type": "function",
+      "implementation_status": {
+        "code_generated": false,
+        "tests_written": false,
+        "tests_passed": false,
+        "reviewed": false
+      },
+      "completion_percentage": 0
+    }
+  },
+  "summary": {
+    "total_sfs": 0,
+    "total_srs": 0,
+    "total_ars": 0,
+    "total_fns": 0,
+    "overall_completion": 0
+  }
+}
+```
+
+## Status Calculation
+
+Bottom-up propagation:
+1. FN completion from implementation flags
+2. AR completion from child FN average
+3. SR completion from child AR average
+4. SF completion from child SR average
+5. Overall completion from SF average
+
+## Integration
+
+### Depends On
+- `system_feature_analysis`
+- `system_requirement_analysis`
+- `architecture_requirement_analysis`
+- `functional_design`
+
+### Consumed By
+- `architecture_document_generation` (`status.md` generation)
+- progress monitoring and orchestration status reports

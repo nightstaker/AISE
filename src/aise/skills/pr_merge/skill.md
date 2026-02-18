@@ -1,39 +1,68 @@
-# Skill Spec: pr_merge
+# Skill: pr_merge
 
-## 1. Metadata
-- `skill_id`: `pr_merge`
-- `module`: `aise.skills.pr_merge.scripts.pr_merge`
-- `class`: `PRMergeSkill`
-- `implementation`: `src/aise/skills/pr_merge/scripts/pr_merge.py`
-- `license`: `Apache-2.0` (see `LICENSE.txt`)
+## Overview
 
-## 2. Purpose
-Merge a GitHub pull request once all necessary feedback has been applied or answered (Product Manager only)
+| Field | Value |
+|-------|-------|
+| **Name** | `pr_merge` |
+| **Class** | `PRMergeSkill` |
+| **Module** | `aise.skills.pr_merge.scripts.pr_merge` |
+| **Agent** | Product Manager / Project Manager / Reviewer (permission-gated) |
+| **Description** | Merge a GitHub pull request once all necessary feedback has been applied or answered |
 
-## 3. Inputs
-- `input_data`: `dict[str, Any]`
-- Required fields from `validate_input`: `pr_number`
-- `context`: `SkillContext` (artifact store, project_name, parameters, model_config, llm_client)
+## Purpose
 
-## 4. Dependencies
-- Required artifact types: `[]`
-- External dependencies: 见实现文件中的 import 与 `context.parameters` 使用
+Performs permission-checked pull request merge behavior. In GitHub-configured mode it calls GitHub API merge; in offline mode it emits a local merge record artifact for workflow continuity.
 
-## 5. Outputs
-- Output artifact type: `ArtifactType.REVIEW_FEEDBACK`
-- Producer: `context.parameters["agent_name"] or product_manager`
-- Storage: 由 Agent 框架在执行后写入 `ArtifactStore`
+## Input
 
-## 6. Execution Contract
-1. Validate input via `validate_input(input_data)`.
-2. Read required artifacts from `context.artifact_store` as needed.
-3. Execute deterministic logic and/or LLM-assisted logic.
-4. Return an `Artifact` object with complete `content` and `metadata`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `pr_number` | `int` | Yes | Pull request number |
+| `commit_title` | `str` | No | Optional merge commit title |
+| `merge_method` | `str` | No | Merge method passed to GitHub API (default: `merge`) |
 
-## 7. Error Handling
-- Input validation errors must return clear missing-field messages.
-- Runtime exceptions should preserve actionable context (project, ids, cause).
+## Runtime Parameters
 
-## 8. Notes
-- This file is normalized to a shared template across all skills.
-- Skill-specific deep rules should be maintained in code/comments or dedicated `references/` files when needed.
+Read from `context.parameters`:
+- `github_config` for API mode
+- `agent_name` for artifact producer identity
+
+## Output
+
+**Artifact Type:** `ArtifactType.REVIEW_FEEDBACK`
+
+```json
+{
+  "pr_number": 42,
+  "reviews_checked": 3,
+  "merged": true,
+  "message": "Pull Request successfully merged",
+  "sha": "..."
+}
+```
+
+Offline mode example:
+
+```json
+{
+  "pr_number": 42,
+  "merged": false,
+  "note": "GitHub is not configured; merge recorded locally."
+}
+```
+
+## Permission Model
+
+- Enforced via `check_permission(agent_role, GitHubPermission.MERGE_PR)`
+- Disallowed roles raise `PermissionDeniedError`
+
+## Integration
+
+### Depends On
+- GitHub client (`GitHubClient`) when configured
+- GitHub permission subsystem
+
+### Consumed By
+- Reviewer/merge automation flows
+- PR lifecycle management in GitHub mode
