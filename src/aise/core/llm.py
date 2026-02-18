@@ -281,4 +281,5 @@ class LLMClient:
 
     def __repr__(self) -> str:
         return f"LLMClient(provider={self.config.provider!r}, model={self.config.model!r})"
+
     _UNEXPECTED_KWARG_RE = re.compile(r"unexpected keyword argument '([^']+)'")

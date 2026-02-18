@@ -390,9 +390,7 @@ class RequirementAnalysisSkill(Skill):
                 f"and state transitions for: {description}"
             )
         if req_type == "non_functional":
-            return (
-                f"Define measurable SLO/SLA, monitoring metrics, and verification strategy for: {description}"
-            )
+            return f"Define measurable SLO/SLA, monitoring metrics, and verification strategy for: {description}"
         return f"Define enforceable design/implementation boundary and compliance checks for: {description}"
 
     def _performance_text(self, description: str, req_type: str) -> str:
@@ -402,8 +400,7 @@ class RequirementAnalysisSkill(Skill):
             return f"Performance target is requirement-defined: {description}"
         if req_type == "functional":
             return (
-                "Recommended baseline: p95 latency < 300ms, error rate < 1%, "
-                "and stable throughput under expected load."
+                "Recommended baseline: p95 latency < 300ms, error rate < 1%, and stable throughput under expected load."
             )
         if req_type == "non_functional":
             return "Define explicit SLO values (latency/throughput/error budget) and validate by load testing."
