@@ -12,6 +12,7 @@ from .document_generation import DocumentGenerationSkill
 from .functional_design import FunctionalDesignSkill
 from .pr_merge import PRMergeSkill
 from .pr_review import PRReviewSkill
+from .pr_submission import PRSubmissionSkill
 from .product_design import ProductDesignSkill
 from .product_review import ProductReviewSkill
 from .progress_tracking import ProgressTrackingSkill
@@ -65,5 +66,6 @@ __all__ = [
     "TeamFormationSkill",
     "RequirementDistributionSkill",
     "PRReviewSkill",
+    "PRSubmissionSkill",
     "PRMergeSkill",
 ]

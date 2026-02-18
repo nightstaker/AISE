@@ -30,10 +30,16 @@ class DocumentGenerationSkill(Skill):
         }
 
         # Generate system-design.md
-        system_design = store.get_latest(ArtifactType.SYSTEM_DESIGN)
-        if system_design:
+        system_design_payload = input_data.get("system_design")
+        if isinstance(system_design_payload, dict):
+            system_design_content = system_design_payload
+        else:
+            system_design = store.get_latest(ArtifactType.SYSTEM_DESIGN)
+            system_design_content = system_design.content if system_design else None
+
+        if system_design_content:
             try:
-                design_doc = self._generate_system_design_md(system_design.content)
+                design_doc = self._generate_system_design_md(system_design_content)
                 design_path = Path(output_dir) / "system-design.md"
                 design_path.write_text(design_doc, encoding="utf-8")
                 results["generated_files"].append(str(design_path))
@@ -43,10 +49,16 @@ class DocumentGenerationSkill(Skill):
             results["errors"].append("No SYSTEM_DESIGN artifact found")
 
         # Generate System-Requirements.md
-        system_requirements = store.get_latest(ArtifactType.SYSTEM_REQUIREMENTS)
-        if system_requirements:
+        system_requirements_payload = input_data.get("system_requirements")
+        if isinstance(system_requirements_payload, dict):
+            system_requirements_content = system_requirements_payload
+        else:
+            system_requirements = store.get_latest(ArtifactType.SYSTEM_REQUIREMENTS)
+            system_requirements_content = system_requirements.content if system_requirements else None
+
+        if system_requirements_content:
             try:
-                req_doc = self._generate_system_requirements_md(system_requirements.content)
+                req_doc = self._generate_system_requirements_md(system_requirements_content)
                 req_path = Path(output_dir) / "System-Requirements.md"
                 req_path.write_text(req_doc, encoding="utf-8")
                 results["generated_files"].append(str(req_path))

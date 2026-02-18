@@ -6,7 +6,7 @@ from aise.core.agent import AgentRole
 from aise.core.artifact import ArtifactStore, ArtifactType
 from aise.core.skill import SkillContext
 from aise.github.permissions import PermissionDeniedError
-from aise.skills import PRMergeSkill, PRReviewSkill
+from aise.skills import PRMergeSkill, PRReviewSkill, PRSubmissionSkill
 
 
 def _make_context(**kwargs):
@@ -99,3 +99,30 @@ class TestPRMergeSkill:
         ctx = _make_context(agent_name="project_manager")
         artifact = skill.execute({"pr_number": 5}, ctx)
         assert artifact.content["pr_number"] == 5
+
+
+class TestPRSubmissionSkill:
+    def test_name(self):
+        assert PRSubmissionSkill().name == "pr_submission"
+
+    def test_validate_input_missing_fields(self):
+        skill = PRSubmissionSkill()
+        errors = skill.validate_input({})
+        assert any("title" in e for e in errors)
+        assert any("head" in e for e in errors)
+
+    def test_offline_execution(self):
+        skill = PRSubmissionSkill()
+        ctx = _make_context(agent_name="product_manager")
+        artifact = skill.execute(
+            {
+                "title": "docs: requirements package",
+                "body": "Submit requirements docs.",
+                "head": "docs/requirements-package",
+                "base": "main",
+            },
+            ctx,
+        )
+        assert artifact.artifact_type == ArtifactType.REVIEW_FEEDBACK
+        assert artifact.content["submitted"] is False
+        assert artifact.content["head"] == "docs/requirements-package"

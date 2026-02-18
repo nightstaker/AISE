@@ -15,12 +15,13 @@ class TestProductManagerAgent:
         agent, _ = self._make_agent()
         expected = {
             "requirement_analysis",
+            "system_feature_analysis",
+            "system_requirement_analysis",
             "user_story_writing",
             "product_design",
             "product_review",
-            "system_feature_analysis",
-            "system_requirement_analysis",
             "document_generation",
+            "pr_submission",
             "pr_review",
             "pr_merge",
         }
@@ -192,3 +193,73 @@ class TestProductManagerAgent:
             req_content = req_doc.read_text()
             assert "System Requirements Document" in req_content
             assert "SR-" in req_content
+
+    def test_run_full_requirements_workflow_including_pr(self, tmp_path):
+        agent, _ = self._make_agent()
+        output_dir = tmp_path / "docs_out"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        result = agent.run_full_requirements_workflow(
+            "User login\nUser registration\nPerformance must be under 200ms",
+            project_name="DemoProject",
+            output_dir=str(output_dir),
+            pr_head="docs/requirements-package",
+            pr_number=42,
+            merge_pr=True,
+        )
+
+        required_steps = {
+            "requirement_analysis",
+            "system_feature_analysis",
+            "system_requirement_analysis",
+            "user_story_writing",
+            "product_design",
+            "product_review",
+            "product_design_round_1",
+            "product_review_round_1",
+            "document_generation",
+            "pr_submission",
+            "pr_review",
+            "pr_merge",
+        }
+        assert required_steps.issubset(set(result.keys()))
+
+        assert (output_dir / "system-design.md").exists()
+        assert (output_dir / "System-Requirements.md").exists()
+
+    def test_run_full_requirements_workflow_review_loops_until_no_major(self, tmp_path):
+        agent, _ = self._make_agent()
+        output_dir = tmp_path / "docs_out"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        review_skill = agent.get_skill("product_review")
+        assert review_skill is not None
+        original_execute = review_skill.execute
+        rounds = {"count": 0}
+
+        def patched_execute(input_data, context):
+            rounds["count"] += 1
+            artifact = original_execute(input_data, context)
+            if rounds["count"] < 3:
+                artifact.content["has_major_issues"] = True
+                artifact.content["major_issues_count"] = 1
+            else:
+                artifact.content["has_major_issues"] = False
+                artifact.content["major_issues_count"] = 0
+            return artifact
+
+        review_skill.execute = patched_execute
+        try:
+            result = agent.run_full_requirements_workflow(
+                "User login\nUser registration\nPerformance must be under 200ms",
+                project_name="DemoProject",
+                output_dir=str(output_dir),
+                max_product_review_rounds=5,
+            )
+        finally:
+            review_skill.execute = original_execute
+
+        assert rounds["count"] == 3
+        assert "product_design_round_3" in result
+        assert "product_review_round_3" in result
+        assert "product_design_round_4" not in result
