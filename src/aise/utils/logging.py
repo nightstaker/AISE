@@ -123,6 +123,53 @@ def configure_logging(config: LoggingConfig | None = None, *, force: bool = Fals
     )
 
 
+def configure_module_file_logger(
+    logger_name: str,
+    log_file: str | Path,
+    *,
+    level: int | None = None,
+    json_format: bool = False,
+    rotate_daily: bool = False,
+    propagate: bool | None = None,
+) -> None:
+    """Attach a dedicated file handler to a specific logger."""
+    logger = logging.getLogger(logger_name)
+    file_path = Path(log_file)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Remove prior dedicated handlers to avoid duplicate writes.
+    for handler in list(logger.handlers):
+        if getattr(handler, "_aise_dedicated_file", False):
+            logger.removeHandler(handler)
+            handler.close()
+
+    formatter: logging.Formatter
+    if json_format:
+        formatter = _JsonFormatter()
+    else:
+        formatter = logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+            "%Y-%m-%d %H:%M:%S",
+        )
+
+    if rotate_daily:
+        file_handler: logging.Handler = TimedRotatingFileHandler(
+            filename=str(file_path),
+            when="midnight",
+            backupCount=7,
+            encoding="utf-8",
+        )
+    else:
+        file_handler = logging.FileHandler(filename=str(file_path), encoding="utf-8")
+
+    file_handler.setFormatter(formatter)
+    setattr(file_handler, "_aise_dedicated_file", True)
+    logger.addHandler(file_handler)
+    logger.setLevel(level if level is not None else logging.getLogger().level)
+    if propagate is not None:
+        logger.propagate = propagate
+
+
 def format_inference_result(result: Any) -> str:
     """Format inference output for logs with privacy-friendly truncation."""
     text = str(result)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 from ....core.artifact import Artifact, ArtifactType
@@ -23,7 +24,13 @@ class ArchitectureDocumentGenerationSkill(Skill):
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         store = context.artifact_store
         project_name = context.project_name or input_data.get("project_name", "Untitled")
-        output_dir = input_data.get("output_dir", ".")
+        output_dir = input_data.get("output_dir")
+        if not isinstance(output_dir, str) or not output_dir.strip():
+            project_root = context.parameters.get("project_root")
+            if isinstance(project_root, str) and project_root.strip():
+                output_dir = str(Path(project_root) / "docs")
+            else:
+                output_dir = "docs"
 
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)

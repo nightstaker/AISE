@@ -26,7 +26,7 @@ from ..core.project import Project, ProjectStatus
 from ..core.project_manager import ProjectManager
 from ..core.workflow import WorkflowEngine
 from ..main import create_team
-from ..utils.logging import configure_logging, get_logger
+from ..utils.logging import configure_logging, configure_module_file_logger, get_logger
 
 try:
     from authlib.integrations.starlette_client import OAuth
@@ -65,6 +65,14 @@ class WebProjectService:
     def __init__(self) -> None:
         self.project_manager = ProjectManager()
         configure_logging(self.project_manager._global_config.logging, force=True)
+        web_log_file = Path(self.project_manager._global_config.logging.log_dir) / "aise-web.log"
+        configure_module_file_logger(
+            "aise.web.app",
+            web_log_file,
+            json_format=self.project_manager._global_config.logging.json_format,
+            rotate_daily=self.project_manager._global_config.logging.rotate_daily,
+            propagate=False,
+        )
         self._runs_by_project: dict[str, list[WorkflowRun]] = {}
         self._requirements_by_project: dict[str, list[RequirementEntry]] = {}
         self._lock = RLock()
@@ -560,9 +568,11 @@ class WebProjectService:
             return
         try:
             data = json.loads(self._state_path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to load web state from %s: %s", self._state_path, exc)
             return
         if not isinstance(data, dict):
+            logger.warning("Invalid web state format in %s: expected JSON object", self._state_path)
             return
 
         runs_data = data.get("runs_by_project", {})
@@ -665,7 +675,10 @@ class WebProjectService:
                 for project in self.project_manager.list_projects()
             },
         }
-        self._state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Atomic replace to avoid readers seeing partially written JSON.
+        tmp_path = self._state_path.with_suffix(f"{self._state_path.suffix}.{uuid.uuid4().hex}.tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(self._state_path)
 
     @staticmethod
     def _serialize_run(run: WorkflowRun) -> dict[str, Any]:

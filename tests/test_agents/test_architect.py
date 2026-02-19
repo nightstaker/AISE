@@ -1,5 +1,7 @@
 """Tests for the Architect agent and skills."""
 
+from pathlib import Path
+
 from aise.agents.architect import ArchitectAgent
 from aise.agents.product_manager import ProductManagerAgent
 from aise.core.artifact import ArtifactStore
@@ -64,3 +66,28 @@ class TestArchitectAgent:
         artifact = arch.execute_skill("architecture_review", {})
         assert "approved" in artifact.content
         assert "checks" in artifact.content
+
+    def test_run_full_architecture_workflow_generates_system_architecture_doc(self, tmp_path):
+        bus = MessageBus()
+        store = ArtifactStore()
+        pm = ProductManagerAgent(bus, store)
+        arch = ArchitectAgent(bus, store)
+
+        raw = "User auth\nData export\nLatency under 200ms"
+        pm.execute_skill("requirement_analysis", {"raw_requirements": raw})
+        pm.execute_skill("system_feature_analysis", {"raw_requirements": raw})
+        pm.execute_skill("system_requirement_analysis", {})
+        pm.execute_skill("user_story_writing", {})
+        pm.execute_skill("product_design", {})
+
+        project_root = tmp_path / "project_0-demo"
+        docs_dir = project_root / "docs"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+
+        outputs = arch.run_full_architecture_workflow(
+            project_name="Demo",
+            parameters={"project_root": str(project_root)},
+        )
+
+        assert "architecture_document_generation" in outputs
+        assert (Path(project_root) / "docs" / "system-architecture.md").exists()

@@ -32,8 +32,9 @@ class ProjectManager:
         """Initialize the project manager."""
         self._projects: dict[str, Project] = {}
         self._project_counter = 0
-        self._projects_root = Path(projects_root)
-        self._global_config_path = Path(global_config_path)
+        # Resolve once so background threads are not affected by process cwd changes.
+        self._projects_root = Path(projects_root).resolve()
+        self._global_config_path = Path(global_config_path).resolve()
         self._global_config = self._load_global_config()
         logger.info(
             "ProjectManager initialized: projects_root=%s global_config=%s",
