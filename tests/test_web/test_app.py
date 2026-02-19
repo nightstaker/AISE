@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 
@@ -185,6 +186,14 @@ class TestWebApi:
 
 
 class TestWebPersistence:
+    def test_web_logger_has_dedicated_file(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+
+        service = WebProjectService()
+        assert service is not None
+        assert Path("logs/aise-web.log").exists()
+        assert logging.getLogger("aise.web.app").propagate is False
+
     def test_service_persists_runs_and_requirements(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
 

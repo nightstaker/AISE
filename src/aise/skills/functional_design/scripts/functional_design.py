@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
 from typing import Any
 
 from ....core.artifact import Artifact, ArtifactType
@@ -31,46 +34,44 @@ class FunctionalDesignSkill(Skill):
             )
 
         ars = ar_artifact.content["architecture_requirements"]
+        llm_functions = self._generate_with_llm(ars, context)
+        if llm_functions is not None:
+            all_functions = llm_functions
+        else:
+            fn_counter_service = 1
+            fn_counter_component = 1
+            all_functions = []
 
-        # Group ARs by layer
-        layers = self._group_by_layer(ars)
+            layers = self._group_by_layer(ars)
+            for layer_name, layer_ars in layers.items():
+                for ar in layer_ars:
+                    fn = self._create_function_from_ar(ar, fn_counter_service, fn_counter_component, project_name)
+                    all_functions.append(fn)
 
-        # Generate FN for each AR
-        fn_counter_service = 1
-        fn_counter_component = 1
-        all_functions = []
+                    if fn["type"] == "service":
+                        fn_counter_service += 1
+                    else:
+                        fn_counter_component += 1
 
-        for layer_name, layer_ars in layers.items():
-            for ar in layer_ars:
-                fn = self._create_function_from_ar(ar, fn_counter_service, fn_counter_component, project_name)
-                all_functions.append(fn)
-
-                if fn["type"] == "service":
-                    fn_counter_service += 1
-                else:
-                    fn_counter_component += 1
-
-        # Build layer structure
         architecture_layers = self._build_layer_structure(all_functions)
-
-        # Build traceability matrix
         traceability_matrix = self._build_fn_ar_matrix(all_functions)
 
-        num_components = fn_counter_component - 1
-        num_services = fn_counter_service - 1
+        num_components = len([fn for fn in all_functions if fn.get("type") == "component"])
+        num_services = len([fn for fn in all_functions if fn.get("type") == "service"])
         functional_design_doc = {
             "project_name": project_name,
             "overview": f"Functional design with {num_components} components and {num_services} services",
             "architecture_layers": architecture_layers,
             "functions": all_functions,
             "traceability_matrix": traceability_matrix,
+            "analysis_mode": "llm" if llm_functions is not None else "heuristic",
         }
 
         return Artifact(
             artifact_type=ArtifactType.FUNCTIONAL_DESIGN,
             content=functional_design_doc,
             producer="architect",
-            metadata={"project_name": project_name},
+            metadata={"project_name": project_name, "analysis_mode": functional_design_doc["analysis_mode"]},
         )
 
     def _group_by_layer(self, ars: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -256,18 +257,22 @@ class FunctionalDesignSkill(Skill):
         layers = {
             "api_layer": {"services": [], "components": []},
             "business_layer": {"services": [], "components": []},
-            "data_layer": {"components": []},
-            "integration_layer": {"components": []},
+            "data_layer": {"services": [], "components": []},
+            "integration_layer": {"services": [], "components": []},
         }
 
         for fn in functions:
-            layer_key = f"{fn['layer']}_layer"
+            layer = str(fn.get("layer", "business")).strip().lower()
+            layer_key = f"{layer}_layer"
             if layer_key in layers:
-                fn_type = fn["type"]
+                fn_type = str(fn.get("type", "component")).strip().lower()
+                fn_id = str(fn.get("id", "")).strip()
+                if not fn_id:
+                    continue
                 if fn_type == "service":
-                    layers[layer_key]["services"].append(fn["id"])
+                    layers[layer_key].setdefault("services", []).append(fn_id)
                 else:
-                    layers[layer_key]["components"].append(fn["id"])
+                    layers[layer_key].setdefault("components", []).append(fn_id)
 
         return layers
 
@@ -282,3 +287,128 @@ class FunctionalDesignSkill(Skill):
                 matrix[ar_id].append(fn["id"])
 
         return matrix
+
+    def _generate_with_llm(self, ars: list[dict[str, Any]], context: SkillContext) -> list[dict[str, Any]] | None:
+        if context.llm_client is None or not ars:
+            return None
+        agent_prompt = self._load_prompt_file("../../../agents/architect_agent.md")
+        skill_prompt = self._load_prompt_file("../skill.md")
+        ar_lines = []
+        for ar in ars[:100]:
+            ar_lines.append(
+                (
+                    f"- {ar.get('id', '')} | {ar.get('target_layer', '')} | "
+                    f"{ar.get('component_type', '')} | {ar.get('description', '')}"
+                )
+            )
+        system_prompt = (
+            f"{agent_prompt}\n\n{skill_prompt}\n\n"
+            "你是架构师。请把AR映射为可实现的功能设计。只返回JSON："
+            "{"
+            '"functions":[{"source_ar":"AR-...","type":"service|component","name":"string","description":"string","layer":"api|business|data|integration","subsystem":"string","interfaces":[{"method":"GET","path":"/api/v1/x","description":"string"}],"dependencies":["string"],"file_path":"src/...py","estimated_complexity":"low|medium|high"}]'
+            "}"
+        )
+        try:
+            response = context.llm_client.complete(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": "AR列表:\n" + "\n".join(ar_lines)},
+                ],
+                response_format={"type": "json_object"},
+            )
+        except Exception:
+            return None
+        parsed = self._parse_json_response(response)
+        if not isinstance(parsed, dict):
+            return None
+        values = parsed.get("functions")
+        if not isinstance(values, list):
+            return None
+        rows = self._normalise_llm_functions(values, ars)
+        return rows or None
+
+    def _normalise_llm_functions(
+        self,
+        rows: list[Any],
+        ars: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        layer_set = {"api", "business", "data", "integration"}
+        ar_ids = {str(ar.get("id", "")) for ar in ars}
+        service_index = 0
+        component_index = 0
+        output: list[dict[str, Any]] = []
+
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            source_ar = str(item.get("source_ar", "")).strip()
+            if source_ar not in ar_ids:
+                continue
+            fn_type = str(item.get("type", "component")).strip().lower()
+            if fn_type not in {"service", "component"}:
+                fn_type = "component"
+            if fn_type == "service":
+                service_index += 1
+                fn_id = f"FN-SERVICE-{service_index:03d}"
+            else:
+                component_index += 1
+                fn_id = f"FN-COM-{component_index:03d}"
+
+            layer = str(item.get("layer", "business")).strip().lower()
+            if layer not in layer_set:
+                layer = "business"
+            name = str(item.get("name", "")).strip() or self._generate_function_name(
+                str(item.get("description", "")),
+                fn_type,
+            )
+            desc = str(item.get("description", "")).strip() or f"Implements {source_ar}"
+            subsystem = str(item.get("subsystem", "")).strip() or self._determine_subsystem(desc, layer)
+            file_path = str(item.get("file_path", "")).strip() or self._generate_file_path(layer, subsystem, name)
+            interfaces = item.get("interfaces", [])
+            if not isinstance(interfaces, list):
+                interfaces = []
+            dependencies = item.get("dependencies", [])
+            if not isinstance(dependencies, list):
+                dependencies = []
+            complexity = str(item.get("estimated_complexity", "medium")).strip().lower()
+            if complexity not in {"low", "medium", "high"}:
+                complexity = "medium"
+
+            output.append(
+                {
+                    "id": fn_id,
+                    "type": fn_type,
+                    "name": name,
+                    "description": desc,
+                    "layer": layer,
+                    "subsystem": subsystem,
+                    "source_ars": [source_ar],
+                    "interfaces": interfaces if fn_type == "service" else [],
+                    "dependencies": [str(dep) for dep in dependencies],
+                    "file_path": file_path,
+                    "estimated_complexity": complexity,
+                }
+            )
+        return output
+
+    def _load_prompt_file(self, relative_path: str) -> str:
+        path = Path(__file__).resolve().parent / relative_path
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    def _parse_json_response(self, text: str) -> dict[str, Any] | None:
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        block = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
+        if block:
+            try:
+                return json.loads(block.group(1))
+            except json.JSONDecodeError:
+                return None
+        return None

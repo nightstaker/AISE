@@ -272,6 +272,10 @@ class WorkflowEngine:
         p2.add_task("architect", "system_design")
         p2.add_task("architect", "api_design")
         p2.add_task("architect", "tech_stack_selection")
+        p2.add_task("architect", "architecture_requirement_analysis")
+        p2.add_task("architect", "functional_design")
+        p2.add_task("architect", "status_tracking")
+        p2.add_task("architect", "architecture_document_generation")
         p2.review_gate = ReviewGate(
             reviewer_agent="architect",
             review_skill="architecture_review",

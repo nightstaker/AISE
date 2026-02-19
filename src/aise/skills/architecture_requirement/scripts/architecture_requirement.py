@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
 from typing import Any
 
 from ....core.artifact import Artifact, ArtifactType
@@ -29,17 +32,16 @@ class ArchitectureRequirementSkill(Skill):
             raise ValueError("No SYSTEM_REQUIREMENTS artifact found. Please run system_requirement_analysis first.")
 
         requirements = sr_artifact.content["requirements"]
+        llm_ars = self._decompose_with_llm(requirements, context)
+        if llm_ars is not None:
+            ar_list = llm_ars
+        else:
+            ar_list = []
+            for sr in requirements:
+                ars = self._decompose_sr_to_ars(sr)
+                ar_list.extend(ars)
 
-        # Decompose each SR into one or more ARs
-        ar_list = []
-        for sr in requirements:
-            ars = self._decompose_sr_to_ars(sr)
-            ar_list.extend(ars)
-
-        # Calculate coverage
         coverage = self._calculate_coverage(requirements, ar_list)
-
-        # Build traceability matrix
         matrix = self._build_traceability_matrix(requirements, ar_list)
 
         architecture_requirements_doc = {
@@ -48,13 +50,14 @@ class ArchitectureRequirementSkill(Skill):
             "architecture_requirements": ar_list,
             "traceability_matrix": matrix,
             "coverage_summary": coverage,
+            "analysis_mode": "llm" if llm_ars is not None else "heuristic",
         }
 
         return Artifact(
             artifact_type=ArtifactType.ARCHITECTURE_REQUIREMENT,
             content=architecture_requirements_doc,
             producer="architect",
-            metadata={"project_name": project_name},
+            metadata={"project_name": project_name, "analysis_mode": architecture_requirements_doc["analysis_mode"]},
         )
 
     def _decompose_sr_to_ars(self, sr: dict[str, Any]) -> list[dict[str, Any]]:
@@ -184,3 +187,110 @@ class ArchitectureRequirementSkill(Skill):
             sr_id = sr["id"]
             matrix[sr_id] = [ar["id"] for ar in ar_list if ar["source_sr"] == sr_id]
         return matrix
+
+    def _decompose_with_llm(
+        self,
+        requirements: list[dict[str, Any]],
+        context: SkillContext,
+    ) -> list[dict[str, Any]] | None:
+        if context.llm_client is None or not requirements:
+            return None
+
+        agent_prompt = self._load_prompt_file("../../../agents/architect_agent.md")
+        skill_prompt = self._load_prompt_file("../skill.md")
+        req_lines = []
+        for sr in requirements[:80]:
+            req_lines.append(
+                f"- {sr.get('id', '')} | {sr.get('type', '')} | {sr.get('category', '')} | {sr.get('description', '')}"
+            )
+        system_prompt = (
+            f"{agent_prompt}\n\n{skill_prompt}\n\n"
+            "你是系统架构师。请把SR分解为AR。只返回JSON："
+            "{"
+            '"architecture_requirements":[{"source_sr":"SR-0001","target_layer":"api|business|data|integration","component_type":"service|component","description":"string","estimated_complexity":"low|medium|high"}]'
+            "}"
+        )
+        try:
+            response = context.llm_client.complete(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": "SR列表:\n" + "\n".join(req_lines)},
+                ],
+                response_format={"type": "json_object"},
+            )
+        except Exception:
+            return None
+        parsed = self._parse_json_response(response)
+        if not isinstance(parsed, dict):
+            return None
+        values = parsed.get("architecture_requirements")
+        if not isinstance(values, list):
+            return None
+        rows = self._normalise_llm_ars(values, requirements)
+        return rows or None
+
+    def _normalise_llm_ars(
+        self,
+        ars: list[Any],
+        requirements: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        valid_layers = {"api", "business", "data", "integration"}
+        valid_types = {"service", "component"}
+        sr_ids = {str(sr.get("id", "")) for sr in requirements}
+        counters: dict[str, int] = {}
+        rows: list[dict[str, Any]] = []
+
+        for item in ars:
+            if not isinstance(item, dict):
+                continue
+            source_sr = str(item.get("source_sr", "")).strip()
+            if source_sr not in sr_ids:
+                continue
+            seq = counters.get(source_sr, 0) + 1
+            counters[source_sr] = seq
+            sr_num = source_sr.replace("SR-", "")
+            target_layer = str(item.get("target_layer", "business")).strip().lower()
+            component_type = str(item.get("component_type", "component")).strip().lower()
+            description = str(item.get("description", "")).strip()
+            complexity = str(item.get("estimated_complexity", "medium")).strip().lower()
+            if target_layer not in valid_layers:
+                target_layer = "business"
+            if component_type not in valid_types:
+                component_type = "component"
+            if complexity not in {"low", "medium", "high"}:
+                complexity = "medium"
+            if not description:
+                description = f"{target_layer} layer requirement from {source_sr}"
+            rows.append(
+                {
+                    "id": f"AR-SR-{sr_num}-{seq}",
+                    "description": description,
+                    "source_sr": source_sr,
+                    "target_layer": target_layer,
+                    "component_type": component_type,
+                    "estimated_complexity": complexity,
+                }
+            )
+        return rows
+
+    def _load_prompt_file(self, relative_path: str) -> str:
+        path = Path(__file__).resolve().parent / relative_path
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    def _parse_json_response(self, text: str) -> dict[str, Any] | None:
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        block = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
+        if block:
+            try:
+                return json.loads(block.group(1))
+            except json.JSONDecodeError:
+                return None
+        return None
