@@ -227,6 +227,30 @@ def test_tool_uses_project_name_from_invocation(
     assert _RecordingSkill.captured_project == "OverrideProject"
 
 
+def test_tool_merges_context_input_defaults(
+    artifact_store: ArtifactStore,
+    skill_context: SkillContext,
+) -> None:
+    skill_context.parameters = {
+        "input_defaults": {
+            "raw_requirements": "Build API",
+            "requirements": {"feature": "auth"},
+        }
+    }
+    skill = _SimpleSkill()
+    tool = create_skill_tool(skill, "test_agent", skill_context)
+
+    raw_result = tool.invoke({"input_data": {"task": "design"}, "project_name": ""})
+    result = json.loads(raw_result)
+    assert result["status"] == "success"
+
+    artifact = artifact_store.get(result["artifact_id"])
+    assert artifact is not None
+    assert artifact.content["echoed"]["task"] == "design"
+    assert artifact.content["echoed"]["raw_requirements"] == "Build API"
+    assert artifact.content["echoed"]["requirements"] == {"feature": "auth"}
+
+
 # ---------------------------------------------------------------------------
 # Tests: create_agent_tools
 # ---------------------------------------------------------------------------

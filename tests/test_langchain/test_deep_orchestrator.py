@@ -141,15 +141,24 @@ def _patch_llm():
     with (
         patch("aise.langchain.agent_node._build_llm") as mock_build,
         patch("aise.langchain.supervisor._build_supervisor_llm") as mock_sup,
+        patch("aise.langchain.deep_orchestrator.DeepOrchestrator._build_llm") as mock_orch_build,
+        patch("aise.langchain.deep_orchestrator.DeepOrchestrator._generate_workflow_plan") as mock_plan,
     ):
         mock_llm = MagicMock()
         mock_llm.with_structured_output.return_value = MagicMock()
         mock_build.return_value = mock_llm
         mock_sup.return_value = mock_llm
-        with patch("aise.langchain.agent_node.create_agent") as mock_react:
+        mock_orch_build.return_value = mock_llm
+        mock_plan.return_value = [
+            {"phase": "requirements", "agent": "product_manager"},
+            {"phase": "design", "agent": "architect"},
+            {"phase": "implementation", "agent": "developer"},
+            {"phase": "testing", "agent": "qa_engineer"},
+        ]
+        with patch("aise.langchain.agent_node.create_runtime_agent") as mock_runtime:
             mock_agent = MagicMock()
             mock_agent.invoke.return_value = {"messages": [AIMessage(content="done")]}
-            mock_react.return_value = mock_agent
+            mock_runtime.return_value = mock_agent
             yield
 
 
