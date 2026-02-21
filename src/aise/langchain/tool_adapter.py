@@ -63,12 +63,16 @@ def create_skill_tool(
     ) -> str:
         """Execute the wrapped AISE skill and return a JSON result string."""
         data = input_data or {}
+        parameters = _context.parameters if isinstance(_context.parameters, dict) else {}
+        defaults = parameters.get("input_defaults", {})
+        if isinstance(defaults, dict):
+            data = {**defaults, **data}
 
         # Create a context override with the requested project name
         ctx = SkillContext(
             artifact_store=_context.artifact_store,
             project_name=project_name or _context.project_name,
-            parameters=_context.parameters,
+            parameters=parameters,
             model_config=_context.model_config,
             llm_client=_context.llm_client,
         )

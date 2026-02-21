@@ -17,6 +17,7 @@ from aise.langchain.agent_node import (
     _DEFAULT_SYSTEM_PROMPT,
     AGENT_SYSTEM_PROMPTS,
     _build_llm,
+    _suggest_skills_for_phase,
     make_agent_node,
 )
 
@@ -136,7 +137,9 @@ def test_make_agent_node_returns_callable(
     test_agent: Agent,
     skill_context: SkillContext,
 ) -> None:
-    node_fn = make_agent_node(test_agent, skill_context)
+    with patch("aise.langchain.agent_node.create_runtime_agent") as mock_create_runtime:
+        mock_create_runtime.return_value = MagicMock()
+        node_fn = make_agent_node(test_agent, skill_context)
     assert callable(node_fn)
 
 
@@ -144,7 +147,9 @@ def test_agent_node_name_matches_agent(
     test_agent: Agent,
     skill_context: SkillContext,
 ) -> None:
-    node_fn = make_agent_node(test_agent, skill_context)
+    with patch("aise.langchain.agent_node.create_runtime_agent") as mock_create_runtime:
+        mock_create_runtime.return_value = MagicMock()
+        node_fn = make_agent_node(test_agent, skill_context)
     assert node_fn.__name__ == "product_manager"
 
 
@@ -155,10 +160,10 @@ def test_agent_node_returns_dict_with_messages_and_phase_results(
     """Agent node must return a dict with 'messages' and 'phase_results' keys."""
     mock_result = {"messages": [AIMessage(content="Work done")]}
 
-    with patch("aise.langchain.agent_node.create_agent") as mock_create:
-        mock_react = MagicMock()
-        mock_react.invoke.return_value = mock_result
-        mock_create.return_value = mock_react
+    with patch("aise.langchain.agent_node.create_runtime_agent") as mock_create_runtime:
+        mock_runtime = MagicMock()
+        mock_runtime.invoke.return_value = mock_result
+        mock_create_runtime.return_value = mock_runtime
 
         node_fn2 = make_agent_node(test_agent, skill_context)
         state = _make_workflow_state("requirements")
@@ -174,10 +179,10 @@ def test_agent_node_handles_react_exception(
     skill_context: SkillContext,
 ) -> None:
     """Agent node must handle ReAct agent exceptions gracefully."""
-    with patch("aise.langchain.agent_node.create_agent") as mock_create:
-        mock_react = MagicMock()
-        mock_react.invoke.side_effect = RuntimeError("LLM API error")
-        mock_create.return_value = mock_react
+    with patch("aise.langchain.agent_node.create_runtime_agent") as mock_create_runtime:
+        mock_runtime = MagicMock()
+        mock_runtime.invoke.side_effect = RuntimeError("LLM API error")
+        mock_create_runtime.return_value = mock_runtime
 
         node_fn = make_agent_node(test_agent, skill_context)
         state = _make_workflow_state("requirements")
@@ -192,13 +197,12 @@ def test_agent_node_uses_correct_system_prompt(
     test_agent: Agent,
     skill_context: SkillContext,
 ) -> None:
-    """make_agent_node must pass the role-appropriate system prompt to create_agent."""
-    with patch("aise.langchain.agent_node.create_agent") as mock_create:
-        mock_create.return_value = MagicMock()
+    """make_agent_node must pass the role-appropriate system prompt to runtime builder."""
+    with patch("aise.langchain.agent_node.create_runtime_agent") as mock_create_runtime:
+        mock_create_runtime.return_value = MagicMock()
         make_agent_node(test_agent, skill_context)
 
-        _, kwargs = mock_create.call_args
-        prompt_arg = kwargs.get("system_prompt") or mock_create.call_args[0][2]
+        prompt_arg = mock_create_runtime.call_args.args[2]
         expected_prompt = AGENT_SYSTEM_PROMPTS.get(test_agent.name, _DEFAULT_SYSTEM_PROMPT)
         assert prompt_arg == expected_prompt
 
@@ -208,13 +212,32 @@ def test_agent_node_clears_error_on_success(
     skill_context: SkillContext,
 ) -> None:
     """A successful agent node execution should set error to None."""
-    with patch("aise.langchain.agent_node.create_agent") as mock_create:
-        mock_react = MagicMock()
-        mock_react.invoke.return_value = {"messages": [AIMessage(content="done")]}
-        mock_create.return_value = mock_react
+    with patch("aise.langchain.agent_node.create_runtime_agent") as mock_create_runtime:
+        mock_runtime = MagicMock()
+        mock_runtime.invoke.return_value = {"messages": [AIMessage(content="done")]}
+        mock_create_runtime.return_value = mock_runtime
 
         node_fn = make_agent_node(test_agent, skill_context)
         state = _make_workflow_state()
         result = node_fn(state)
 
     assert result.get("error") is None
+
+
+def test_suggest_skills_for_phase_uses_agent_playbook_order() -> None:
+    skills = [
+        "product_review",
+        "requirement_analysis",
+        "product_design",
+        "system_feature_analysis",
+        "custom_skill",
+    ]
+    ordered = _suggest_skills_for_phase("product_manager", "requirements", skills)
+
+    assert ordered[:4] == [
+        "requirement_analysis",
+        "system_feature_analysis",
+        "product_design",
+        "product_review",
+    ]
+    assert ordered[-1] == "custom_skill"

@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from ..config import ModelConfig
 from ..utils.logging import get_logger
+from .deep_agent_adapter import create_runtime_agent, extract_text_from_runtime_result
 from .state import PHASE_AGENT_MAP, WORKFLOW_PHASES, AgentWorkflowState
 
 logger = get_logger(__name__)
@@ -89,7 +91,7 @@ def create_supervisor(
         agent_list=agent_list_str,
         max_iter=MAX_ITERATIONS,
     )
-    structured_llm = llm.with_structured_output(RoutingDecision)
+    router_agent = create_runtime_agent(llm, [], system_prompt)
 
     def supervisor(state: AgentWorkflowState) -> dict[str, Any]:
         """Decide which agent should act next and update the routing state."""
@@ -112,14 +114,16 @@ def create_supervisor(
             return {"next_agent": "FINISH", "current_phase": "complete", "iteration": iteration + 1}
 
         # --- Deterministic fast-path ---
-        next_phase = _determine_next_phase(phase_results, error)
+        phase_agent_pairs = _phase_agent_pairs_from_state(state, agents)
+        next_phase = _determine_next_phase(phase_results, error, phase_agent_pairs=phase_agent_pairs)
 
         if next_phase == "FINISH":
             logger.info("Supervisor fast-path: all phases complete")
             return {"next_agent": "FINISH", "current_phase": "complete", "iteration": iteration + 1}
 
         if not error and next_phase:
-            next_agent = PHASE_AGENT_MAP.get(next_phase, "product_manager")
+            phase_to_agent = {phase_name: agent_name for phase_name, agent_name in phase_agent_pairs}
+            next_agent = phase_to_agent.get(next_phase, PHASE_AGENT_MAP.get(next_phase, "product_manager"))
             if next_agent in agents:
                 logger.info(
                     "Supervisor fast-path: phase=%s agent=%s",
@@ -141,15 +145,14 @@ def create_supervisor(
         )
 
         try:
-            decision = structured_llm.invoke(
-                [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=f"Current state:\n{context_summary}\n\nWho should act next?"),
-                ]
+            decision = _route_with_runtime(
+                router_agent=router_agent,
+                context_summary=context_summary,
+                routing_options=routing_options,
             )
             next_agent = decision.next if decision.next in routing_options else _fallback_route(phase, agents)
             logger.info(
-                "Supervisor LLM decision: next=%s reason=%s",
+                "Supervisor routing decision: next=%s reason=%s backend=deepagents",
                 next_agent,
                 decision.reasoning,
             )
@@ -161,7 +164,7 @@ def create_supervisor(
             return {"next_agent": "FINISH", "current_phase": "complete", "iteration": iteration + 1}
 
         # Update current_phase to match the chosen agent's primary phase
-        new_phase = _agent_to_phase(next_agent, phase)
+        new_phase = _agent_to_phase(next_agent, phase, phase_agent_pairs=phase_agent_pairs)
         return {
             "next_agent": next_agent,
             "current_phase": new_phase,
@@ -180,6 +183,7 @@ def create_supervisor(
 def _determine_next_phase(
     phase_results: dict[str, Any],
     error: str | None,
+    phase_agent_pairs: list[tuple[str, str]] | None = None,
 ) -> str:
     """Return the next workflow phase that still needs work.
 
@@ -191,8 +195,8 @@ def _determine_next_phase(
         # Let LLM handle the retry logic
         return ""
 
-    for phase in WORKFLOW_PHASES:
-        agent = PHASE_AGENT_MAP[phase]
+    pairs = phase_agent_pairs or [(phase_name, PHASE_AGENT_MAP[phase_name]) for phase_name in WORKFLOW_PHASES]
+    for phase, agent in pairs:
         completion_key = f"{phase}_{agent}"
         if completion_key not in phase_results:
             return phase
@@ -208,12 +212,63 @@ def _fallback_route(current_phase: str, agents: list[str]) -> str:
     return agents[0] if agents else "product_manager"
 
 
-def _agent_to_phase(agent_name: str, current_phase: str) -> str:
+def _agent_to_phase(
+    agent_name: str,
+    current_phase: str,
+    phase_agent_pairs: list[tuple[str, str]] | None = None,
+) -> str:
     """Map an agent name back to its primary workflow phase."""
-    for phase, agent in PHASE_AGENT_MAP.items():
+    pairs = phase_agent_pairs or list(PHASE_AGENT_MAP.items())
+    for phase, agent in pairs:
         if agent == agent_name:
             return phase
     return current_phase  # Keep current phase for cross-cutting agents
+
+
+def _phase_agent_pairs_from_state(
+    state: AgentWorkflowState,
+    available_agents: list[str],
+) -> list[tuple[str, str]]:
+    """Read workflow plan from state, falling back to static phase mapping."""
+    project_input = state.get("project_input", {})
+    plan_data = project_input.get("_workflow_plan", []) if isinstance(project_input, dict) else []
+    fallback = [(phase_name, PHASE_AGENT_MAP[phase_name]) for phase_name in WORKFLOW_PHASES]
+
+    if not isinstance(plan_data, list):
+        return fallback
+
+    parsed: list[tuple[str, str]] = []
+    for item in plan_data:
+        if not isinstance(item, dict):
+            continue
+        phase = str(item.get("phase", "")).strip()
+        agent = str(item.get("agent", "")).strip()
+        if not phase or not agent:
+            continue
+        if agent not in available_agents:
+            continue
+        parsed.append((phase, agent))
+
+    return parsed or fallback
+
+
+def _route_with_runtime(
+    *,
+    router_agent: Any,
+    context_summary: str,
+    routing_options: list[str],
+) -> RoutingDecision:
+    """Route via deep agent runtime and return normalized decision."""
+    prompt = (
+        "Current state:\n"
+        f"{context_summary}\n\n"
+        f"Allowed next values: {routing_options}\n"
+        'Return STRICT JSON: {"next":"...", "reasoning":"..."}'
+    )
+    raw = router_agent.invoke({"messages": [HumanMessage(content=prompt)]})
+    text = extract_text_from_runtime_result(raw)
+    payload = json.loads(text)
+    return RoutingDecision.model_validate(payload)
 
 
 def _build_supervisor_llm(config: ModelConfig) -> ChatOpenAI:

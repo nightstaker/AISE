@@ -5,6 +5,7 @@ LLM-based routing is tested via mock to avoid requiring real API credentials.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,7 +14,6 @@ from aise.config import ModelConfig
 from aise.langchain.state import PHASE_AGENT_MAP, WORKFLOW_PHASES
 from aise.langchain.supervisor import (
     MAX_ITERATIONS,
-    RoutingDecision,
     _agent_to_phase,
     _determine_next_phase,
     _fallback_route,
@@ -133,6 +133,15 @@ def model_config() -> ModelConfig:
     return ModelConfig(provider="openai", model="gpt-4o", api_key="test-key")
 
 
+@pytest.fixture(autouse=True)
+def _patch_runtime_agent() -> None:
+    with patch("aise.langchain.supervisor.create_runtime_agent") as mock_runtime:
+        router = MagicMock()
+        router.invoke.return_value = json.dumps({"next": "product_manager", "reasoning": "retry"})
+        mock_runtime.return_value = router
+        yield
+
+
 def test_supervisor_fast_path_no_phases_done(model_config: ModelConfig) -> None:
     """No phases done → supervisor should route to product_manager."""
     supervisor = create_supervisor(model_config, available_agents=_SDLC_AGENTS)
@@ -187,18 +196,9 @@ def test_supervisor_iteration_increments(model_config: ModelConfig) -> None:
 
 
 def test_supervisor_error_falls_back_to_llm(model_config: ModelConfig) -> None:
-    """When there is an error, the fast-path defers; we mock the LLM call."""
-    # We patch the structured LLM to return a safe routing decision
-    mock_decision = RoutingDecision(next="product_manager", reasoning="retry")
+    """When there is an error, supervisor should still return a valid next_agent."""
+    supervisor2 = create_supervisor(model_config, available_agents=["product_manager"])
+    state = _make_state("requirements", {}, error="something went wrong")
+    result = supervisor2(state)
 
-    with patch("aise.langchain.supervisor._build_supervisor_llm") as mock_builder:
-        mock_llm = MagicMock()
-        mock_llm.with_structured_output.return_value.invoke.return_value = mock_decision
-        mock_builder.return_value = mock_llm
-
-        supervisor2 = create_supervisor(model_config, available_agents=["product_manager"])
-        state = _make_state("requirements", {}, error="something went wrong")
-        result = supervisor2(state)
-
-    # Should not crash; next_agent may be product_manager or a fallback
     assert "next_agent" in result
