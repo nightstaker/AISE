@@ -138,13 +138,15 @@ def test_execute_task_delegates_to_orchestrator(orchestrator: Orchestrator) -> N
 @pytest.fixture()
 def _patch_llm():
     """Patch LLM creation to avoid requiring a real API key in unit tests."""
-    with patch("aise.langchain.agent_node._build_llm") as mock_build, \
-         patch("aise.langchain.supervisor._build_supervisor_llm") as mock_sup:
+    with (
+        patch("aise.langchain.agent_node._build_llm") as mock_build,
+        patch("aise.langchain.supervisor._build_supervisor_llm") as mock_sup,
+    ):
         mock_llm = MagicMock()
         mock_llm.with_structured_output.return_value = MagicMock()
         mock_build.return_value = mock_llm
         mock_sup.return_value = mock_llm
-        with patch("aise.langchain.agent_node.create_react_agent") as mock_react:
+        with patch("aise.langchain.agent_node.create_agent") as mock_react:
             mock_agent = MagicMock()
             mock_agent.invoke.return_value = {"messages": [AIMessage(content="done")]}
             mock_react.return_value = mock_agent

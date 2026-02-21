@@ -155,7 +155,7 @@ def test_agent_node_returns_dict_with_messages_and_phase_results(
     """Agent node must return a dict with 'messages' and 'phase_results' keys."""
     mock_result = {"messages": [AIMessage(content="Work done")]}
 
-    with patch("aise.langchain.agent_node.create_react_agent") as mock_create:
+    with patch("aise.langchain.agent_node.create_agent") as mock_create:
         mock_react = MagicMock()
         mock_react.invoke.return_value = mock_result
         mock_create.return_value = mock_react
@@ -174,7 +174,7 @@ def test_agent_node_handles_react_exception(
     skill_context: SkillContext,
 ) -> None:
     """Agent node must handle ReAct agent exceptions gracefully."""
-    with patch("aise.langchain.agent_node.create_react_agent") as mock_create:
+    with patch("aise.langchain.agent_node.create_agent") as mock_create:
         mock_react = MagicMock()
         mock_react.invoke.side_effect = RuntimeError("LLM API error")
         mock_create.return_value = mock_react
@@ -192,13 +192,13 @@ def test_agent_node_uses_correct_system_prompt(
     test_agent: Agent,
     skill_context: SkillContext,
 ) -> None:
-    """make_agent_node must pass the role-appropriate system prompt to create_react_agent."""
-    with patch("aise.langchain.agent_node.create_react_agent") as mock_create:
+    """make_agent_node must pass the role-appropriate system prompt to create_agent."""
+    with patch("aise.langchain.agent_node.create_agent") as mock_create:
         mock_create.return_value = MagicMock()
         make_agent_node(test_agent, skill_context)
 
         _, kwargs = mock_create.call_args
-        prompt_arg = kwargs.get("prompt") or mock_create.call_args[0][2]
+        prompt_arg = kwargs.get("system_prompt") or mock_create.call_args[0][2]
         expected_prompt = AGENT_SYSTEM_PROMPTS.get(test_agent.name, _DEFAULT_SYSTEM_PROMPT)
         assert prompt_arg == expected_prompt
 
@@ -208,7 +208,7 @@ def test_agent_node_clears_error_on_success(
     skill_context: SkillContext,
 ) -> None:
     """A successful agent node execution should set error to None."""
-    with patch("aise.langchain.agent_node.create_react_agent") as mock_create:
+    with patch("aise.langchain.agent_node.create_agent") as mock_create:
         mock_react = MagicMock()
         mock_react.invoke.return_value = {"messages": [AIMessage(content="done")]}
         mock_create.return_value = mock_react

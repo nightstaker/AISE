@@ -130,10 +130,7 @@ def create_agent_tools(
         List of :class:`~langchain_core.tools.StructuredTool` instances,
         one per registered skill.
     """
-    tools = [
-        create_skill_tool(skill, agent.name, context)
-        for skill in agent.skills.values()
-    ]
+    tools = [create_skill_tool(skill, agent.name, context) for skill in agent.skills.values()]
     logger.debug(
         "Agent tools created: agent=%s count=%d names=%s",
         agent.name,

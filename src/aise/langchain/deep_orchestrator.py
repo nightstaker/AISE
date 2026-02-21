@@ -176,9 +176,7 @@ class DeepOrchestrator:
         name = project_name or (self.config.project_name if self.config else "")
 
         initial_state: AgentWorkflowState = {
-            "messages": [
-                HumanMessage(content=f"Start SDLC workflow for project: {name}")
-            ],
+            "messages": [HumanMessage(content=f"Start SDLC workflow for project: {name}")],
             "project_name": name,
             "project_input": project_input,
             "current_phase": "requirements",
@@ -200,10 +198,7 @@ class DeepOrchestrator:
 
             phase_results = final_state.get("phase_results", {})
             artifact_ids = final_state.get("artifact_ids", [])
-            last_messages = [
-                m.content for m in final_state.get("messages", [])[-3:]
-                if hasattr(m, "content")
-            ]
+            last_messages = [m.content for m in final_state.get("messages", [])[-3:] if hasattr(m, "content")]
 
             logger.info(
                 "DeepOrchestrator workflow completed: project=%s phases=%s artifacts=%d",
@@ -291,8 +286,4 @@ class DeepOrchestrator:
 
     def __repr__(self) -> str:
         graph_status = "built" if self._graph else "not built"
-        return (
-            f"DeepOrchestrator("
-            f"agents={list(self.agents.keys())}, "
-            f"graph={graph_status})"
-        )
+        return f"DeepOrchestrator(agents={list(self.agents.keys())}, graph={graph_status})"

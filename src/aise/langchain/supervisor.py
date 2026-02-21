@@ -27,9 +27,7 @@ class RoutingDecision(BaseModel):
             "Must be one of the registered agent names or 'FINISH'."
         )
     )
-    reasoning: str = Field(
-        description="One-sentence explanation of why this agent was chosen."
-    )
+    reasoning: str = Field(description="One-sentence explanation of why this agent was chosen.")
 
 
 SUPERVISOR_SYSTEM_TEMPLATE = """\
@@ -223,7 +221,7 @@ def _build_supervisor_llm(config: ModelConfig) -> ChatOpenAI:
     kwargs: dict[str, Any] = {
         "model": config.model,
         "temperature": 0.0,  # Deterministic routing
-        "max_tokens": 256,   # Routing decisions are short
+        "max_tokens": 256,  # Routing decisions are short
     }
     if config.api_key:
         kwargs["api_key"] = config.api_key

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
 
 from ..config import ModelConfig
 from ..core.skill import SkillContext
@@ -91,8 +91,7 @@ AGENT_SYSTEM_PROMPTS: dict[str, str] = {
 }
 
 _DEFAULT_SYSTEM_PROMPT = (
-    "You are an AI agent in a software development team. "
-    "Use your available tools to complete the requested task."
+    "You are an AI agent in a software development team. Use your available tools to complete the requested task."
 )
 
 
@@ -121,7 +120,7 @@ def make_agent_node(
     llm = _build_llm(cfg)
 
     system_prompt = AGENT_SYSTEM_PROMPTS.get(agent.name, _DEFAULT_SYSTEM_PROMPT)
-    react_agent = create_react_agent(llm, tools, prompt=system_prompt)
+    react_agent = create_agent(llm, tools, system_prompt=system_prompt)
 
     _agent_name = agent.name
 
