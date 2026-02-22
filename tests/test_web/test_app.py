@@ -37,8 +37,9 @@ def _login_dev(client: TestClient) -> None:
 
 
 class TestWebApi:
-    def test_api_requires_auth(self, monkeypatch):
+    def test_api_requires_auth(self, monkeypatch, tmp_path):
         monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
         app = create_app()
         client = TestClient(app)
 
@@ -183,6 +184,45 @@ class TestWebApi:
         project_id = create_resp.json()["project_id"]
         detail = client.get(f"/api/projects/{project_id}")
         assert detail.status_code == 200
+
+    def test_project_workflow_nodes_use_langchain_phases(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        app = create_app()
+        client = TestClient(app)
+        client.post(
+            "/auth/local-login",
+            data={"username": "admin", "password": "123456"},
+            follow_redirects=False,
+        )
+
+        create_resp = client.post(
+            "/api/projects",
+            json={"project_name": "LangchainWeb", "development_mode": "local"},
+        )
+        assert create_resp.status_code == 200
+        project_id = create_resp.json()["project_id"]
+
+        detail = client.get(f"/api/projects/{project_id}")
+        assert detail.status_code == 200
+        workflow_nodes = detail.json().get("workflow_nodes", [])
+        assert [node.get("name") for node in workflow_nodes] == [
+            "requirements",
+            "design",
+            "implementation",
+            "testing",
+        ]
+        assert all("agent_tasks" in node for node in workflow_nodes)
+        assert isinstance(workflow_nodes[0].get("agent_tasks"), list)
+        requirements_agents = [item.get("agent") for item in workflow_nodes[0].get("agent_tasks", [])]
+        assert "product_designer" in requirements_agents
+        assert "product_reviewer" in requirements_agents
+        design_agents = [item.get("agent") for item in workflow_nodes[1].get("agent_tasks", [])]
+        assert "architecture_designer" in design_agents
+        assert "architecture_reviewer[*]" in design_agents
+        assert "subsystem_architect[*]" in design_agents
+        implementation_agents = [item.get("agent") for item in workflow_nodes[2].get("agent_tasks", [])]
+        assert "programmer[*]" in implementation_agents
+        assert "code_reviewer[*]" in implementation_agents
 
 
 class TestWebPersistence:

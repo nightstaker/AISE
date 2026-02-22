@@ -14,6 +14,7 @@ class TestProductManagerAgent:
     def test_has_all_skills(self):
         agent, _ = self._make_agent()
         expected = {
+            "deep_product_workflow",
             "requirement_analysis",
             "system_feature_analysis",
             "system_requirement_analysis",
@@ -203,21 +204,14 @@ class TestProductManagerAgent:
             "User login\nUser registration\nPerformance must be under 200ms",
             project_name="DemoProject",
             output_dir=str(output_dir),
+            user_memory=["Existing users need cross-platform chat history sync."],
             pr_head="docs/requirements-package",
             pr_number=42,
             merge_pr=True,
         )
 
         required_steps = {
-            "requirement_analysis",
-            "system_feature_analysis",
-            "system_requirement_analysis",
-            "user_story_writing",
-            "product_design",
-            "product_review",
-            "product_design_round_1",
-            "product_review_round_1",
-            "document_generation",
+            "deep_product_workflow",
             "pr_submission",
             "pr_review",
             "pr_merge",
@@ -225,41 +219,56 @@ class TestProductManagerAgent:
         assert required_steps.issubset(set(result.keys()))
 
         assert (output_dir / "system-design.md").exists()
-        assert (output_dir / "System-Requirements.md").exists()
+        assert (output_dir / "system-requirements.md").exists()
+        assert "Revision History" in (output_dir / "system-design.md").read_text(encoding="utf-8")
+        assert "Round 2" in (output_dir / "system-design.md").read_text(encoding="utf-8")
+        assert "Revision History" in (output_dir / "system-requirements.md").read_text(encoding="utf-8")
 
-    def test_run_full_requirements_workflow_review_loops_until_no_major(self, tmp_path):
+    def test_deep_product_workflow_writes_docs_and_artifacts(self, tmp_path):
         agent, _ = self._make_agent()
-        output_dir = tmp_path / "docs_out"
+        project_root = tmp_path / "project_deep_pm"
+        output_dir = project_root / "docs"
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        review_skill = agent.get_skill("product_review")
-        assert review_skill is not None
-        original_execute = review_skill.execute
-        rounds = {"count": 0}
+        artifact = agent.execute_skill(
+            "deep_product_workflow",
+            {
+                "raw_requirements": "Build cross-platform chat app\nMust support notifications",
+                "user_memory": ["Users requested message history search."],
+                "output_dir": str(output_dir),
+            },
+            project_name="DeepPMProject",
+            parameters={"project_root": str(project_root)},
+        )
+        assert artifact.content["workflow"] == "deep_product_workflow"
+        assert artifact.content["step2"]["rounds"] >= 2
+        assert artifact.content["step3"]["rounds"] >= 2
+        assert (output_dir / "system-design.md").exists()
+        assert (output_dir / "system-requirements.md").exists()
 
-        def patched_execute(input_data, context):
-            rounds["count"] += 1
-            artifact = original_execute(input_data, context)
-            if rounds["count"] < 3:
-                artifact.content["has_major_issues"] = True
-                artifact.content["major_issues_count"] = 1
-            else:
-                artifact.content["has_major_issues"] = False
-                artifact.content["major_issues_count"] = 0
-            return artifact
+        design_doc = (output_dir / "system-design.md").read_text(encoding="utf-8")
+        req_doc = (output_dir / "system-requirements.md").read_text(encoding="utf-8")
+        assert "Product Intent Expansion" in design_doc
+        assert "Revision History" in design_doc
+        assert "System Requirements (SR)" in req_doc
+        assert "Round 2" in req_doc
 
-        review_skill.execute = patched_execute
-        try:
-            result = agent.run_full_requirements_workflow(
-                "User login\nUser registration\nPerformance must be under 200ms",
-                project_name="DemoProject",
-                output_dir=str(output_dir),
-                max_product_review_rounds=5,
-            )
-        finally:
-            review_skill.execute = original_execute
+    def test_deep_product_workflow_sanitizes_output_dir(self, tmp_path):
+        agent, _ = self._make_agent()
+        project_root = tmp_path / "project_safe_path"
+        (project_root / "docs").mkdir(parents=True, exist_ok=True)
 
-        assert rounds["count"] == 3
-        assert "product_design_round_3" in result
-        assert "product_review_round_3" in result
-        assert "product_design_round_4" not in result
+        artifact = agent.execute_skill(
+            "deep_product_workflow",
+            {
+                "raw_requirements": "Build chat app",
+                "output_dir": "/workspace",
+            },
+            project_name="SafePathProject",
+            parameters={"project_root": str(project_root)},
+        )
+        generated = artifact.content.get("generated_files", [])
+        assert generated
+        assert all(str(project_root / "docs") in path for path in generated)
+        assert (project_root / "docs" / "system-design.md").exists()
+        assert (project_root / "docs" / "system-requirements.md").exists()

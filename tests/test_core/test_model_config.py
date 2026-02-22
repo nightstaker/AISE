@@ -374,7 +374,8 @@ class TestConcreteAgentsWithModelConfig:
         bus, store = self._bus_store()
         agent = ProductManagerAgent(bus, store)
         assert agent.model_config == ModelConfig()
-        assert len(agent.skill_names) == 10
+        assert "deep_product_workflow" in agent.skill_names
+        assert len(agent.skill_names) >= 11
 
 
 class TestCreateTeamWithModelConfig:

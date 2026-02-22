@@ -8,6 +8,9 @@ from .bug_fix import BugFixSkill
 from .code_generation import CodeGenerationSkill
 from .code_review import CodeReviewSkill
 from .conflict_resolution import ConflictResolutionSkill
+from .deep_architecture_workflow import DeepArchitectureWorkflowSkill
+from .deep_developer_workflow import DeepDeveloperWorkflowSkill
+from .deep_product_workflow import DeepProductWorkflowSkill
 from .document_generation import DocumentGenerationSkill
 from .functional_design import FunctionalDesignSkill
 from .pr_merge import PRMergeSkill
@@ -60,6 +63,9 @@ __all__ = [
     "TestAutomationSkill",
     "TestReviewSkill",
     "ConflictResolutionSkill",
+    "DeepArchitectureWorkflowSkill",
+    "DeepDeveloperWorkflowSkill",
+    "DeepProductWorkflowSkill",
     "ProgressTrackingSkill",
     "VersionReleaseSkill",
     "TeamHealthSkill",

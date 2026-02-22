@@ -26,6 +26,7 @@ class TestArchitectAgent:
         store = ArtifactStore()
         agent = ArchitectAgent(bus, store)
         expected = {
+            "deep_architecture_workflow",
             "system_design",
             "api_design",
             "architecture_review",
@@ -89,5 +90,31 @@ class TestArchitectAgent:
             parameters={"project_root": str(project_root)},
         )
 
-        assert "architecture_document_generation" in outputs
+        assert "deep_architecture_workflow" in outputs
         assert (Path(project_root) / "docs" / "system-architecture.md").exists()
+
+    def test_deep_architecture_workflow_writes_docs_and_source_scaffold(self, tmp_path):
+        bus = MessageBus()
+        store = ArtifactStore()
+        pm = ProductManagerAgent(bus, store)
+        arch = ArchitectAgent(bus, store)
+
+        raw = "User auth\nData export\nLatency under 200ms"
+        pm.execute_skill(
+            "deep_product_workflow",
+            {
+                "raw_requirements": raw,
+                "output_dir": str(tmp_path / "project_0-demo" / "docs"),
+            },
+            parameters={"project_root": str(tmp_path / "project_0-demo")},
+        )
+
+        artifact = arch.execute_skill(
+            "deep_architecture_workflow",
+            {"output_dir": "docs", "source_dir": "src"},
+            parameters={"project_root": str(tmp_path / "project_0-demo")},
+        )
+
+        assert artifact.content["workflow"] == "deep_architecture_workflow"
+        assert (tmp_path / "project_0-demo" / "docs" / "system-architecture.md").exists()
+        assert (tmp_path / "project_0-demo" / "src" / "main.py").exists()

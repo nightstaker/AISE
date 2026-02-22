@@ -7,13 +7,14 @@ from typing import Any
 
 from ..config import ModelConfig
 from ..core.agent import Agent, AgentRole
-from ..core.artifact import ArtifactStore, ArtifactType
+from ..core.artifact import ArtifactStore
 from ..core.message import MessageBus
 from ..skills import (
     APIDesignSkill,
     ArchitectureDocumentGenerationSkill,
     ArchitectureRequirementSkill,
     ArchitectureReviewSkill,
+    DeepArchitectureWorkflowSkill,
     FunctionalDesignSkill,
     PRReviewSkill,
     StatusTrackingSkill,
@@ -38,6 +39,7 @@ class ArchitectAgent(Agent):
             artifact_store=artifact_store,
             model_config=model_config,
         )
+        self.register_skill(DeepArchitectureWorkflowSkill())
         self.register_skill(SystemDesignSkill())
         self.register_skill(APIDesignSkill())
         self.register_skill(ArchitectureReviewSkill())
@@ -59,9 +61,7 @@ class ArchitectAgent(Agent):
         """Run the full architect workflow and generate system-architecture.md.
 
         Workflow:
-        system_design -> api_design -> tech_stack_selection ->
-        architecture_requirement_analysis -> functional_design ->
-        status_tracking -> architecture_document_generation
+        deep_architecture_workflow
         """
         step_artifacts: dict[str, str] = {}
         common_parameters = dict(parameters or {})
@@ -74,14 +74,6 @@ class ArchitectAgent(Agent):
             else:
                 resolved_output_dir = "docs"
 
-        requirements_payload = requirements
-        if not isinstance(requirements_payload, dict):
-            latest_requirements = self.artifact_store.get_latest(ArtifactType.REQUIREMENTS)
-            if latest_requirements is not None:
-                requirements_payload = latest_requirements.content
-        if not isinstance(requirements_payload, dict):
-            requirements_payload = {}
-
         def run_step(step_name: str, skill_name: str, input_data: dict[str, Any]) -> None:
             artifact = self.execute_skill(
                 skill_name,
@@ -91,19 +83,13 @@ class ArchitectAgent(Agent):
             )
             step_artifacts[step_name] = artifact.id
 
-        run_step("system_design", "system_design", {"requirements": requirements_payload})
-        run_step("api_design", "api_design", {"requirements": requirements_payload})
-        run_step("tech_stack_selection", "tech_stack_selection", {"requirements": requirements_payload})
         run_step(
-            "architecture_requirement_analysis",
-            "architecture_requirement_analysis",
-            {"requirements": requirements_payload},
-        )
-        run_step("functional_design", "functional_design", {"requirements": requirements_payload})
-        run_step("status_tracking", "status_tracking", {"requirements": requirements_payload})
-        run_step(
-            "architecture_document_generation",
-            "architecture_document_generation",
-            {"output_dir": resolved_output_dir},
+            "deep_architecture_workflow",
+            "deep_architecture_workflow",
+            {
+                "output_dir": resolved_output_dir,
+                "source_dir": str(Path(resolved_output_dir).parent / "src"),
+                "requirements": requirements or {},
+            },
         )
         return step_artifacts

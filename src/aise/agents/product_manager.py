@@ -9,6 +9,7 @@ from ..core.agent import Agent, AgentRole
 from ..core.artifact import ArtifactStore
 from ..core.message import MessageBus
 from ..skills import (
+    DeepProductWorkflowSkill,
     DocumentGenerationSkill,
     PRMergeSkill,
     ProductDesignSkill,
@@ -38,6 +39,7 @@ class ProductManagerAgent(Agent):
             artifact_store=artifact_store,
             model_config=model_config,
         )
+        self.register_skill(DeepProductWorkflowSkill())
         self.register_skill(RequirementAnalysisSkill())
         self.register_skill(SystemFeatureAnalysisSkill())
         self.register_skill(SystemRequirementAnalysisSkill())
@@ -55,7 +57,7 @@ class ProductManagerAgent(Agent):
         *,
         project_name: str = "",
         output_dir: str = ".",
-        max_product_review_rounds: int = 5,
+        user_memory: list[str] | None = None,
         pr_title: str | None = None,
         pr_head: str | None = None,
         pr_body: str = "",
@@ -66,7 +68,7 @@ class ProductManagerAgent(Agent):
         merge_method: str = "merge",
         parameters: dict[str, Any] | None = None,
     ) -> dict[str, str]:
-        """Run the full PM workflow from requirement analysis to PR merge.
+        """Run the deep PM workflow from requirement expansion to document output.
 
         Returns:
             Mapping from workflow step name to output artifact ID.
@@ -84,79 +86,18 @@ class ProductManagerAgent(Agent):
             step_artifacts[step_name] = artifact.id
             return artifact
 
-        req_artifact = run_step(
-            "requirement_analysis",
-            "requirement_analysis",
-            {"raw_requirements": raw_requirements},
-        )
-        sf_artifact = run_step(
-            "system_feature_analysis",
-            "system_feature_analysis",
+        deep_artifact = run_step(
+            "deep_product_workflow",
+            "deep_product_workflow",
             {
                 "raw_requirements": raw_requirements,
-                "requirements": req_artifact.content,
-            },
-        )
-        sr_artifact = run_step(
-            "system_requirement_analysis",
-            "system_requirement_analysis",
-            {
-                "system_design": sf_artifact.content,
-            },
-        )
-        user_story_artifact = run_step(
-            "user_story_writing",
-            "user_story_writing",
-            {
-                "requirements": req_artifact.content,
-            },
-        )
-
-        previous_review_feedback: dict[str, Any] | None = None
-        rounds = max(1, min(max_product_review_rounds, 5))
-        latest_design = None
-        latest_review = None
-        for round_idx in range(1, rounds + 1):
-            latest_design = run_step(
-                f"product_design_round_{round_idx}",
-                "product_design",
-                {
-                    "iteration": round_idx,
-                    "requirements": req_artifact.content,
-                    "user_stories": user_story_artifact.content,
-                    "review_feedback": previous_review_feedback or {},
-                },
-            )
-            latest_review = run_step(
-                f"product_review_round_{round_idx}",
-                "product_review",
-                {
-                    "iteration": round_idx,
-                    "requirements": req_artifact.content,
-                    "prd": latest_design.content,
-                },
-            )
-            previous_review_feedback = latest_review.content
-            if not latest_review.content.get("has_major_issues", False):
-                break
-
-        if latest_design is not None:
-            step_artifacts["product_design"] = latest_design.id
-        if latest_review is not None:
-            step_artifacts["product_review"] = latest_review.id
-
-        doc_artifact = run_step(
-            "document_generation",
-            "document_generation",
-            {
+                "user_memory": user_memory or [],
                 "output_dir": output_dir,
-                "system_design": sf_artifact.content,
-                "system_requirements": sr_artifact.content,
             },
         )
 
         if pr_head:
-            generated_files = doc_artifact.content.get("generated_files", [])
+            generated_files = deep_artifact.content.get("generated_files", [])
             auto_body = pr_body.strip()
             if not auto_body:
                 auto_body = "Submit generated requirements documents.\n\nFiles:\n"

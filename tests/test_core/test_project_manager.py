@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from aise.config import ProjectConfig
+from aise.core.project import Project
 from aise.core.project_manager import ProjectManager
 
 
@@ -79,3 +80,78 @@ class TestProjectManagerGlobalConfig:
         assert config.project_name == "MyProject"
         assert config.default_model.provider == "anthropic"
         assert config.workflow.max_review_iterations == 5
+
+    def test_run_project_workflow_supports_deep_orchestrator_result(self, tmp_path):
+        manager = ProjectManager(
+            projects_root=tmp_path / "projects",
+            global_config_path=tmp_path / "config/global_project_config.json",
+        )
+
+        class _DeepStub:
+            agents: dict[str, object] = {}
+
+            def run_workflow(self, requirements, project_name):
+                assert requirements == {"raw_requirements": "Build API"}
+                assert project_name == "DeepWebProject"
+                return {
+                    "status": "completed",
+                    "phase_results": {
+                        "requirements_product_manager": "completed",
+                        "design_architect": "completed",
+                        "implementation_developer": "completed",
+                    },
+                    "artifact_ids": ["artifact-xyz"],
+                    "messages": [],
+                }
+
+        project = Project(
+            project_id="project_0",
+            config=ProjectConfig(project_name="DeepWebProject"),
+            orchestrator=_DeepStub(),  # type: ignore[arg-type]
+            project_root=str(tmp_path / "projects/project_0"),
+        )
+        manager._projects[project.project_id] = project
+
+        rows = manager.run_project_workflow("project_0", {"raw_requirements": "Build API"})
+        assert len(rows) == 3
+        assert rows[0]["phase"] == "requirements"
+        assert rows[0]["status"] == "completed"
+        task_payload = rows[0]["tasks"]["product_manager.requirements"]
+        assert task_payload["status"] == "success"
+        assert task_payload["artifact_id"] == "artifact-xyz"
+        deep_payload = rows[0]["tasks"]["product_manager.deep_product_workflow"]
+        assert deep_payload["status"] == "success"
+        assert deep_payload["artifact_id"] == "artifact-xyz"
+        assert rows[1]["tasks"]["architect.deep_architecture_workflow"]["status"] == "success"
+        assert rows[2]["tasks"]["developer.deep_developer_workflow"]["status"] == "success"
+
+    def test_run_project_workflow_deep_error_maps_to_failed_row(self, tmp_path):
+        manager = ProjectManager(
+            projects_root=tmp_path / "projects",
+            global_config_path=tmp_path / "config/global_project_config.json",
+        )
+
+        class _DeepFailingStub:
+            agents: dict[str, object] = {}
+
+            def run_workflow(self, requirements, project_name):
+                return {
+                    "status": "error",
+                    "error": "deep runtime crashed",
+                    "phase_results": {},
+                    "artifact_ids": [],
+                }
+
+        project = Project(
+            project_id="project_1",
+            config=ProjectConfig(project_name="DeepErrorProject"),
+            orchestrator=_DeepFailingStub(),  # type: ignore[arg-type]
+            project_root=str(tmp_path / "projects/project_1"),
+        )
+        manager._projects[project.project_id] = project
+
+        rows = manager.run_project_workflow("project_1", {"raw_requirements": "X"})
+        assert len(rows) == 1
+        assert rows[0]["phase"] == "workflow"
+        assert rows[0]["status"] == "failed"
+        assert rows[0]["tasks"]["deep_orchestrator.run_workflow"]["status"] == "error"

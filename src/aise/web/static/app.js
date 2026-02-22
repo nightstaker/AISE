@@ -470,6 +470,7 @@ function setupRunReact() {
     const project = initial.project;
     const [run, setRun] = window.React.useState(initial.run);
     const [pollError, setPollError] = window.React.useState("");
+    const [selectedTask, setSelectedTask] = window.React.useState(null);
     const phases = Array.isArray(run.phase_results) ? run.phase_results : [];
     const runStatus = String(run.status || "pending");
     const isRunning = runStatus === "pending" || runStatus === "running";
@@ -519,6 +520,77 @@ function setupRunReact() {
       return parts.length > 1 ? parts[1] : String(taskKey || "");
     }
 
+    function buildAgentTasksFromTaskItems(taskItems) {
+      const grouped = {};
+      const order = [];
+      taskItems.forEach((taskKey) => {
+        const parts = String(taskKey || "").split(".");
+        const agent = parts[0] || "unknown";
+        if (!grouped[agent]) {
+          grouped[agent] = [];
+          order.push(agent);
+        }
+        grouped[agent].push({
+          key: taskKey,
+          name: parts.length > 1 ? parts.slice(1).join(".") : String(taskKey || ""),
+          input_hints: [],
+        });
+      });
+      return order.map((agent) => ({ agent, tasks: grouped[agent] }));
+    }
+
+    function normalizeTaskState(taskResult, phaseState) {
+      if (taskResult && typeof taskResult === "object") {
+        return taskResult.status === "success" ? "completed" : "failed";
+      }
+      if (phaseState === "completed") return "completed";
+      if (phaseState === "failed") return "failed";
+      if (phaseState === "running") return "running";
+      return "pending";
+    }
+
+    function resolveTaskResult(taskStatusMap, agentName, phaseKey, taskKey) {
+      if (taskStatusMap[taskKey]) {
+        return { result: taskStatusMap[taskKey], resultKey: taskKey };
+      }
+      const phaseScopedKey = `${agentName}.${phaseKey}`;
+      if (taskStatusMap[phaseScopedKey]) {
+        return { result: taskStatusMap[phaseScopedKey], resultKey: phaseScopedKey };
+      }
+      // Deep PM subagent virtual tasks map back to PM phase/skill runtime keys.
+      if (String(taskKey).startsWith("product_manager.deep_product_workflow")) {
+        const deepSkillKey = "product_manager.deep_product_workflow";
+        if (taskStatusMap[deepSkillKey]) {
+          return { result: taskStatusMap[deepSkillKey], resultKey: deepSkillKey };
+        }
+        const phaseKeyAlias = "product_manager.requirements";
+        if (taskStatusMap[phaseKeyAlias]) {
+          return { result: taskStatusMap[phaseKeyAlias], resultKey: phaseKeyAlias };
+        }
+      }
+      if (String(taskKey).startsWith("architect.deep_architecture_workflow")) {
+        const deepSkillKey = "architect.deep_architecture_workflow";
+        if (taskStatusMap[deepSkillKey]) {
+          return { result: taskStatusMap[deepSkillKey], resultKey: deepSkillKey };
+        }
+        const phaseKeyAlias = "architect.design";
+        if (taskStatusMap[phaseKeyAlias]) {
+          return { result: taskStatusMap[phaseKeyAlias], resultKey: phaseKeyAlias };
+        }
+      }
+      if (String(taskKey).startsWith("developer.deep_developer_workflow")) {
+        const deepSkillKey = "developer.deep_developer_workflow";
+        if (taskStatusMap[deepSkillKey]) {
+          return { result: taskStatusMap[deepSkillKey], resultKey: deepSkillKey };
+        }
+        const phaseKeyAlias = "developer.implementation";
+        if (taskStatusMap[phaseKeyAlias]) {
+          return { result: taskStatusMap[phaseKeyAlias], resultKey: phaseKeyAlias };
+        }
+      }
+      return { result: null, resultKey: "" };
+    }
+
     function buildFlowData() {
       const phaseResultMap = {};
       phases.forEach((p) => {
@@ -543,12 +615,38 @@ function setupRunReact() {
         const taskStatusMap = phaseResult && phaseResult.tasks && typeof phaseResult.tasks === "object" ? phaseResult.tasks : {};
         const taskItems = Array.isArray(node.tasks) ? node.tasks : [];
         const tasks = taskItems.map((taskKey) => {
-          const taskResult = taskStatusMap[taskKey];
-          const status = taskResult ? (taskResult.status === "success" ? "completed" : "failed") : (phaseState === "running" ? "running" : "pending");
+          const { result: taskResult } = resolveTaskResult(taskStatusMap, String(taskKey || "").split(".")[0] || "", phaseKey, taskKey);
+          const status = normalizeTaskState(taskResult, phaseState);
           return {
             key: taskKey,
             label: toTaskLabel(taskKey),
             status,
+          };
+        });
+
+        const rawAgentTasks = Array.isArray(node.agent_tasks) ? node.agent_tasks : buildAgentTasksFromTaskItems(taskItems);
+        const agentTasks = rawAgentTasks.map((entry) => {
+          const agent = String(entry.agent || "");
+          const entryTasks = Array.isArray(entry.tasks) ? entry.tasks : [];
+          return {
+            agent,
+            tasks: entryTasks.map((task) => {
+              const taskKey = String(task.key || "");
+              const taskName = String(task.name || toTaskLabel(taskKey));
+              const inputHints = Array.isArray(task.input_hints) ? task.input_hints : [];
+              const { result: taskResult, resultKey } = resolveTaskResult(taskStatusMap, agent, phaseKey, taskKey);
+              return {
+                phaseKey,
+                phaseTitle: phaseNameMap[phaseKey] || phaseKey,
+                agent,
+                key: taskKey,
+                name: taskName,
+                inputHints,
+                status: normalizeTaskState(taskResult, phaseState),
+                runtimeResult: taskResult,
+                runtimeTaskKey: resultKey,
+              };
+            }),
           };
         });
 
@@ -558,11 +656,18 @@ function setupRunReact() {
           rawTitle: phaseKey,
           status: phaseState,
           tasks,
+          agentTasks,
         };
       });
     }
 
     const flowData = buildFlowData();
+    const selectedTaskDetail = selectedTask
+      ? flowData
+          .flatMap((phase) => phase.agentTasks || [])
+          .flatMap((agentBlock) => agentBlock.tasks || [])
+          .find((item) => item.phaseKey === selectedTask.phaseKey && item.key === selectedTask.taskKey) || null
+      : null;
 
     return h(
       "div",
@@ -601,20 +706,50 @@ function setupRunReact() {
               h("div", { className: "flow-step-dot" }, phase.status === "completed" ? "✓" : index + 1),
               h("div", { className: "flow-step-title" }, phase.title),
               h("div", { className: "flow-step-subtitle" }, phase.rawTitle),
-              h(
-                "div",
-                { className: "flow-task-list" },
-                ...phase.tasks.map((task) =>
-                  h(
-                    "span",
-                    {
-                      key: `${phase.key}-${task.key}`,
-                      className: `flow-task-chip ${task.status}`,
-                    },
-                    task.label
+              phase.agentTasks && phase.agentTasks.length
+                ? h(
+                    "div",
+                    { className: "flow-agent-groups" },
+                    ...phase.agentTasks.map((agentBlock) =>
+                      h(
+                        "section",
+                        { className: "flow-agent-group", key: `${phase.key}-${agentBlock.agent}` },
+                        h("div", { className: "flow-agent-label" }, agentBlock.agent),
+                        h(
+                          "div",
+                          { className: "flow-agent-task-list" },
+                          ...(agentBlock.tasks || []).map((task) => {
+                            const selected =
+                              selectedTask && selectedTask.phaseKey === task.phaseKey && selectedTask.taskKey === task.key;
+                            return h(
+                              "button",
+                              {
+                                key: `${task.phaseKey}-${task.key}`,
+                                type: "button",
+                                className: `flow-agent-task ${task.status}${selected ? " active" : ""}`,
+                                onClick: () => setSelectedTask({ phaseKey: task.phaseKey, taskKey: task.key }),
+                              },
+                              task.name
+                            );
+                          })
+                        )
+                      )
+                    )
                   )
-                )
-              )
+                : h(
+                    "div",
+                    { className: "flow-task-list" },
+                    ...phase.tasks.map((task) =>
+                      h(
+                        "span",
+                        {
+                          key: `${phase.key}-${task.key}`,
+                          className: `flow-task-chip ${task.status}`,
+                        },
+                        task.label
+                      )
+                    )
+                  )
             )
           )
         )
@@ -622,36 +757,48 @@ function setupRunReact() {
       h(
         "section",
         { className: "card" },
-        h("h2", null, "节点与任务结果"),
-        phases.length
-          ? phases.map((phase, phaseIndex) =>
-              h(
-                "article",
-                { className: "phase-card", key: `${phase.phase}-${phaseIndex}` },
-                h("h3", null, `${phase.phase} (${phase.status})`),
-                phase.tasks && Object.keys(phase.tasks).length
-                  ? h(
-                      "ul",
-                      null,
-                      ...Object.entries(phase.tasks).map(([taskKey, task]) =>
-                        h(
-                          "li",
-                          { key: taskKey },
-                          `${taskKey} - ${task.status} `,
-                          h(
-                            "a",
-                            {
-                              href: `/projects/${encodeURIComponent(project.info.project_id)}/runs/${encodeURIComponent(run.run_id)}/phases/${phaseIndex}/tasks/${encodeURIComponent(taskKey)}`,
-                            },
-                            "任务详情"
-                          )
-                        )
-                      )
-                    )
-                  : h("p", { className: "muted" }, "无任务。")
+        h("h2", null, "任务详细信息"),
+        h(
+          "div",
+          { className: "task-detail-panel" },
+          selectedTaskDetail
+            ? h(
+                "div",
+                null,
+                h("p", null, `阶段: ${selectedTaskDetail.phaseTitle} (${selectedTaskDetail.phaseKey})`),
+                h("p", null, `Agent: ${selectedTaskDetail.agent}`),
+                h("p", null, `任务: ${selectedTaskDetail.name}`),
+                h("p", null, `任务Key: ${selectedTaskDetail.key}`),
+                h("p", null, `状态: ${selectedTaskDetail.status}`),
+                selectedTaskDetail.runtimeTaskKey
+                  ? h("p", { className: "muted" }, `运行时匹配任务: ${selectedTaskDetail.runtimeTaskKey}`)
+                  : null,
+                selectedTaskDetail.inputHints && selectedTaskDetail.inputHints.length
+                  ? h("p", null, `推荐输入字段: ${selectedTaskDetail.inputHints.join(", ")}`)
+                  : h("p", { className: "muted" }, "推荐输入字段: 无"),
+                selectedTaskDetail.runtimeResult && selectedTaskDetail.runtimeResult.artifact_id
+                  ? h("p", null, `产物ID: ${selectedTaskDetail.runtimeResult.artifact_id}`)
+                  : null,
+                selectedTaskDetail.runtimeResult && selectedTaskDetail.runtimeResult.error
+                  ? h("pre", { className: "error" }, String(selectedTaskDetail.runtimeResult.error))
+                  : null,
+                h(
+                  "pre",
+                  { className: "task-detail-json" },
+                  JSON.stringify(
+                    selectedTaskDetail.runtimeResult || {
+                      message: "暂无运行时详细结果",
+                      phase: selectedTaskDetail.phaseKey,
+                      task: selectedTaskDetail.key,
+                      hint: "该任务可能由阶段级汇总结果驱动，等待阶段提交后可见。",
+                    },
+                    null,
+                    2
+                  )
+                )
               )
-            )
-          : h("p", { className: "muted" }, isRunning ? "工作流执行中，等待阶段结果..." : "暂无阶段结果。")
+            : h("p", { className: "muted" }, "点击上方任意任务以查看详细信息。")
+        )
       )
     );
   }

@@ -25,31 +25,33 @@ AGENT_SYSTEM_PROMPTS: dict[str, str] = {
     "product_manager": (
         "You are an expert Product Manager in an AI software development team.\n\n"
         "Responsibilities:\n"
-        "- Analyse raw requirements and extract structured functional / non-functional requirements\n"
-        "- Produce user stories with clear acceptance criteria\n"
-        "- Design product features and write a Product Requirements Document (PRD)\n"
-        "- Ensure requirements are complete, unambiguous, and testable\n\n"
+        "- Run a deep paired workflow with Product Designer and Product Reviewer subagents\n"
+        "- Expand raw requirements with user memory into clarified intent\n"
+        "- Produce and review system-design.md with SF list for at least two rounds\n"
+        "- Produce and review system-requirements.md with SR list for at least two rounds\n"
+        "- Preserve revision history and traceability in generated docs\n\n"
         "Use your available tools to execute each task systematically. "
         "Call every skill that is relevant to the current phase."
     ),
     "architect": (
         "You are an expert Software Architect in an AI software development team.\n\n"
         "Responsibilities:\n"
-        "- Design the overall system architecture and component breakdown\n"
-        "- Define API contracts and inter-service interfaces\n"
-        "- Select the appropriate technology stack\n"
-        "- Produce architecture requirements for the development team\n"
-        "- Document all architectural decisions\n\n"
+        "- Run a deep architecture workflow with Architecture Designer / Reviewer / Subsystem Architect subagents\n"
+        "- Produce and review system-architecture.md for at least two rounds\n"
+        "- Allocate all SR items into subsystems and define API contracts\n"
+        "- Generate subsystem detail design docs with SR->FN decomposition for at least two rounds each\n"
+        "- Initialize project source tree and subsystem API code skeletons\n\n"
         "Use your available tools to execute each task systematically. "
         "Call every skill that is relevant to the current phase."
     ),
     "developer": (
         "You are an expert Software Developer in an AI software development team.\n\n"
         "Responsibilities:\n"
-        "- Generate production-quality code from architecture design and API contracts\n"
-        "- Write unit tests using the TDD (Test-Driven Development) approach\n"
-        "- Fix bugs and code quality issues\n"
-        "- Perform code reviews to ensure quality and maintainability\n\n"
+        "- Run deep implementation workflow with Programmer and Code Reviewer subagents\n"
+        "- Split implementation by subsystem and assign multi-instance pairs\n"
+        "- Implement each FN with test-first iterations and review-driven refinement\n"
+        "- Ensure static checks and unit tests pass before merge-ready output\n"
+        "- Preserve revision history in subsystem directories for traceability\n\n"
         "Use your available tools to execute each task systematically. "
         "Call every skill that is relevant to the current phase."
     ),
@@ -98,33 +100,17 @@ _DEFAULT_SYSTEM_PROMPT = (
 PHASE_SKILL_PLAYBOOK: dict[str, dict[str, list[str]]] = {
     "product_manager": {
         "requirements": [
-            "requirement_analysis",
-            "system_feature_analysis",
-            "system_requirement_analysis",
-            "user_story_writing",
-            "product_design",
-            "product_review",
-            "document_generation",
+            "deep_product_workflow",
         ]
     },
     "architect": {
         "design": [
-            "system_design",
-            "api_design",
-            "tech_stack_selection",
-            "architecture_requirement_analysis",
-            "functional_design",
-            "status_tracking",
-            "architecture_document_generation",
+            "deep_architecture_workflow",
         ]
     },
     "developer": {
         "implementation": [
-            "code_generation",
-            "unit_test_writing",
-            "tdd_session",
-            "code_review",
-            "bug_fix",
+            "deep_developer_workflow",
         ]
     },
     "qa_engineer": {
@@ -151,6 +137,7 @@ PHASE_SKILL_PLAYBOOK: dict[str, dict[str, list[str]]] = {
 
 SKILL_INPUT_HINTS: dict[str, list[str]] = {
     "requirement_analysis": ["raw_requirements"],
+    "deep_product_workflow": ["raw_requirements", "user_memory", "output_dir"],
     "system_feature_analysis": ["raw_requirements", "requirements"],
     "system_requirement_analysis": ["system_design"],
     "user_story_writing": ["requirements"],
@@ -158,6 +145,8 @@ SKILL_INPUT_HINTS: dict[str, list[str]] = {
     "product_review": ["requirements", "prd"],
     "document_generation": ["system_design", "system_requirements", "output_dir"],
     "system_design": ["requirements"],
+    "deep_architecture_workflow": ["output_dir", "source_dir", "requirements"],
+    "deep_developer_workflow": ["source_dir", "tests_dir"],
     "api_design": ["requirements"],
     "tech_stack_selection": ["requirements"],
     "architecture_requirement_analysis": ["requirements"],
@@ -226,10 +215,12 @@ def make_agent_node(
         skill_names = list(agent.skills.keys())
         ordered_skills = _suggest_skills_for_phase(_agent_name, phase, skill_names)
         defaults = _build_default_input_data(context, state, phase)
+        base_parameters = dict(context.parameters) if isinstance(context.parameters, dict) else {}
 
         context.parameters.clear()
         context.parameters.update(
             {
+                **base_parameters,
                 "phase": phase,
                 "agent_name": _agent_name,
                 "project_name": project,
@@ -297,6 +288,12 @@ def _suggest_skills_for_phase(
     playbook = PHASE_SKILL_PLAYBOOK.get(agent_name, {})
     preferred = playbook.get(phase, [])
     selected = [skill for skill in preferred if skill in skill_names]
+    if agent_name == "product_manager" and phase == "requirements" and selected:
+        return selected
+    if agent_name == "architect" and phase == "design" and selected:
+        return selected
+    if agent_name == "developer" and phase == "implementation" and selected:
+        return selected
     remainder = [skill for skill in skill_names if skill not in selected]
     return selected + remainder
 
@@ -365,10 +362,11 @@ def _build_task_prompt(
         f"Workflow context default keys (auto-merged into input_data): {default_keys}\n\n"
         "Execution rules:\n"
         "1. 必须通过工具调用完成工作，不要只输出分析文本。\n"
-        "2. 优先按推荐顺序调用与当前 phase 强相关的 skills。\n"
+        "2. 严格按推荐顺序执行，除非上一步成功，否则不要跳到后续 skill。\n"
         '3. 每次调用传入 JSON 参数: {"input_data": {...}, "project_name": "..."}。\n'
-        "4. 如果某个 skill 缺失关键字段，先利用已有上下文构造最小可执行输入。\n"
-        "5. 完成后给出简洁总结，包含已调用 skills 与产物要点。"
+        "4. 如果某个 skill 返回依赖不足/缺少产物，先补齐前置 skill，再重试该 skill。\n"
+        "5. 如果某个 skill 缺失关键字段，先利用已有上下文构造最小可执行输入。\n"
+        "6. 完成后给出简洁总结，包含已调用 skills 与产物要点。"
     )
 
 

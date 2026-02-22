@@ -121,7 +121,7 @@ class DeepOrchestrator:
             context = SkillContext(
                 artifact_store=artifact_store,
                 project_name=project_name,
-                parameters={},
+                parameters={"project_root": self.orchestrator.project_root or ""},
                 model_config=agent.model_config,
                 llm_client=agent.llm_client,
             )
