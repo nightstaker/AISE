@@ -252,50 +252,17 @@ class WorkflowEngine:
 
         # Phase 1: Requirements (Product Manager owned)
         p1 = Phase(name="requirements")
-        p1.add_task("product_manager", "requirement_analysis")
-        p1.add_task("product_manager", "system_feature_analysis")
-        p1.add_task("product_manager", "system_requirement_analysis")
-        p1.add_task("product_manager", "user_story_writing")
-        p1.add_task("product_manager", "product_design")
-        p1.add_task("product_manager", "document_generation", {"output_dir": "."})
-        p1.review_gate = ReviewGate(
-            reviewer_agent="product_manager",
-            review_skill="product_review",
-            target_artifact_type="prd",
-            max_iterations=5,
-        )
+        p1.add_task("product_manager", "deep_product_workflow", {"output_dir": "docs"})
         workflow.add_phase(p1)
 
         # Phase 2: Architecture & Design (Architect owned)
-        # Requires at least 3 review rounds between design work and review.
         p2 = Phase(name="design")
-        p2.add_task("architect", "system_design")
-        p2.add_task("architect", "api_design")
-        p2.add_task("architect", "tech_stack_selection")
-        p2.add_task("architect", "architecture_requirement_analysis")
-        p2.add_task("architect", "functional_design")
-        p2.add_task("architect", "status_tracking")
-        p2.add_task("architect", "architecture_document_generation")
-        p2.review_gate = ReviewGate(
-            reviewer_agent="architect",
-            review_skill="architecture_review",
-            target_artifact_type="architecture_design",
-            min_review_rounds=3,
-        )
+        p2.add_task("architect", "deep_architecture_workflow", {"output_dir": "docs", "source_dir": "src"})
         workflow.add_phase(p2)
 
-        # Phase 3: Implementation
-        # Requires at least 3 review rounds between implementation and review.
-        # All code must pass unit tests before proceeding to review / PR.
-        p3 = Phase(name="implementation", require_tests_pass=True)
-        p3.add_task("developer", "code_generation")
-        p3.add_task("developer", "unit_test_writing")
-        p3.review_gate = ReviewGate(
-            reviewer_agent="developer",
-            review_skill="code_review",
-            target_artifact_type="source_code",
-            min_review_rounds=3,
-        )
+        # Phase 3: Implementation (Developer deep paired workflow)
+        p3 = Phase(name="implementation")
+        p3.add_task("developer", "deep_developer_workflow", {"source_dir": "src", "tests_dir": "tests"})
         workflow.add_phase(p3)
 
         # Phase 4: Testing

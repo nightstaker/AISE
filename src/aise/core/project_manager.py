@@ -15,6 +15,14 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+_SDLC_PHASES = ["requirements", "design", "implementation", "testing"]
+_PRIMARY_SKILL_BY_PHASE: dict[str, str] = {
+    "requirements": "deep_product_workflow",
+    "design": "deep_architecture_workflow",
+    "implementation": "deep_developer_workflow",
+    "testing": "test_plan_design",
+}
+
 
 class ProjectManager:
     """Manages multiple concurrent projects and their lifecycle.
@@ -200,10 +208,118 @@ class ProjectManager:
             raise ValueError(f"Project {project_id} not found")
 
         logger.info("Project workflow started: project_id=%s name=%s", project_id, project.project_name)
-        return project.orchestrator.run_default_workflow(
-            requirements,
-            project.project_name,
-        )
+        orchestrator = project.orchestrator
+        if hasattr(orchestrator, "run_default_workflow"):
+            return orchestrator.run_default_workflow(  # type: ignore[no-any-return]
+                requirements,
+                project.project_name,
+            )
+
+        if hasattr(orchestrator, "run_workflow"):
+            deep_result = orchestrator.run_workflow(  # type: ignore[call-arg]
+                requirements,
+                project.project_name,
+            )
+            return self._normalize_deep_workflow_result(deep_result)
+
+        raise ValueError(f"Project {project_id} orchestrator does not support workflow execution")
+
+    def _normalize_deep_workflow_result(
+        self,
+        result: Any,
+    ) -> list[dict[str, Any]]:
+        """Convert DeepOrchestrator output to the legacy phase-result list shape."""
+        if not isinstance(result, dict):
+            return []
+
+        phase_results_raw = result.get("phase_results", {})
+        if not isinstance(phase_results_raw, dict):
+            phase_results_raw = {}
+        artifact_ids = result.get("artifact_ids", [])
+        if not isinstance(artifact_ids, list):
+            artifact_ids = []
+        error_message = str(result.get("error", "")) if result.get("error") is not None else ""
+
+        rows: list[dict[str, Any]] = []
+        consumed: set[str] = set()
+
+        for phase in _SDLC_PHASES:
+            key = next((k for k in phase_results_raw if isinstance(k, str) and k.startswith(f"{phase}_")), "")
+            if not key:
+                continue
+            consumed.add(key)
+            agent = key[len(phase) + 1 :] if len(key) > len(phase) + 1 else "unknown_agent"
+            status_value = str(phase_results_raw.get(key, ""))
+            task_state = "success" if status_value == "completed" else "error"
+            task_payload: dict[str, Any] = {"status": task_state}
+            if artifact_ids:
+                task_payload["artifact_id"] = str(artifact_ids[-1])
+            if task_state == "error" and error_message:
+                task_payload["error"] = error_message
+            rows.append(
+                {
+                    "phase": phase,
+                    "status": "completed" if task_state == "success" else "failed",
+                    "tasks": self._build_phase_task_payload(agent, phase, task_payload),
+                }
+            )
+
+        for key, value in phase_results_raw.items():
+            if not isinstance(key, str) or key in consumed:
+                continue
+            phase, agent = self._split_phase_agent_key(key)
+            status_value = str(value)
+            task_state = "success" if status_value == "completed" else "error"
+            task_payload = {"status": task_state}
+            if task_state == "error" and error_message:
+                task_payload["error"] = error_message
+            rows.append(
+                {
+                    "phase": phase,
+                    "status": "completed" if task_state == "success" else "failed",
+                    "tasks": self._build_phase_task_payload(agent, phase, task_payload),
+                }
+            )
+
+        if not rows and error_message:
+            rows.append(
+                {
+                    "phase": "workflow",
+                    "status": "failed",
+                    "tasks": {
+                        "deep_orchestrator.run_workflow": {
+                            "status": "error",
+                            "error": error_message,
+                        }
+                    },
+                }
+            )
+
+        return rows
+
+    def _split_phase_agent_key(self, key: str) -> tuple[str, str]:
+        """Split '<phase>_<agent>' key into phase and agent parts."""
+        for phase in _SDLC_PHASES:
+            prefix = f"{phase}_"
+            if key.startswith(prefix):
+                agent = key[len(prefix) :] or "unknown_agent"
+                return phase, agent
+        if "_" in key:
+            phase, agent = key.rsplit("_", 1)
+            return phase or "unknown_phase", agent or "unknown_agent"
+        return key, "unknown_agent"
+
+    def _build_phase_task_payload(
+        self,
+        agent: str,
+        phase: str,
+        task_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        tasks = {f"{agent}.{phase}": dict(task_payload)}
+        primary_skill = _PRIMARY_SKILL_BY_PHASE.get(phase)
+        if primary_skill:
+            tasks[f"{agent}.{primary_skill}"] = dict(task_payload)
+        return tasks
 
     def pause_project(self, project_id: str) -> bool:
         """Pause a project (stop accepting new work).

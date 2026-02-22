@@ -1,5 +1,7 @@
 """Tests for the Developer agent and skills."""
 
+from pathlib import Path
+
 from aise.agents.architect import ArchitectAgent
 from aise.agents.developer import DeveloperAgent
 from aise.agents.product_manager import ProductManagerAgent
@@ -28,7 +30,15 @@ class TestDeveloperAgent:
         bus = MessageBus()
         store = ArtifactStore()
         agent = DeveloperAgent(bus, store)
-        expected = {"code_generation", "unit_test_writing", "code_review", "bug_fix", "tdd_session", "pr_review"}
+        expected = {
+            "deep_developer_workflow",
+            "code_generation",
+            "unit_test_writing",
+            "code_review",
+            "bug_fix",
+            "tdd_session",
+            "pr_review",
+        }
         assert set(agent.skill_names) == expected
 
     def test_code_generation(self):
@@ -61,3 +71,36 @@ class TestDeveloperAgent:
             },
         )
         assert artifact.content["total_bugs"] == 1
+
+    def test_deep_developer_workflow_writes_source_tests_and_revision(self, tmp_path):
+        bus = MessageBus()
+        store = ArtifactStore()
+        pm = ProductManagerAgent(bus, store)
+        arch = ArchitectAgent(bus, store)
+        dev = DeveloperAgent(bus, store)
+
+        project_root = tmp_path / "project_0-dev"
+        (project_root / "docs").mkdir(parents=True, exist_ok=True)
+        pm.execute_skill(
+            "deep_product_workflow",
+            {
+                "raw_requirements": "User login and chat",
+                "output_dir": str(project_root / "docs"),
+            },
+            parameters={"project_root": str(project_root)},
+        )
+        arch.execute_skill(
+            "deep_architecture_workflow",
+            {"output_dir": "docs", "source_dir": "src"},
+            parameters={"project_root": str(project_root)},
+        )
+
+        artifact = dev.execute_skill(
+            "deep_developer_workflow",
+            {"source_dir": "src", "tests_dir": "tests"},
+            parameters={"project_root": str(project_root)},
+        )
+
+        assert artifact.content["workflow"] == "deep_developer_workflow"
+        assert (Path(project_root) / "src" / "services").exists()
+        assert (Path(project_root) / "tests" / "services").exists()

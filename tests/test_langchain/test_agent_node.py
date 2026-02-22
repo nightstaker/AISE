@@ -226,6 +226,7 @@ def test_agent_node_clears_error_on_success(
 
 def test_suggest_skills_for_phase_uses_agent_playbook_order() -> None:
     skills = [
+        "deep_product_workflow",
         "product_review",
         "requirement_analysis",
         "product_design",
@@ -234,10 +235,28 @@ def test_suggest_skills_for_phase_uses_agent_playbook_order() -> None:
     ]
     ordered = _suggest_skills_for_phase("product_manager", "requirements", skills)
 
-    assert ordered[:4] == [
-        "requirement_analysis",
-        "system_feature_analysis",
-        "product_design",
-        "product_review",
+    assert ordered == ["deep_product_workflow"]
+
+
+def test_suggest_skills_for_architect_design_prefers_deep_skill_only() -> None:
+    skills = [
+        "deep_architecture_workflow",
+        "system_design",
+        "api_design",
+        "architecture_document_generation",
     ]
-    assert ordered[-1] == "custom_skill"
+    ordered = _suggest_skills_for_phase("architect", "design", skills)
+
+    assert ordered == ["deep_architecture_workflow"]
+
+
+def test_suggest_skills_for_developer_implementation_prefers_deep_skill_only() -> None:
+    skills = [
+        "deep_developer_workflow",
+        "code_generation",
+        "unit_test_writing",
+        "code_review",
+    ]
+    ordered = _suggest_skills_for_phase("developer", "implementation", skills)
+
+    assert ordered == ["deep_developer_workflow"]

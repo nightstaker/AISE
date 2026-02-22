@@ -126,6 +126,9 @@ class WebProjectService:
                         config.agents[agent_name].model = config.resolve_model_id(normalized)
         with self._lock:
             project_id = self.project_manager.create_project(project_name, config)
+            project = self.project_manager.get_project(project_id)
+            if project is not None:
+                self._attach_langchain_runtime(project)
             self._runs_by_project.setdefault(project_id, [])
             self._requirements_by_project.setdefault(project_id, [])
             self._save_state()
@@ -142,19 +145,7 @@ class WebProjectService:
             if project is None:
                 return None
 
-            default_workflow = WorkflowEngine.create_default_workflow()
-            workflow_nodes = [
-                {
-                    "name": phase.name,
-                    "tasks": [f"{task.agent}.{task.skill}" for task in phase.tasks],
-                    "review_gate": (
-                        f"{phase.review_gate.reviewer_agent}.{phase.review_gate.review_skill}"
-                        if phase.review_gate
-                        else None
-                    ),
-                }
-                for phase in default_workflow.phases
-            ]
+            workflow_nodes = self._build_workflow_nodes(project)
             history = self._runs_by_project.get(project_id, [])
             return {
                 "info": project.get_info(),
@@ -169,7 +160,8 @@ class WebProjectService:
         with self._lock:
             run = self._find_run(project_id, run_id)
             if run is not None:
-                return self._serialize_run(run)
+                payload = self._serialize_run(run)
+                return self._augment_live_phase_results(project_id, payload)
         return None
 
     def run_requirement(self, project_id: str, requirement_text: str) -> str:
@@ -229,12 +221,15 @@ class WebProjectService:
                 return
             run.status = "running"
             run.error = ""
+            memory_items = [
+                entry.text for entry in self._requirements_by_project.get(project_id, []) if entry.text.strip()
+            ]
             self._save_state()
 
         try:
             results = self.project_manager.run_project_workflow(
                 project_id,
-                {"raw_requirements": requirement},
+                {"raw_requirements": requirement, "user_memory": memory_items},
             )
             completed_status = "completed"
             error_message = ""
@@ -275,6 +270,74 @@ class WebProjectService:
             if run.run_id == run_id:
                 return run
         return None
+
+    def _augment_live_phase_results(self, project_id: str, run_payload: dict[str, Any]) -> dict[str, Any]:
+        status = str(run_payload.get("status", ""))
+        if status not in {"pending", "running"}:
+            return run_payload
+
+        project = self.project_manager.get_project(project_id)
+        if project is None or not project.project_root:
+            return run_payload
+
+        docs_dir = Path(project.project_root) / "docs"
+        requirements_ready = (docs_dir / "system-design.md").exists() and (docs_dir / "system-requirements.md").exists()
+        design_ready = (docs_dir / "system-architecture.md").exists()
+        project_src = Path(project.project_root) / "src"
+        project_tests = Path(project.project_root) / "tests"
+        implementation_ready = (project_src / "services").exists() and (project_tests / "services").exists()
+        if not (requirements_ready or design_ready or implementation_ready):
+            return run_payload
+
+        phase_results = run_payload.get("phase_results", [])
+        if not isinstance(phase_results, list):
+            phase_results = []
+
+        has_requirements_row = any(
+            isinstance(row, dict) and str(row.get("phase", "")) == "requirements" for row in phase_results
+        )
+        has_design_row = any(isinstance(row, dict) and str(row.get("phase", "")) == "design" for row in phase_results)
+        has_implementation_row = any(
+            isinstance(row, dict) and str(row.get("phase", "")) == "implementation" for row in phase_results
+        )
+
+        synthetic_rows: list[dict[str, Any]] = []
+        if requirements_ready and not has_requirements_row:
+            synthetic_rows.append(
+                {
+                    "phase": "requirements",
+                    "status": "completed",
+                    "tasks": {
+                        "product_manager.requirements": {"status": "success"},
+                        "product_manager.deep_product_workflow": {"status": "success"},
+                    },
+                }
+            )
+        if design_ready and not has_design_row:
+            synthetic_rows.append(
+                {
+                    "phase": "design",
+                    "status": "completed",
+                    "tasks": {
+                        "architect.design": {"status": "success"},
+                        "architect.deep_architecture_workflow": {"status": "success"},
+                    },
+                }
+            )
+        if implementation_ready and not has_implementation_row:
+            synthetic_rows.append(
+                {
+                    "phase": "implementation",
+                    "status": "completed",
+                    "tasks": {
+                        "developer.implementation": {"status": "success"},
+                        "developer.deep_developer_workflow": {"status": "success"},
+                    },
+                }
+            )
+        if synthetic_rows:
+            run_payload["phase_results"] = [*synthetic_rows, *phase_results]
+        return run_payload
 
     def delete_project(self, project_id: str) -> None:
         """Delete a project and its persisted directory."""
@@ -556,6 +619,7 @@ class WebProjectService:
                     orchestrator=orchestrator,
                     project_root=str(project_dir),
                 )
+                self._attach_langchain_runtime(project)
                 self.project_manager._projects[project_id] = project
                 counter = int(project_id.split("_", 1)[1])
                 max_counter = max(max_counter, counter)
@@ -700,6 +764,231 @@ class WebProjectService:
             "created_at": item.created_at.isoformat(),
             "source": item.source,
         }
+
+    def _attach_langchain_runtime(self, project: Project) -> None:
+        """Wrap project orchestrator with DeepOrchestrator for web workflows."""
+        from ..langchain.deep_orchestrator import DeepOrchestrator
+
+        if isinstance(project.orchestrator, DeepOrchestrator):
+            return
+        project.orchestrator = DeepOrchestrator.from_orchestrator(  # type: ignore[assignment]
+            project.orchestrator,
+            config=project.config,
+        )
+
+    def _build_workflow_nodes(self, project: Project) -> list[dict[str, Any]]:
+        """Build workflow node metadata for UI based on active runtime."""
+        from ..langchain.agent_node import PHASE_SKILL_PLAYBOOK, SKILL_INPUT_HINTS
+        from ..langchain.deep_orchestrator import DeepOrchestrator
+        from ..langchain.state import PHASE_AGENT_MAP, WORKFLOW_PHASES
+
+        if isinstance(project.orchestrator, DeepOrchestrator):
+            available_agents = set(project.orchestrator.agents.keys())
+            nodes: list[dict[str, Any]] = []
+            for phase in WORKFLOW_PHASES:
+                agent_name = PHASE_AGENT_MAP.get(phase, "")
+                phase_skills = PHASE_SKILL_PLAYBOOK.get(agent_name, {}).get(phase, [])
+                if agent_name not in available_agents:
+                    tasks: list[str] = []
+                else:
+                    registered = set(project.orchestrator.agents[agent_name].skills.keys())
+                    tasks = [f"{agent_name}.{skill}" for skill in phase_skills if skill in registered]
+                agent_tasks = self._group_tasks_by_agent(tasks, SKILL_INPUT_HINTS)
+                agent_tasks = self._expand_phase_subagents(phase, tasks, agent_tasks)
+                nodes.append(
+                    {
+                        "name": phase,
+                        "tasks": tasks,
+                        "agent_tasks": agent_tasks,
+                        "review_gate": None,
+                    }
+                )
+            return nodes
+
+        default_workflow = WorkflowEngine.create_default_workflow()
+        return [
+            {
+                "name": phase.name,
+                "tasks": phase_task_keys,
+                "agent_tasks": self._expand_phase_subagents(
+                    phase.name,
+                    phase_task_keys,
+                    self._group_tasks_by_agent(phase_task_keys, {}),
+                ),
+                "review_gate": (
+                    f"{phase.review_gate.reviewer_agent}.{phase.review_gate.review_skill}"
+                    if phase.review_gate
+                    else None
+                ),
+            }
+            for phase in default_workflow.phases
+            for phase_task_keys in [[f"{task.agent}.{task.skill}" for task in phase.tasks]]
+        ]
+
+    @staticmethod
+    def _group_tasks_by_agent(
+        task_keys: list[str],
+        input_hints: dict[str, list[str]],
+    ) -> list[dict[str, Any]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        ordered_agents: list[str] = []
+
+        for task_key in task_keys:
+            agent, sep, task_name = str(task_key).partition(".")
+            agent_key = agent or "unknown"
+            task_label = task_name if sep else str(task_key)
+            if agent_key not in grouped:
+                grouped[agent_key] = []
+                ordered_agents.append(agent_key)
+            grouped[agent_key].append(
+                {
+                    "key": str(task_key),
+                    "name": task_label,
+                    "input_hints": list(input_hints.get(task_label, [])),
+                }
+            )
+
+        return [{"agent": agent, "tasks": grouped[agent]} for agent in ordered_agents]
+
+    @staticmethod
+    def _expand_phase_subagents(
+        phase: str,
+        task_keys: list[str],
+        base_agent_tasks: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if phase == "requirements" and "product_manager.deep_product_workflow" in task_keys:
+            return [
+                {
+                    "agent": "product_designer",
+                    "tasks": [
+                        {
+                            "key": "product_manager.deep_product_workflow.step1",
+                            "name": "raw_requirement_expansion",
+                            "input_hints": ["raw_requirements", "user_memory"],
+                        },
+                        {
+                            "key": "product_manager.deep_product_workflow.step2.design",
+                            "name": "product_design_iterations",
+                            "input_hints": ["expanded_understanding", "review_feedback"],
+                        },
+                        {
+                            "key": "product_manager.deep_product_workflow.step3.design",
+                            "name": "system_requirement_design_iterations",
+                            "input_hints": ["system_design_doc", "review_feedback"],
+                        },
+                    ],
+                },
+                {
+                    "agent": "product_reviewer",
+                    "tasks": [
+                        {
+                            "key": "product_manager.deep_product_workflow.step2.review",
+                            "name": "product_design_review",
+                            "input_hints": ["expanded_understanding", "system_design_doc"],
+                        },
+                        {
+                            "key": "product_manager.deep_product_workflow.step3.review",
+                            "name": "system_requirement_review",
+                            "input_hints": ["system_design_doc", "system_requirements_doc"],
+                        },
+                    ],
+                },
+            ]
+
+        if phase == "design" and "architect.deep_architecture_workflow" in task_keys:
+            return [
+                {
+                    "agent": "architecture_designer",
+                    "tasks": [
+                        {
+                            "key": "architect.deep_architecture_workflow.step1.design",
+                            "name": "system_architecture_design_iterations",
+                            "input_hints": ["system_design_doc", "system_requirements_doc", "review_feedback"],
+                        },
+                        {
+                            "key": "architect.deep_architecture_workflow.step2",
+                            "name": "bootstrap_architecture_code",
+                            "input_hints": ["system_architecture_doc"],
+                        },
+                        {
+                            "key": "architect.deep_architecture_workflow.step3",
+                            "name": "subsystem_task_split",
+                            "input_hints": ["system_architecture_doc", "system_requirements_doc"],
+                        },
+                    ],
+                },
+                {
+                    "agent": "architecture_reviewer[*]",
+                    "tasks": [
+                        {
+                            "key": "architect.deep_architecture_workflow.step1.review",
+                            "name": "system_architecture_review",
+                            "input_hints": ["system_architecture_doc", "system_requirements_doc"],
+                        },
+                        {
+                            "key": "architect.deep_architecture_workflow.step4.review",
+                            "name": "subsystem_detail_review",
+                            "input_hints": ["subsystem_detail_design_doc", "system_requirements_doc"],
+                        },
+                    ],
+                },
+                {
+                    "agent": "subsystem_architect[*]",
+                    "tasks": [
+                        {
+                            "key": "architect.deep_architecture_workflow.step4.design",
+                            "name": "subsystem_detail_design_iterations",
+                            "input_hints": ["subsystem_info", "system_requirements_doc", "system_architecture_doc"],
+                        },
+                        {
+                            "key": "architect.deep_architecture_workflow.step5",
+                            "name": "subsystem_code_init_and_api_definition",
+                            "input_hints": ["subsystem_detail_design_doc"],
+                        },
+                    ],
+                },
+            ]
+
+        if phase == "implementation" and "developer.deep_developer_workflow" in task_keys:
+            return [
+                {
+                    "agent": "programmer[*]",
+                    "tasks": [
+                        {
+                            "key": "developer.deep_developer_workflow.step1",
+                            "name": "subsystem_task_assignment",
+                            "input_hints": ["system_architecture_doc", "subsystem_detail_design_docs"],
+                        },
+                        {
+                            "key": "developer.deep_developer_workflow.step2.develop",
+                            "name": "fn_test_first_development_loop",
+                            "input_hints": ["subsystem_detail_design_doc", "fn_info", "existing_code"],
+                        },
+                        {
+                            "key": "developer.deep_developer_workflow.step2.merge",
+                            "name": "fn_merge_after_three_rounds",
+                            "input_hints": ["commit_info", "revision_feedback"],
+                        },
+                    ],
+                },
+                {
+                    "agent": "code_reviewer[*]",
+                    "tasks": [
+                        {
+                            "key": "developer.deep_developer_workflow.step2.review",
+                            "name": "fn_code_and_test_review_loop",
+                            "input_hints": ["subsystem_detail_design_doc", "fn_info", "workspace_changes"],
+                        },
+                        {
+                            "key": "developer.deep_developer_workflow.step2.revision",
+                            "name": "revision_feedback_record",
+                            "input_hints": ["review_comments", "revision_history"],
+                        },
+                    ],
+                },
+            ]
+
+        return base_agent_tasks
 
 
 def _build_oauth() -> OAuth | None:

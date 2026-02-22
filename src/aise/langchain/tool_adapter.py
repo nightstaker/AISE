@@ -13,6 +13,12 @@ from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+_DEFERRED_ERROR_MARKERS = (
+    "Missing required artifacts",
+    "pipeline stages are complete",
+    "run the full pipeline first",
+)
+
 
 class SkillInputSchema(BaseModel):
     """Generic input schema for AISE skill tools.
@@ -101,13 +107,22 @@ def create_skill_tool(
                 }
             )
         except Exception as exc:
+            error_text = str(exc)
+            if any(marker in error_text for marker in _DEFERRED_ERROR_MARKERS):
+                logger.info(
+                    "Skill tool deferred: agent=%s skill=%s reason=%s",
+                    _agent_name,
+                    _skill.name,
+                    error_text,
+                )
+                return json.dumps({"status": "deferred", "reason": error_text})
             logger.warning(
                 "Skill tool failed: agent=%s skill=%s error=%s",
                 _agent_name,
                 _skill.name,
                 exc,
             )
-            return json.dumps({"status": "error", "error": str(exc)})
+            return json.dumps({"status": "error", "error": error_text})
 
     # Sanitise name: LangChain tool names must be alphanumeric + underscore
     tool_name = f"{_agent_name}__{_skill.name}".replace("-", "_")
