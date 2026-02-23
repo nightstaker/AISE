@@ -2,32 +2,48 @@
 
 Machine-readable registry of all skills in the AISE multi-agent system. This file serves as the single source of truth for skill discovery, routing, and dependency resolution.
 
+> Note: The Skill Index is the complete runtime registry (36 skills) and is kept consistent with code via automated validation. Later sections focus on the core delivery workflow and may summarize a subset of skills.
+
 ## Skill Index
 
-| ID | Skill Name | Agent | Phase | Class | Module |
-|----|-----------|-------|-------|-------|--------|
-| SK-01 | `requirement_analysis` | product_manager | requirements | `RequirementAnalysisSkill` | `aise.skills.pm.requirement_analysis` |
-| SK-02 | `user_story_writing` | product_manager | requirements | `UserStoryWritingSkill` | `aise.skills.pm.user_story_writing` |
-| SK-03 | `product_design` | product_manager | requirements | `ProductDesignSkill` | `aise.skills.pm.product_design` |
-| SK-04 | `product_review` | product_manager | requirements | `ProductReviewSkill` | `aise.skills.pm.product_review` |
-| SK-05 | `system_design` | architect | design | `SystemDesignSkill` | `aise.skills.architect.system_design` |
-| SK-06 | `api_design` | architect | design | `APIDesignSkill` | `aise.skills.architect.api_design` |
-| SK-07 | `tech_stack_selection` | architect | design | `TechStackSelectionSkill` | `aise.skills.architect.tech_stack_selection` |
-| SK-08 | `architecture_review` | architect | design | `ArchitectureReviewSkill` | `aise.skills.architect.architecture_review` |
-| SK-09 | `code_generation` | developer | implementation | `CodeGenerationSkill` | `aise.skills.developer.code_generation` |
-| SK-10 | `unit_test_writing` | developer | implementation | `UnitTestWritingSkill` | `aise.skills.developer.unit_test_writing` |
-| SK-11 | `code_review` | developer | implementation | `CodeReviewSkill` | `aise.skills.developer.code_review` |
-| SK-12 | `bug_fix` | developer | implementation | `BugFixSkill` | `aise.skills.developer.bug_fix` |
-| SK-13 | `test_plan_design` | qa_engineer | testing | `TestPlanDesignSkill` | `aise.skills.qa.test_plan_design` |
-| SK-14 | `test_case_design` | qa_engineer | testing | `TestCaseDesignSkill` | `aise.skills.qa.test_case_design` |
-| SK-15 | `test_automation` | qa_engineer | testing | `TestAutomationSkill` | `aise.skills.qa.test_automation` |
-| SK-16 | `test_review` | qa_engineer | testing | `TestReviewSkill` | `aise.skills.qa.test_review` |
-| SK-17 | `conflict_resolution` | project_manager | cross-cutting | `ConflictResolutionSkill` | `aise.skills.lead.conflict_resolution` |
-| SK-18 | `progress_tracking` | project_manager | cross-cutting | `ProgressTrackingSkill` | `aise.skills.lead.progress_tracking` |
-| SK-19 | `version_release` | project_manager | cross-cutting | `VersionReleaseSkill` | `aise.skills.lead.version_release` |
-| SK-20 | `team_health` | project_manager | cross-cutting | `TeamHealthSkill` | `aise.skills.lead.team_health` |
-| SK-21 | `team_formation` | rd_director | setup | `TeamFormationSkill` | `aise.skills.manager.team_formation` |
-| SK-22 | `requirement_distribution` | rd_director | setup | `RequirementDistributionSkill` | `aise.skills.manager.requirement_distribution` |
+| ID | Skill Name | Agents | Phase | Class | Module |
+|----|-----------|--------|-------|-------|--------|
+| SK-01 | `requirement_analysis` | product_manager | requirements | `RequirementAnalysisSkill` | `aise.skills.requirement_analysis` |
+| SK-02 | `user_story_writing` | product_manager | requirements | `UserStoryWritingSkill` | `aise.skills.user_story_writing` |
+| SK-03 | `product_design` | product_manager | requirements | `ProductDesignSkill` | `aise.skills.product_design` |
+| SK-04 | `product_review` | product_manager | requirements | `ProductReviewSkill` | `aise.skills.product_review` |
+| SK-05 | `system_design` | architect | design | `SystemDesignSkill` | `aise.skills.system_design` |
+| SK-06 | `api_design` | architect | design | `APIDesignSkill` | `aise.skills.api_design` |
+| SK-07 | `tech_stack_selection` | architect | design | `TechStackSelectionSkill` | `aise.skills.tech_stack_selection` |
+| SK-08 | `architecture_review` | architect | design | `ArchitectureReviewSkill` | `aise.skills.architecture_review` |
+| SK-09 | `code_generation` | developer | implementation | `CodeGenerationSkill` | `aise.skills.code_generation` |
+| SK-10 | `unit_test_writing` | developer | implementation | `UnitTestWritingSkill` | `aise.skills.unit_test_writing` |
+| SK-11 | `code_review` | developer, reviewer | implementation | `CodeReviewSkill` | `aise.skills.code_review` |
+| SK-12 | `bug_fix` | developer | implementation | `BugFixSkill` | `aise.skills.bug_fix` |
+| SK-13 | `test_plan_design` | qa_engineer | testing | `TestPlanDesignSkill` | `aise.skills.test_plan_design` |
+| SK-14 | `test_case_design` | qa_engineer | testing | `TestCaseDesignSkill` | `aise.skills.test_case_design` |
+| SK-15 | `test_automation` | qa_engineer | testing | `TestAutomationSkill` | `aise.skills.test_automation` |
+| SK-16 | `test_review` | qa_engineer | testing | `TestReviewSkill` | `aise.skills.test_review` |
+| SK-17 | `conflict_resolution` | project_manager | cross-cutting | `ConflictResolutionSkill` | `aise.skills.conflict_resolution` |
+| SK-18 | `progress_tracking` | project_manager | cross-cutting | `ProgressTrackingSkill` | `aise.skills.progress_tracking` |
+| SK-19 | `version_release` | project_manager | cross-cutting | `VersionReleaseSkill` | `aise.skills.version_release` |
+| SK-20 | `team_health` | project_manager | cross-cutting | `TeamHealthSkill` | `aise.skills.team_health` |
+| SK-21 | `team_formation` | rd_director | setup | `TeamFormationSkill` | `aise.skills.team_formation` |
+| SK-22 | `requirement_distribution` | rd_director | setup | `RequirementDistributionSkill` | `aise.skills.requirement_distribution` |
+| SK-23 | `system_feature_analysis` | product_manager | requirements | `SystemFeatureAnalysisSkill` | `aise.skills.system_feature_analysis` |
+| SK-24 | `system_requirement_analysis` | product_manager | requirements | `SystemRequirementAnalysisSkill` | `aise.skills.system_requirement_analysis` |
+| SK-25 | `architecture_requirement_analysis` | architect | design | `ArchitectureRequirementSkill` | `aise.skills.architecture_requirement` |
+| SK-26 | `functional_design` | architect | design | `FunctionalDesignSkill` | `aise.skills.functional_design` |
+| SK-27 | `status_tracking` | architect | design | `StatusTrackingSkill` | `aise.skills.status_tracking` |
+| SK-28 | `architecture_document_generation` | architect | design | `ArchitectureDocumentGenerationSkill` | `aise.skills.architecture_document_generation` |
+| SK-29 | `document_generation` | product_manager | requirements | `DocumentGenerationSkill` | `aise.skills.document_generation` |
+| SK-30 | `deep_product_workflow` | product_manager | requirements | `DeepProductWorkflowSkill` | `aise.skills.deep_product_workflow` |
+| SK-31 | `deep_architecture_workflow` | architect | design | `DeepArchitectureWorkflowSkill` | `aise.skills.deep_architecture_workflow` |
+| SK-32 | `deep_developer_workflow` | developer | implementation | `DeepDeveloperWorkflowSkill` | `aise.skills.deep_developer_workflow` |
+| SK-33 | `tdd_session` | developer | implementation | `TDDSessionSkill` | `aise.skills.tdd_session` |
+| SK-34 | `pr_submission` | product_manager | cross-cutting | `PRSubmissionSkill` | `aise.skills.pr_submission` |
+| SK-35 | `pr_review` | architect, developer, product_manager, project_manager, qa_engineer, reviewer | cross-cutting | `PRReviewSkill` | `aise.skills.pr_review` |
+| SK-36 | `pr_merge` | product_manager, project_manager, reviewer | cross-cutting | `PRMergeSkill` | `aise.skills.pr_merge` |
 
 ## Artifact Types
 

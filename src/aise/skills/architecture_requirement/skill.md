@@ -10,6 +10,9 @@
 | **Agent** | Architect (`architect`) |
 | **Description** | Decompose System Requirements into Architecture Requirements with layer classification |
 
+> Naming note: The skill directory/package is `architecture_requirement`, while the runtime skill name is
+> `architecture_requirement_analysis`. This is an intentional compatibility mapping used by routing/tests/spec checks.
+
 ## Purpose
 
 Transforms `SYSTEM_REQUIREMENTS` (SR) into architecture-level requirements (AR), assigning each AR to a target layer and component type, then builds SR->AR traceability and coverage summary.
