@@ -35,106 +35,29 @@ class RequirementAnalysisSkill(Skill):
 
         self._write_requirements_doc(requirements_doc_path, raw, status="Analyzing")
         parsed = self._analyze_with_llm(raw, context)
-        if parsed is not None:
-            artifact = Artifact(
-                artifact_type=ArtifactType.REQUIREMENTS,
-                content={
-                    "functional_requirements": self._normalise_requirements(
-                        parsed.get("functional_requirements", []),
-                        prefix="FR",
-                        default_priority="medium",
-                    ),
-                    "non_functional_requirements": self._normalise_requirements(
-                        parsed.get("non_functional_requirements", []),
-                        prefix="NFR",
-                        default_priority="high",
-                    ),
-                    "constraints": self._normalise_requirements(
-                        parsed.get("constraints", []),
-                        prefix="CON",
-                    ),
-                    "raw_input": raw,
-                    "analysis_mode": "llm",
-                    "llm_summary": parsed.get("summary", ""),
-                    "search_evidence": parsed.get("search_evidence", []),
-                    "assumptions": parsed.get("assumptions", []),
-                    "open_questions": parsed.get("open_questions", []),
-                },
-                producer="product_manager",
-                metadata={"project_name": context.project_name},
-            )
-            artifact.content["requirement_details"] = self._build_requirement_details(artifact.content, context)
-            self._write_requirements_doc(requirements_doc_path, raw, status="Completed", content=artifact.content)
-            return artifact
-
-        # Parse raw requirements into structured format
-        functional = []
-        non_functional = []
-        constraints = []
-
-        if isinstance(raw, str):
-            lines = [line.strip() for line in raw.strip().split("\n") if line.strip()]
-            for i, line in enumerate(lines, 1):
-                line_lower = line.lower()
-                if any(
-                    kw in line_lower
-                    for kw in [
-                        "performance",
-                        "security",
-                        "scalab",
-                        "reliab",
-                        "maintain",
-                    ]
-                ):
-                    non_functional.append(
-                        {
-                            "id": f"NFR-{len(non_functional) + 1:03d}",
-                            "description": line,
-                            "priority": "high",
-                        }
-                    )
-                elif any(
-                    kw in line_lower
-                    for kw in [
-                        "constraint",
-                        "must use",
-                        "limited to",
-                        "budget",
-                        "deadline",
-                    ]
-                ):
-                    constraints.append(
-                        {
-                            "id": f"CON-{len(constraints) + 1:03d}",
-                            "description": line,
-                        }
-                    )
-                else:
-                    functional.append(
-                        {
-                            "id": f"FR-{len(functional) + 1:03d}",
-                            "description": line,
-                            "priority": "medium",
-                        }
-                    )
-        elif isinstance(raw, list):
-            for i, item in enumerate(raw, 1):
-                functional.append(
-                    {
-                        "id": f"FR-{i:03d}",
-                        "description": str(item),
-                        "priority": "medium",
-                    }
-                )
-
         artifact = Artifact(
             artifact_type=ArtifactType.REQUIREMENTS,
             content={
-                "functional_requirements": functional,
-                "non_functional_requirements": non_functional,
-                "constraints": constraints,
+                "functional_requirements": self._normalise_requirements(
+                    parsed.get("functional_requirements", []),
+                    prefix="FR",
+                    default_priority="medium",
+                ),
+                "non_functional_requirements": self._normalise_requirements(
+                    parsed.get("non_functional_requirements", []),
+                    prefix="NFR",
+                    default_priority="high",
+                ),
+                "constraints": self._normalise_requirements(
+                    parsed.get("constraints", []),
+                    prefix="CON",
+                ),
                 "raw_input": raw,
-                "analysis_mode": "heuristic",
+                "analysis_mode": "llm",
+                "llm_summary": parsed.get("summary", ""),
+                "search_evidence": parsed.get("search_evidence", []),
+                "assumptions": parsed.get("assumptions", []),
+                "open_questions": parsed.get("open_questions", []),
             },
             producer="product_manager",
             metadata={"project_name": context.project_name},
@@ -143,9 +66,9 @@ class RequirementAnalysisSkill(Skill):
         self._write_requirements_doc(requirements_doc_path, raw, status="Completed", content=artifact.content)
         return artifact
 
-    def _analyze_with_llm(self, raw: Any, context: SkillContext) -> dict[str, Any] | None:
+    def _analyze_with_llm(self, raw: Any, context: SkillContext) -> dict[str, Any]:
         if context.llm_client is None:
-            return None
+            raise RuntimeError("LLM client is required for requirement_analysis")
 
         agent_prompt = self._load_prompt_file("../../../agents/product_manager_agent.md")
         skill_prompt = self._load_prompt_file("../skill.md")
@@ -166,23 +89,20 @@ class RequirementAnalysisSkill(Skill):
         )
         user_prompt = f"原始需求如下，请分析并结构化：\n{raw}"
 
-        try:
-            response = context.llm_client.complete(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                tools=[{"type": "web_search_preview"}],
-                response_format={"type": "json_object"},
-            )
-        except Exception:
-            return None
+        response = context.llm_client.complete(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            tools=[{"type": "web_search_preview"}],
+            response_format={"type": "json_object"},
+        )
         if not response:
-            return None
+            raise RuntimeError("Empty LLM response for requirement_analysis")
 
         data = self._parse_json_response(response)
-        if data is None or not isinstance(data, dict):
-            return None
+        if not isinstance(data, dict):
+            raise RuntimeError("LLM response is not valid JSON object for requirement_analysis")
         return data
 
     def _load_prompt_file(self, relative_path: str) -> str:
@@ -452,8 +372,10 @@ class RequirementAnalysisSkill(Skill):
         reqs: list[tuple[str, str, str]],
         context: SkillContext,
     ) -> dict[str, dict[str, str]]:
-        if not reqs or context.llm_client is None:
+        if not reqs:
             return {}
+        if context.llm_client is None:
+            raise RuntimeError("LLM client is required for requirement detail refinement")
 
         req_lines = [f"- {req_id} | {req_type} | {desc}" for req_id, req_type, desc in reqs]
         prompt = (
@@ -461,22 +383,19 @@ class RequirementAnalysisSkill(Skill):
             "仅返回JSON对象，键是需求ID，值是对象，字段必须包含："
             "normal_scenario, exception_scenario, specification, performance。"
         )
-        try:
-            response = context.llm_client.complete(
-                [
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": "需求列表：\n" + "\n".join(req_lines)},
-                ],
-                response_format={"type": "json_object"},
-            )
-        except Exception:
-            return {}
+        response = context.llm_client.complete(
+            [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": "需求列表：\n" + "\n".join(req_lines)},
+            ],
+            response_format={"type": "json_object"},
+        )
         if not response:
-            return {}
+            raise RuntimeError("Empty LLM response for requirement detail refinement")
 
         parsed = self._parse_json_response(response)
         if not isinstance(parsed, dict):
-            return {}
+            raise RuntimeError("LLM response is not valid JSON object for requirement detail refinement")
 
         refined: dict[str, dict[str, str]] = {}
         for req_id, detail in parsed.items():

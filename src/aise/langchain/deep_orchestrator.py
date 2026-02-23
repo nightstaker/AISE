@@ -20,7 +20,9 @@ continue to work without modification.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
+from urllib.parse import urlparse
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -372,12 +374,36 @@ class DeepOrchestrator:
             "model": config.model,
             "temperature": 0.0,
             "max_tokens": 512,
+            "timeout": _resolve_timeout_seconds(),
+            "max_retries": 1,
         }
-        if config.api_key:
-            kwargs["api_key"] = config.api_key
+        api_key = self._resolve_api_key(config)
+        if api_key:
+            kwargs["api_key"] = api_key
         if config.base_url:
             kwargs["base_url"] = config.base_url
         return ChatOpenAI(**kwargs)
+
+    def _resolve_api_key(self, config: ModelConfig) -> str:
+        key = config.api_key or os.environ.get("OPENAI_API_KEY", "")
+        if key:
+            return key
+        provider = (config.provider or "").strip().lower()
+        is_local_model = bool(config.extra.get("is_local_model"))
+        if provider == "local" or is_local_model or self._is_local_base_url(config.base_url):
+            return os.environ.get("AISE_LOCAL_OPENAI_API_KEY", "local-no-key-required")
+        return ""
+
+    def _is_local_base_url(self, base_url: str) -> bool:
+        value = (base_url or "").strip()
+        if not value:
+            return False
+        try:
+            parsed = urlparse(value)
+        except Exception:
+            return False
+        host = (parsed.hostname or "").lower()
+        return host in {"localhost", "127.0.0.1", "::1"}
 
     # ------------------------------------------------------------------
     # Factory
@@ -403,3 +429,14 @@ class DeepOrchestrator:
     def __repr__(self) -> str:
         graph_status = "built" if self._graph else "not built"
         return f"DeepOrchestrator(agents={list(self.agents.keys())}, graph={graph_status})"
+
+
+def _resolve_timeout_seconds() -> float:
+    raw = os.environ.get("AISE_LLM_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return 45.0
+    try:
+        value = float(raw)
+        return value if value > 0 else 45.0
+    except ValueError:
+        return 45.0

@@ -28,108 +28,29 @@ class TechStackSelectionSkill(Skill):
         non_functional = requirements_payload.get("non_functional_requirements", [])
         arch_style = store.get_content(ArtifactType.ARCHITECTURE_DESIGN, "architecture_style", "monolith")
 
-        nfr_text = " ".join(
-            str(nfr.get("description", "") if isinstance(nfr, dict) else nfr).lower() for nfr in non_functional
-        )
         llm_stack = self._select_with_llm(non_functional, arch_style, context)
-        if llm_stack is not None:
-            return Artifact(
-                artifact_type=ArtifactType.TECH_STACK,
-                content=llm_stack,
-                producer="architect",
-                metadata={"project_name": context.project_name, "analysis_mode": "llm"},
-            )
-
-        if "performance" in nfr_text or "high throughput" in nfr_text:
-            backend = {
-                "language": "Go",
-                "framework": "Gin",
-                "justification": "High performance requirements favor Go",
-            }
-        elif "rapid development" in nfr_text or "prototype" in nfr_text:
-            backend = {
-                "language": "Python",
-                "framework": "FastAPI",
-                "justification": "Rapid development favors Python/FastAPI",
-            }
-        else:
-            backend = {
-                "language": "Python",
-                "framework": "FastAPI",
-                "justification": "General-purpose, well-supported stack",
-            }
-
-        # Select database
-        if "relational" in nfr_text or "consistency" in nfr_text or "transaction" in nfr_text:
-            database = {
-                "type": "PostgreSQL",
-                "justification": "ACID compliance for data consistency",
-            }
-        elif "document" in nfr_text or "flexible schema" in nfr_text:
-            database = {
-                "type": "MongoDB",
-                "justification": "Flexible schema for evolving data models",
-            }
-        else:
-            database = {
-                "type": "PostgreSQL",
-                "justification": "Reliable default for most workloads",
-            }
-
-        # Infrastructure
-        if arch_style == "microservices":
-            infrastructure = {
-                "containerization": "Docker",
-                "orchestration": "Kubernetes",
-                "service_mesh": "Istio",
-                "justification": "Microservices require container orchestration",
-            }
-        else:
-            infrastructure = {
-                "containerization": "Docker",
-                "deployment": "Docker Compose",
-                "justification": "Simple containerized deployment for monolith",
-            }
-
-        stack = {
-            "backend": backend,
-            "database": database,
-            "cache": {
-                "type": "Redis",
-                "justification": "Industry-standard caching and session store",
-            },
-            "infrastructure": infrastructure,
-            "testing": self._select_testing_tools(backend["language"]),
-            "ci_cd": {
-                "platform": "GitHub Actions",
-                "justification": "Integrated with source control",
-            },
-            "analysis_mode": "heuristic",
-        }
-
         return Artifact(
             artifact_type=ArtifactType.TECH_STACK,
-            content=stack,
+            content=llm_stack,
             producer="architect",
-            metadata={"project_name": context.project_name, "analysis_mode": "heuristic"},
+            metadata={"project_name": context.project_name, "analysis_mode": "llm"},
         )
 
     @staticmethod
     def _select_testing_tools(language: str) -> dict:
         """Select testing tools appropriate for the backend language."""
-        if language == "Go":
+        if language == "compiled_language":
             return {
-                "unit": "go test",
-                "integration": "testify",
-                "e2e": "go test + net/http/httptest",
-                "justification": "Go-native testing tools for idiomatic test suites",
+                "unit": "language_native_test_framework",
+                "integration": "integration_test_harness",
+                "e2e": "http_or_rpc_end_to_end_suite",
+                "justification": "Prefer native testing stack for compiled runtime ecosystems",
             }
-        # Default to Python ecosystem
         return {
-            "unit": "pytest",
-            "integration": "pytest + httpx",
-            "e2e": "Playwright",
-            "justification": "Comprehensive Python testing ecosystem",
+            "unit": "unit_test_framework",
+            "integration": "integration_test_framework",
+            "e2e": "end_to_end_test_framework",
+            "justification": "Balanced unit/integration/e2e coverage for iterative delivery",
         }
 
     def _resolve_requirements(self, input_data: dict[str, Any], context: SkillContext) -> dict[str, Any]:
@@ -144,9 +65,11 @@ class TechStackSelectionSkill(Skill):
         non_functional: Any,
         arch_style: str,
         context: SkillContext,
-    ) -> dict[str, Any] | None:
-        if context.llm_client is None or not isinstance(non_functional, list):
-            return None
+    ) -> dict[str, Any]:
+        if context.llm_client is None:
+            raise RuntimeError("LLM client is required for tech_stack_selection")
+        if not isinstance(non_functional, list):
+            raise ValueError("non_functional_requirements must be a list for tech_stack_selection")
         nfr_lines = []
         for item in non_functional[:20]:
             if isinstance(item, dict):
@@ -156,7 +79,7 @@ class TechStackSelectionSkill(Skill):
             if desc:
                 nfr_lines.append(f"- {desc}")
         if not nfr_lines:
-            return None
+            raise ValueError("No non-functional requirements available for tech_stack_selection")
 
         agent_prompt = self._load_prompt_file("../../../agents/architect_agent.md")
         skill_prompt = self._load_prompt_file("../skill.md")
@@ -174,23 +97,18 @@ class TechStackSelectionSkill(Skill):
         )
         user_prompt = f"架构风格: {arch_style}\n非功能需求:\n" + "\n".join(nfr_lines)
 
-        try:
-            response = context.llm_client.complete(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
-            )
-        except Exception:
-            return None
+        response = context.llm_client.complete(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
         parsed = self._parse_json_response(response)
-        if not isinstance(parsed, dict):
-            return None
 
         required = ("backend", "database", "cache", "infrastructure", "testing", "ci_cd")
         if any(not isinstance(parsed.get(key), dict) for key in required):
-            return None
+            raise RuntimeError("LLM response missing required tech stack sections")
 
         parsed["analysis_mode"] = "llm"
         return parsed
@@ -202,17 +120,21 @@ class TechStackSelectionSkill(Skill):
         except OSError:
             return ""
 
-    def _parse_json_response(self, text: str) -> dict[str, Any] | None:
+    def _parse_json_response(self, text: str) -> dict[str, Any]:
         if not text:
-            return None
+            raise RuntimeError("Empty LLM response for tech_stack_selection")
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             pass
         block = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
         if block:
             try:
-                return json.loads(block.group(1))
+                parsed = json.loads(block.group(1))
+                if isinstance(parsed, dict):
+                    return parsed
             except json.JSONDecodeError:
-                return None
-        return None
+                pass
+        raise RuntimeError("LLM response is not valid JSON object for tech_stack_selection")

@@ -118,3 +118,30 @@ class TestArchitectAgent:
         assert artifact.content["workflow"] == "deep_architecture_workflow"
         assert (tmp_path / "project_0-demo" / "docs" / "system-architecture.md").exists()
         assert (tmp_path / "project_0-demo" / "src" / "main.py").exists()
+
+    def test_deep_architecture_workflow_generates_generic_subsystem_names(self, tmp_path):
+        bus = MessageBus()
+        store = ArtifactStore()
+        pm = ProductManagerAgent(bus, store)
+        arch = ArchitectAgent(bus, store)
+
+        raw = "开发命令行贪吃蛇，支持开始暂停结束、碰撞判定、加分、速度提升与结算重开"
+        project_root = tmp_path / "project_0-snake"
+        pm.execute_skill(
+            "deep_product_workflow",
+            {
+                "raw_requirements": raw,
+                "output_dir": str(project_root / "docs"),
+            },
+            parameters={"project_root": str(project_root)},
+        )
+
+        arch.execute_skill(
+            "deep_architecture_workflow",
+            {"output_dir": "docs", "source_dir": "src"},
+            parameters={"project_root": str(project_root)},
+        )
+
+        architecture_doc = (project_root / "docs" / "system-architecture.md").read_text(encoding="utf-8")
+        assert "core_domain" not in architecture_doc
+        assert "integration_service" not in architecture_doc

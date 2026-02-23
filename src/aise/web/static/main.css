@@ -307,6 +307,83 @@ td {
   background: var(--surface-soft);
 }
 
+.phase-agent-board {
+  display: grid;
+  gap: 10px;
+}
+
+.phase-agent-block {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: #fff;
+}
+
+.phase-agent-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.phase-agent-task-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.phase-agent-task {
+  border: 1px solid #b8c7dd;
+  border-radius: 999px;
+  background: #f3f6fb;
+  color: #27405f;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.phase-agent-task:hover {
+  background: #e9f3ff;
+}
+
+.phase-agent-task.active {
+  border-color: #0e7adf;
+  background: #ecf5ff;
+  color: #0e5cad;
+}
+
+.phase-agent-task.completed {
+  border-color: #5aaa40;
+  background: #edf9e9;
+  color: #2f6f21;
+}
+
+.phase-agent-task.running {
+  border-color: #0e7adf;
+  background: #ecf5ff;
+  color: #0e5cad;
+}
+
+.phase-agent-task.failed {
+  border-color: #d92d20;
+  background: #fff1f0;
+  color: #a32218;
+}
+
+.task-detail-panel {
+  margin-top: 16px;
+  border: 1px dashed #b8c7dd;
+  border-radius: 12px;
+  padding: 12px;
+  background: #f9fbff;
+}
+
+.task-detail-json {
+  background: #f2f6fc;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  overflow: auto;
+}
+
 .flow-chart-track {
   display: flex;
   gap: 0;
@@ -362,6 +439,66 @@ td {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
+}
+
+.flow-agent-groups {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.flow-agent-group {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+}
+
+.flow-agent-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #4f5d75;
+  margin-bottom: 6px;
+}
+
+.flow-agent-task-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.flow-agent-task {
+  font-size: 12px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  border: 1px solid #b8c7dd;
+  color: #5f6d84;
+  background: #f3f6fb;
+  cursor: pointer;
+}
+
+.flow-agent-task.active {
+  border-color: #0e7adf;
+  background: #ecf5ff;
+  color: #0e5cad;
+}
+
+.flow-agent-task.completed {
+  border-color: #5aaa40;
+  background: #edf9e9;
+  color: #2f6f21;
+}
+
+.flow-agent-task.running {
+  border-color: #0e7adf;
+  background: #ecf5ff;
+  color: #0e5cad;
+}
+
+.flow-agent-task.failed {
+  border-color: #d92d20;
+  background: #fff1f0;
+  color: #a32218;
 }
 
 .flow-task-chip {

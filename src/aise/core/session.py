@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import tempfile
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable
 
 from .artifact import ArtifactType
@@ -214,10 +216,11 @@ class OnDemandSession:
                     {},
                     self.project_name,
                 )
+                docs_output_dir = self._resolve_docs_output_dir()
                 doc_id = self.orchestrator.execute_task(
                     "product_manager",
                     "document_generation",
-                    {"output_dir": "."},
+                    {"output_dir": docs_output_dir},
                     self.project_name,
                 )
             except Exception:
@@ -251,6 +254,12 @@ class OnDemandSession:
 
         except Exception as e:
             return {"status": "error", "output": f"Failed to add requirement: {e}"}
+
+    def _resolve_docs_output_dir(self) -> str:
+        project_root = getattr(self.orchestrator, "project_root", "")
+        if isinstance(project_root, str) and project_root.strip():
+            return str((Path(project_root).resolve() / "docs"))
+        return tempfile.mkdtemp(prefix="aise-session-docs-")
 
     def _handle_bug(self, text: str) -> dict[str, Any]:
         if not text.strip():

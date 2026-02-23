@@ -66,6 +66,7 @@ class TestProjectManagerGlobalConfig:
         assert (Path(project.project_root) / "docs").exists()
         assert (Path(project.project_root) / "src").exists()
         assert (Path(project.project_root) / "tests").exists()
+        assert (Path(project.project_root) / "trace").exists()
 
     def test_create_default_project_config_returns_global_template_copy(self, tmp_path):
         global_config_path = tmp_path / "config/global_project_config.json"
@@ -155,3 +156,48 @@ class TestProjectManagerGlobalConfig:
         assert rows[0]["phase"] == "workflow"
         assert rows[0]["status"] == "failed"
         assert rows[0]["tasks"]["deep_orchestrator.run_workflow"]["status"] == "error"
+
+    def test_run_project_workflow_falls_back_when_deep_returns_empty(self, tmp_path):
+        manager = ProjectManager(
+            projects_root=tmp_path / "projects",
+            global_config_path=tmp_path / "config/global_project_config.json",
+        )
+
+        class _BaseStub:
+            agents: dict[str, object] = {}
+
+            def run_default_workflow(self, requirements, project_name):
+                assert requirements == {"raw_requirements": "Build API"}
+                assert project_name == "FallbackProject"
+                return [
+                    {
+                        "phase": "requirements",
+                        "status": "completed",
+                        "tasks": {"product_manager.deep_product_workflow": {"status": "success"}},
+                    }
+                ]
+
+        class _DeepEmptyStub:
+            agents: dict[str, object] = {}
+            orchestrator = _BaseStub()
+
+            def run_workflow(self, requirements, project_name):
+                return {
+                    "status": "completed",
+                    "phase_results": {},
+                    "artifact_ids": [],
+                    "messages": [],
+                }
+
+        project = Project(
+            project_id="project_2",
+            config=ProjectConfig(project_name="FallbackProject"),
+            orchestrator=_DeepEmptyStub(),  # type: ignore[arg-type]
+            project_root=str(tmp_path / "projects/project_2"),
+        )
+        manager._projects[project.project_id] = project
+
+        rows = manager.run_project_workflow("project_2", {"raw_requirements": "Build API"})
+        assert len(rows) == 1
+        assert rows[0]["phase"] == "requirements"
+        assert rows[0]["status"] == "completed"

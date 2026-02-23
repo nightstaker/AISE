@@ -204,6 +204,7 @@ class MultiProjectSession:
                 config,
                 agent_counts,
             )
+            runtime_label = self._attach_deep_runtime(project_id)
 
             # Auto-switch to new project
             self.current_project_id = project_id
@@ -214,6 +215,7 @@ class MultiProjectSession:
             output = f"✓ Created project '{project_name}' (ID: {project_id})\n"
             output += f"  Mode: {config.development_mode}\n"
             output += f"  Agents: {total_agents}\n"
+            output += f"  Runtime: {runtime_label}\n"
             output += "  Status: Active (current project)"
 
             return {"output": output}
@@ -307,11 +309,12 @@ class MultiProjectSession:
         from .artifact import Artifact, ArtifactType
 
         artifact = Artifact(
-            type=ArtifactType.REQUIREMENTS,
+            artifact_type=ArtifactType.REQUIREMENTS,
             content={"raw_requirements": args},
+            producer="user",
             metadata={"source": "user_input"},
         )
-        project.orchestrator.artifact_store.store(artifact, project.project_name)
+        project.orchestrator.artifact_store.store(artifact)
 
         return {"output": f"✓ Added requirement to '{project.project_name}':\n  {args}"}
 
@@ -327,8 +330,9 @@ class MultiProjectSession:
         if not project:
             return {"output": "Error: Current project not found"}
 
-        # Get requirement text
-        requirement_text = args if args else "Build the requested features"
+        requirement_text = args.strip() if args else ""
+        if not requirement_text:
+            requirement_text = self._get_latest_requirement_text(project) or "Build the requested features"
 
         output = f"Running workflow for '{project.project_name}'...\n"
 
@@ -348,6 +352,18 @@ class MultiProjectSession:
 
         except Exception as e:
             return {"output": f"Error running workflow: {e}"}
+
+    def _get_latest_requirement_text(self, project: Any) -> str:
+        """Return the latest user requirement text from artifact store."""
+        try:
+            from .artifact import ArtifactType
+
+            artifact = project.orchestrator.artifact_store.get_latest(ArtifactType.REQUIREMENTS)
+            if artifact and isinstance(artifact.content, dict):
+                return str(artifact.content.get("raw_requirements", "")).strip()
+        except Exception:
+            return ""
+        return ""
 
     def _handle_delete(self, args: str) -> dict[str, Any]:
         """Delete a project.
@@ -520,3 +536,20 @@ Agent Counts Format:
 
         except (ValueError, KeyError):
             return None
+
+    def _attach_deep_runtime(self, project_id: str) -> str:
+        """Wrap project orchestrator with DeepOrchestrator for workflow parity with web mode."""
+        project = self.project_manager.get_project(project_id)
+        if not project:
+            raise ValueError(f"Project '{project_id}' not found for deep runtime attach")
+
+        from ..langchain.deep_orchestrator import DeepOrchestrator
+
+        if isinstance(project.orchestrator, DeepOrchestrator):
+            return "DeepOrchestrator"
+
+        project.orchestrator = DeepOrchestrator.from_orchestrator(  # type: ignore[assignment]
+            project.orchestrator,
+            config=project.config,
+        )
+        return "DeepOrchestrator"

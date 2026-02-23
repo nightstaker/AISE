@@ -35,23 +35,7 @@ class FunctionalDesignSkill(Skill):
 
         ars = ar_artifact.content["architecture_requirements"]
         llm_functions = self._generate_with_llm(ars, context)
-        if llm_functions is not None:
-            all_functions = llm_functions
-        else:
-            fn_counter_service = 1
-            fn_counter_component = 1
-            all_functions = []
-
-            layers = self._group_by_layer(ars)
-            for layer_name, layer_ars in layers.items():
-                for ar in layer_ars:
-                    fn = self._create_function_from_ar(ar, fn_counter_service, fn_counter_component, project_name)
-                    all_functions.append(fn)
-
-                    if fn["type"] == "service":
-                        fn_counter_service += 1
-                    else:
-                        fn_counter_component += 1
+        all_functions = llm_functions
 
         architecture_layers = self._build_layer_structure(all_functions)
         traceability_matrix = self._build_fn_ar_matrix(all_functions)
@@ -64,7 +48,7 @@ class FunctionalDesignSkill(Skill):
             "architecture_layers": architecture_layers,
             "functions": all_functions,
             "traceability_matrix": traceability_matrix,
-            "analysis_mode": "llm" if llm_functions is not None else "heuristic",
+            "analysis_mode": "llm",
         }
 
         return Artifact(
@@ -288,9 +272,11 @@ class FunctionalDesignSkill(Skill):
 
         return matrix
 
-    def _generate_with_llm(self, ars: list[dict[str, Any]], context: SkillContext) -> list[dict[str, Any]] | None:
-        if context.llm_client is None or not ars:
-            return None
+    def _generate_with_llm(self, ars: list[dict[str, Any]], context: SkillContext) -> list[dict[str, Any]]:
+        if context.llm_client is None:
+            raise RuntimeError("LLM client is required for functional_design")
+        if not ars:
+            raise ValueError("No architecture requirements available for functional_design")
         agent_prompt = self._load_prompt_file("../../../agents/architect_agent.md")
         skill_prompt = self._load_prompt_file("../skill.md")
         ar_lines = []
@@ -308,24 +294,21 @@ class FunctionalDesignSkill(Skill):
             '"functions":[{"source_ar":"AR-...","type":"service|component","name":"string","description":"string","layer":"api|business|data|integration","subsystem":"string","interfaces":[{"method":"GET","path":"/api/v1/x","description":"string"}],"dependencies":["string"],"file_path":"src/...py","estimated_complexity":"low|medium|high"}]'
             "}"
         )
-        try:
-            response = context.llm_client.complete(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": "AR列表:\n" + "\n".join(ar_lines)},
-                ],
-                response_format={"type": "json_object"},
-            )
-        except Exception:
-            return None
+        response = context.llm_client.complete(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": "AR列表:\n" + "\n".join(ar_lines)},
+            ],
+            response_format={"type": "json_object"},
+        )
         parsed = self._parse_json_response(response)
-        if not isinstance(parsed, dict):
-            return None
         values = parsed.get("functions")
         if not isinstance(values, list):
-            return None
+            raise RuntimeError("LLM response missing functions list for functional_design")
         rows = self._normalise_llm_functions(values, ars)
-        return rows or None
+        if not rows:
+            raise RuntimeError("LLM response contains no valid functions for functional_design")
+        return rows
 
     def _normalise_llm_functions(
         self,
@@ -398,17 +381,21 @@ class FunctionalDesignSkill(Skill):
         except OSError:
             return ""
 
-    def _parse_json_response(self, text: str) -> dict[str, Any] | None:
+    def _parse_json_response(self, text: str) -> dict[str, Any]:
         if not text:
-            return None
+            raise RuntimeError("Empty LLM response for functional_design")
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             pass
         block = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
         if block:
             try:
-                return json.loads(block.group(1))
+                parsed = json.loads(block.group(1))
+                if isinstance(parsed, dict):
+                    return parsed
             except json.JSONDecodeError:
-                return None
-        return None
+                pass
+        raise RuntimeError("LLM response is not valid JSON object for functional_design")

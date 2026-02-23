@@ -29,87 +29,11 @@ class SystemDesignSkill(Skill):
         non_functional = self._collect_non_functional_requirements(requirements_payload)
 
         llm_design = self._design_with_llm(features, non_functional, context)
-        if llm_design is not None:
-            return Artifact(
-                artifact_type=ArtifactType.ARCHITECTURE_DESIGN,
-                content=llm_design,
-                producer="architect",
-                metadata={"project_name": context.project_name, "analysis_mode": "llm"},
-            )
-
-        components = []
-        for i, feature in enumerate(features, 1):
-            components.append(
-                {
-                    "id": f"COMP-{i:03d}",
-                    "name": f"{self._to_component_name(feature.get('name', 'Generic'))}Service",
-                    "responsibility": str(feature.get("description", "")).strip(),
-                    "type": "service",
-                }
-            )
-
-        infra_components = [
-            {
-                "id": "COMP-API",
-                "name": "APIGateway",
-                "responsibility": "Request routing and authentication",
-                "type": "infrastructure",
-            },
-            {
-                "id": "COMP-DB",
-                "name": "Database",
-                "responsibility": "Persistent data storage",
-                "type": "infrastructure",
-            },
-            {
-                "id": "COMP-CACHE",
-                "name": "Cache",
-                "responsibility": "Performance caching layer",
-                "type": "infrastructure",
-            },
-        ]
-
-        data_flows = []
-        for comp in components:
-            data_flows.append(
-                {
-                    "from": "APIGateway",
-                    "to": comp["name"],
-                    "description": f"Routes requests to {comp['name']}",
-                }
-            )
-            data_flows.append(
-                {
-                    "from": comp["name"],
-                    "to": "Database",
-                    "description": f"{comp['name']} persists data",
-                }
-            )
-
-        design = {
-            "project_name": context.project_name,
-            "architecture_style": "microservices" if len(components) > 3 else "monolith",
-            "components": components + infra_components,
-            "data_flows": data_flows,
-            "deployment": {
-                "strategy": "containerized",
-                "environments": ["development", "staging", "production"],
-            },
-            "non_functional_considerations": [
-                {
-                    "requirement": nfr["description"],
-                    "approach": f"Address via architecture for: {nfr['description'][:50]}",
-                }
-                for nfr in non_functional
-            ],
-            "analysis_mode": "heuristic",
-        }
-
         return Artifact(
             artifact_type=ArtifactType.ARCHITECTURE_DESIGN,
-            content=design,
+            content=llm_design,
             producer="architect",
-            metadata={"project_name": context.project_name, "analysis_mode": "heuristic"},
+            metadata={"project_name": context.project_name, "analysis_mode": "llm"},
         )
 
     @staticmethod
@@ -179,9 +103,11 @@ class SystemDesignSkill(Skill):
         features: list[dict[str, str]],
         non_functional: list[dict[str, str]],
         context: SkillContext,
-    ) -> dict[str, Any] | None:
-        if context.llm_client is None or not features:
-            return None
+    ) -> dict[str, Any]:
+        if context.llm_client is None:
+            raise RuntimeError("LLM client is required for system_design")
+        if not features:
+            raise ValueError("No features available for system_design")
 
         agent_prompt = self._load_prompt_file("../../../agents/architect_agent.md")
         skill_prompt = self._load_prompt_file("../skill.md")
@@ -205,23 +131,18 @@ class SystemDesignSkill(Skill):
             + ("\n".join(nfr_lines) if nfr_lines else "- 无")
         )
 
-        try:
-            response = context.llm_client.complete(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
-            )
-        except Exception:
-            return None
+        response = context.llm_client.complete(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
         parsed = self._parse_json_response(response)
-        if not isinstance(parsed, dict):
-            return None
 
         components = self._normalise_components(parsed.get("components"))
         if not components:
-            return None
+            raise RuntimeError("LLM response contains no valid components for system_design")
 
         architecture_style = str(parsed.get("architecture_style", "monolith")).strip().lower() or "monolith"
         data_flows = self._normalise_data_flows(parsed.get("data_flows"))
@@ -287,17 +208,21 @@ class SystemDesignSkill(Skill):
         except OSError:
             return ""
 
-    def _parse_json_response(self, text: str) -> dict[str, Any] | None:
+    def _parse_json_response(self, text: str) -> dict[str, Any]:
         if not text:
-            return None
+            raise RuntimeError("Empty LLM response for system_design")
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             pass
         block = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
         if block:
             try:
-                return json.loads(block.group(1))
+                parsed = json.loads(block.group(1))
+                if isinstance(parsed, dict):
+                    return parsed
             except json.JSONDecodeError:
-                return None
-        return None
+                pass
+        raise RuntimeError("LLM response is not valid JSON object for system_design")

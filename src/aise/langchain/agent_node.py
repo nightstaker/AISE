@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
@@ -214,6 +216,7 @@ def make_agent_node(
         raw_req = str(project_input.get("raw_requirements", ""))[:600]
         skill_names = list(agent.skills.keys())
         ordered_skills = _suggest_skills_for_phase(_agent_name, phase, skill_names)
+        phase_playbook_skills = _select_playbook_skills(_agent_name, phase, skill_names)
         defaults = _build_default_input_data(context, state, phase)
         base_parameters = dict(context.parameters) if isinstance(context.parameters, dict) else {}
 
@@ -234,6 +237,43 @@ def make_agent_node(
             phase,
             project,
         )
+
+        if phase_playbook_skills:
+            try:
+                summary, produced_artifact_ids = _execute_playbook_skills(
+                    agent=agent,
+                    project_name=project,
+                    phase=phase,
+                    defaults=defaults,
+                    base_parameters=base_parameters,
+                    skill_names=phase_playbook_skills,
+                )
+                logger.info(
+                    "Agent node completed (direct playbook): agent=%s phase=%s skills=%s",
+                    _agent_name,
+                    phase,
+                    phase_playbook_skills,
+                )
+                return {
+                    "messages": [AIMessage(content=summary)],
+                    "phase_results": {
+                        **state.get("phase_results", {}),
+                        f"{phase}_{_agent_name}": "completed",
+                    },
+                    "artifact_ids": [*state.get("artifact_ids", []), *produced_artifact_ids],
+                    "error": None,
+                }
+            except Exception as exc:
+                logger.warning(
+                    "Agent node direct-playbook error: agent=%s phase=%s error=%s",
+                    _agent_name,
+                    phase,
+                    exc,
+                )
+                return {
+                    "messages": [AIMessage(content=f"[{_agent_name}] Error: {exc}")],
+                    "error": str(exc),
+                }
 
         task_prompt = _build_task_prompt(
             agent_name=_agent_name,
@@ -296,6 +336,57 @@ def _suggest_skills_for_phase(
         return selected
     remainder = [skill for skill in skill_names if skill not in selected]
     return selected + remainder
+
+
+def _select_playbook_skills(agent_name: str, phase: str, skill_names: list[str]) -> list[str]:
+    playbook = PHASE_SKILL_PLAYBOOK.get(agent_name, {})
+    preferred = playbook.get(phase, [])
+    return [skill for skill in preferred if skill in skill_names]
+
+
+def _execute_playbook_skills(
+    *,
+    agent: Any,
+    project_name: str,
+    phase: str,
+    defaults: dict[str, Any],
+    base_parameters: dict[str, Any],
+    skill_names: list[str],
+) -> tuple[str, list[str]]:
+    produced_artifact_ids: list[str] = []
+    executed: list[str] = []
+    for skill_name in skill_names:
+        input_data = _build_skill_input(skill_name, defaults)
+        artifact = agent.execute_skill(
+            skill_name=skill_name,
+            input_data=input_data,
+            project_name=project_name,
+            parameters={
+                **base_parameters,
+                "phase": phase,
+                "agent_name": agent.name,
+                "project_name": project_name,
+                "input_defaults": defaults,
+            },
+        )
+        produced_artifact_ids.append(artifact.id)
+        executed.append(skill_name)
+    summary = (
+        f"{agent.name} completed phase '{phase}' via direct playbook execution. "
+        f"skills={executed} artifacts={len(produced_artifact_ids)}"
+    )
+    return summary, produced_artifact_ids
+
+
+def _build_skill_input(skill_name: str, defaults: dict[str, Any]) -> dict[str, Any]:
+    hints = SKILL_INPUT_HINTS.get(skill_name, [])
+    if not hints:
+        return dict(defaults)
+
+    payload: dict[str, Any] = {key: defaults[key] for key in hints if key in defaults}
+    if "raw_requirements" in defaults:
+        payload.setdefault("raw_requirements", defaults["raw_requirements"])
+    return payload
 
 
 def _build_default_input_data(
@@ -395,10 +486,47 @@ def _build_llm(config: ModelConfig) -> ChatOpenAI:
         "model": config.model,
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
+        "timeout": _resolve_timeout_seconds(),
+        "max_retries": 1,
     }
-    if config.api_key:
-        kwargs["api_key"] = config.api_key
+    api_key = _resolve_api_key(config)
+    if api_key:
+        kwargs["api_key"] = api_key
     if config.base_url:
         kwargs["base_url"] = config.base_url
 
     return ChatOpenAI(**kwargs)
+
+
+def _resolve_api_key(config: ModelConfig) -> str:
+    key = config.api_key or os.environ.get("OPENAI_API_KEY", "")
+    if key:
+        return key
+    provider = (config.provider or "").strip().lower()
+    is_local_model = bool(config.extra.get("is_local_model"))
+    if provider == "local" or is_local_model or _is_local_base_url(config.base_url):
+        return os.environ.get("AISE_LOCAL_OPENAI_API_KEY", "local-no-key-required")
+    return ""
+
+
+def _is_local_base_url(base_url: str) -> bool:
+    value = (base_url or "").strip()
+    if not value:
+        return False
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def _resolve_timeout_seconds() -> float:
+    raw = os.environ.get("AISE_LLM_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return 45.0
+    try:
+        value = float(raw)
+        return value if value > 0 else 45.0
+    except ValueError:
+        return 45.0

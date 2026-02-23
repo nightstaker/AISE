@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
@@ -18,6 +20,7 @@ logger = get_logger(__name__)
 
 # Maximum supervisor iterations before forcing termination
 MAX_ITERATIONS = 20
+MAX_CONNECTION_ERROR_RETRIES = 3
 
 
 class RoutingDecision(BaseModel):
@@ -111,6 +114,14 @@ def create_supervisor(
         # Safety valve: avoid infinite loops
         if iteration >= MAX_ITERATIONS:
             logger.warning("Supervisor: max iterations reached, finishing")
+            return {"next_agent": "FINISH", "current_phase": "complete", "iteration": iteration + 1}
+
+        # Fast fail on repeated transport-level connection failures to unblock classic fallback.
+        if error and "connection error" in error.lower() and iteration >= MAX_CONNECTION_ERROR_RETRIES:
+            logger.warning(
+                "Supervisor: repeated connection errors reached threshold (%d), finishing for fallback",
+                MAX_CONNECTION_ERROR_RETRIES,
+            )
             return {"next_agent": "FINISH", "current_phase": "complete", "iteration": iteration + 1}
 
         # --- Deterministic fast-path ---
@@ -277,10 +288,47 @@ def _build_supervisor_llm(config: ModelConfig) -> ChatOpenAI:
         "model": config.model,
         "temperature": 0.0,  # Deterministic routing
         "max_tokens": 256,  # Routing decisions are short
+        "timeout": _resolve_timeout_seconds(),
+        "max_retries": 1,
     }
-    if config.api_key:
-        kwargs["api_key"] = config.api_key
+    api_key = _resolve_api_key(config)
+    if api_key:
+        kwargs["api_key"] = api_key
     if config.base_url:
         kwargs["base_url"] = config.base_url
 
     return ChatOpenAI(**kwargs)
+
+
+def _resolve_api_key(config: ModelConfig) -> str:
+    key = config.api_key or os.environ.get("OPENAI_API_KEY", "")
+    if key:
+        return key
+    provider = (config.provider or "").strip().lower()
+    is_local_model = bool(config.extra.get("is_local_model"))
+    if provider == "local" or is_local_model or _is_local_base_url(config.base_url):
+        return os.environ.get("AISE_LOCAL_OPENAI_API_KEY", "local-no-key-required")
+    return ""
+
+
+def _is_local_base_url(base_url: str) -> bool:
+    value = (base_url or "").strip()
+    if not value:
+        return False
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def _resolve_timeout_seconds() -> float:
+    raw = os.environ.get("AISE_LLM_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return 45.0
+    try:
+        value = float(raw)
+        return value if value > 0 else 45.0
+    except ValueError:
+        return 45.0

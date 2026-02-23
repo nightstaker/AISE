@@ -15,6 +15,18 @@ _LOGGER_NAME = "aise"
 _configured_signature: tuple[str, str, bool, bool] | None = None
 
 
+class _HttpxRequestLevelFilter(logging.Filter):
+    """Downgrade httpx request logs from INFO to DEBUG for cleaner default logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == "httpx" and record.levelno == logging.INFO:
+            message = record.getMessage()
+            if "HTTP Request" in message:
+                record.levelno = logging.INFO
+                record.levelname = "INFO"
+        return True
+
+
 class _JsonFormatter(logging.Formatter):
     """Serialize logs into a compact JSON structure."""
 
@@ -98,6 +110,7 @@ def configure_logging(config: LoggingConfig | None = None, *, force: bool = Fals
 
     console = logging.StreamHandler()
     console.setFormatter(formatter)
+    console.addFilter(_HttpxRequestLevelFilter())
     root.addHandler(console)
 
     if cfg.rotate_daily:
@@ -110,6 +123,7 @@ def configure_logging(config: LoggingConfig | None = None, *, force: bool = Fals
     else:
         file_handler = logging.FileHandler(filename=str(log_file), encoding="utf-8")
     file_handler.setFormatter(formatter)
+    file_handler.addFilter(_HttpxRequestLevelFilter())
     root.addHandler(file_handler)
 
     logging.getLogger(_LOGGER_NAME).setLevel(level)

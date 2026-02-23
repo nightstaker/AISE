@@ -1,6 +1,10 @@
 """Tests for model configuration and per-agent LLM setup."""
 
+import json
+import re
 from typing import Any
+
+import pytest
 
 from aise.agents import (
     ArchitectAgent,
@@ -204,6 +208,68 @@ class TestProjectConfigModelResolution:
         assert resolved.model == "qwen2.5-coder:7b"
         assert resolved.extra.get("is_local_model") is True
 
+    def test_local_model_inherits_local_provider_base_url(self):
+        config = ProjectConfig.from_dict(
+            {
+                "default_model": {"provider": "openai", "model": "gpt-4o"},
+                "model_providers": [
+                    {
+                        "provider": "local",
+                        "api_key": "",
+                        "base_url": "http://127.0.0.1:11434/v1",
+                        "enabled": True,
+                    }
+                ],
+                "models": [
+                    {
+                        "id": "qwen-local",
+                        "name": "Qwen Local",
+                        "api_model": "qwen2.5-coder:7b",
+                        "default": True,
+                        "default_provider": "local",
+                        "providers": [],
+                        "is_local": True,
+                    }
+                ],
+                "agent_model_selection": {"developer": "qwen-local"},
+            }
+        )
+        resolved = config.get_model_config("developer")
+        assert resolved.provider == "local"
+        assert resolved.api_key == ""
+        assert resolved.base_url == "http://127.0.0.1:11434/v1"
+
+    def test_model_with_multiple_providers_sets_fallback_chain(self):
+        config = ProjectConfig.from_dict(
+            {
+                "default_model": {"provider": "openai", "model": "gpt-4o"},
+                "model_providers": [
+                    {"provider": "primary", "api_key": "sk-1", "base_url": "https://p1/v1", "enabled": True},
+                    {"provider": "backup", "api_key": "sk-2", "base_url": "https://p2/v1", "enabled": True},
+                ],
+                "models": [
+                    {
+                        "id": "team-model",
+                        "name": "Team Model",
+                        "api_model": "team-model-api",
+                        "default": True,
+                        "default_provider": "primary",
+                        "providers": ["primary", "backup"],
+                        "is_local": False,
+                    }
+                ],
+                "agent_model_selection": {"architect": "team-model"},
+            }
+        )
+        resolved = config.get_model_config("architect")
+        assert resolved.provider == "primary"
+        assert resolved.model == "team-model-api"
+        fallback_chain = resolved.extra.get("fallback_chain")
+        assert isinstance(fallback_chain, list)
+        assert len(fallback_chain) == 1
+        assert fallback_chain[0]["provider"] == "backup"
+        assert fallback_chain[0]["base_url"] == "https://p2/v1"
+
 
 class TestLLMClient:
     def test_creation(self):
@@ -213,10 +279,58 @@ class TestLLMClient:
         assert client.model == "claude-sonnet-4-20250514"
         assert client.config is cfg
 
-    def test_complete_returns_empty_string(self):
+    def test_complete_raises_when_all_providers_fail(self):
         client = LLMClient(ModelConfig())
-        result = client.complete([{"role": "user", "content": "hello"}])
-        assert result == ""
+        with pytest.raises(RuntimeError, match="All LLM providers failed"):
+            client.complete([{"role": "user", "content": "hello"}])
+
+    def test_resolve_api_key_allows_local_provider_without_api_key(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("AISE_LOCAL_OPENAI_API_KEY", raising=False)
+        client = LLMClient(
+            ModelConfig(
+                provider="local",
+                model="qwen2.5-coder:7b",
+                api_key="",
+                base_url="http://localhost:11434/v1",
+            )
+        )
+        assert client._resolve_api_key() == "local-no-key-required"
+
+    def test_complete_writes_trace_file_with_timestamp_uuid(self, tmp_path, monkeypatch):
+        client = LLMClient(
+            ModelConfig(
+                provider="local",
+                model="qwen2.5-coder:7b",
+                api_key="",
+                base_url="http://127.0.0.1:11434/v1",
+            )
+        )
+
+        monkeypatch.setattr(client, "_complete_openai_compatible", lambda *_a, **_k: '{"ok":true}')
+        client.set_call_context(
+            {
+                "agent": "developer",
+                "role": "developer",
+                "skill": "deep_developer_workflow",
+                "project_name": "TraceProject",
+                "project_root": str(tmp_path),
+                "trace_dir": str(tmp_path / "trace"),
+            }
+        )
+        client.complete([{"role": "user", "content": "Generate code"}], llm_purpose="unit_test_trace")
+        client.clear_call_context()
+
+        trace_files = list((tmp_path / "trace").glob("*.json"))
+        assert len(trace_files) == 1
+        data = json.loads(trace_files[0].read_text(encoding="utf-8"))
+        assert re.match(r"^\d{8}-\d{6}$", data["timestamp"])
+        assert re.match(r"^[0-9a-f]{32}$", data["call_id"])
+        assert data["purpose"] == "unit_test_trace"
+        assert data["url"] == "http://127.0.0.1:11434/v1"
+        assert data["model"] == "qwen2.5-coder:7b"
+        assert data["input"]["messages"][0]["content"] == "Generate code"
+        assert data["output"] == '{"ok":true}'
 
     def test_complete_uses_openai_compatible_path_for_any_provider(self, monkeypatch):
         client = LLMClient(ModelConfig(provider="anthropic", model="claude-sonnet-4-20250514"))
@@ -227,6 +341,33 @@ class TestLLMClient:
         monkeypatch.setattr(client, "_complete_openai_compatible", fake_complete)
         result = client.complete([{"role": "user", "content": "hello"}])
         assert result == "ok"
+
+    def test_complete_switches_to_fallback_provider_after_retries(self, monkeypatch):
+        client = LLMClient(
+            ModelConfig(
+                provider="primary",
+                model="model-a",
+                api_key="sk-test",
+                extra={
+                    "fallback_chain": [
+                        {"provider": "backup", "model": "model-a", "api_key": "sk-test"},
+                    ]
+                },
+            )
+        )
+        attempts: list[str] = []
+
+        def fake_complete(_messages, **_kwargs):
+            attempts.append(client.provider)
+            if client.provider == "primary":
+                raise RuntimeError("primary failed")
+            return "ok-from-backup"
+
+        monkeypatch.setattr(client, "_complete_openai_compatible", fake_complete)
+        result = client.complete([{"role": "user", "content": "hello"}])
+        assert result == "ok-from-backup"
+        assert attempts == ["primary", "primary", "primary", "backup"]
+        assert client.provider == "primary"
 
     def test_extract_response_text_from_sdk_like_object(self):
         client = LLMClient(ModelConfig())
@@ -294,6 +435,100 @@ class TestLLMClient:
         r = repr(client)
         assert "openai" in r
         assert "gpt-4o" in r
+
+    def test_extract_exception_details_with_response_metadata(self):
+        client = LLMClient(ModelConfig(provider="openai", model="gpt-4o"))
+
+        class _Response:
+            status_code = 503
+            text = "upstream unavailable"
+            headers = {
+                "x-request-id": "req-123",
+                "content-type": "application/json",
+                "authorization": "secret-should-not-be-logged",
+            }
+
+        class _Exc(Exception):
+            def __init__(self):
+                super().__init__("service unavailable")
+                self.status_code = 503
+                self.request_id = "sdk-req-1"
+                self.response = _Response()
+
+        details = client._extract_exception_details(_Exc())
+        assert details["type"] == "_Exc"
+        assert details["status_code"] == 503
+        assert details["request_id"] == "sdk-req-1"
+        assert details["response"]["status_code"] == 503
+        assert details["response"]["text"] == "upstream unavailable"
+        assert details["response"]["headers"]["x-request-id"] == "req-123"
+        assert "authorization" not in details["response"]["headers"]
+
+    def test_complete_logs_detailed_error_on_failure(self, monkeypatch, caplog):
+        client = LLMClient(ModelConfig(provider="openai", model="gpt-4o", api_key="sk-test"))
+
+        class _Completions:
+            @staticmethod
+            def create(**kwargs):
+                raise RuntimeError("chat endpoint down")
+
+        class _Chat:
+            completions = _Completions()
+
+        class _Client:
+            class responses:
+                @staticmethod
+                def create(**kwargs):
+                    raise RuntimeError("responses endpoint down")
+
+            chat = _Chat()
+
+        monkeypatch.setattr(client, "_build_openai_client", lambda: _Client())
+
+        with caplog.at_level("WARNING", logger="aise.core.llm"):
+            with pytest.raises(RuntimeError, match="All LLM providers failed"):
+                client.complete([{"role": "user", "content": "hello"}])
+
+        assert "LLM request failed" in caplog.text
+        assert "details=" in caplog.text
+
+    def test_complete_prefers_chat_when_response_format_is_set(self, monkeypatch):
+        client = LLMClient(ModelConfig(provider="openai", model="gpt-4o", api_key="sk-test"))
+
+        class _Message:
+            content = '{"ok":true}'
+
+        class _Choice:
+            message = _Message()
+
+        class _Response:
+            choices = [_Choice()]
+
+        class _Completions:
+            @staticmethod
+            def create(**kwargs):
+                assert kwargs.get("response_format") == {"type": "json_object"}
+                return _Response()
+
+        class _Chat:
+            completions = _Completions()
+
+        class _Responses:
+            @staticmethod
+            def create(**kwargs):
+                raise AssertionError("responses.create should not be called for response_format requests")
+
+        class _Client:
+            responses = _Responses()
+            chat = _Chat()
+
+        monkeypatch.setattr(client, "_build_openai_client", lambda: _Client())
+
+        result = client.complete(
+            [{"role": "user", "content": "Return JSON"}],
+            response_format={"type": "json_object"},
+        )
+        assert result == '{"ok":true}'
 
 
 class TestAgentWithModelConfig:

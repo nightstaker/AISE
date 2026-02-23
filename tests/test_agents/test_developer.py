@@ -104,3 +104,81 @@ class TestDeveloperAgent:
         assert artifact.content["workflow"] == "deep_developer_workflow"
         assert (Path(project_root) / "src" / "services").exists()
         assert (Path(project_root) / "tests" / "services").exists()
+        assert (Path(project_root) / "tests" / "conftest.py").exists()
+
+    def test_deep_developer_workflow_generates_generic_service_assets(self, tmp_path):
+        bus = MessageBus()
+        store = ArtifactStore()
+        pm = ProductManagerAgent(bus, store)
+        arch = ArchitectAgent(bus, store)
+        dev = DeveloperAgent(bus, store)
+
+        project_root = tmp_path / "project_0-snake"
+        (project_root / "docs").mkdir(parents=True, exist_ok=True)
+        pm.execute_skill(
+            "deep_product_workflow",
+            {
+                "raw_requirements": "开发一个命令行贪吃蛇游戏，支持暂停、重开和pytest测试",
+                "output_dir": str(project_root / "docs"),
+            },
+            parameters={"project_root": str(project_root)},
+        )
+        arch.execute_skill(
+            "deep_architecture_workflow",
+            {"output_dir": "docs", "source_dir": "src"},
+            parameters={"project_root": str(project_root)},
+        )
+
+        dev.execute_skill(
+            "deep_developer_workflow",
+            {
+                "source_dir": "src",
+                "tests_dir": "tests",
+                "raw_requirements": "开发一个命令行贪吃蛇游戏，支持暂停、重开和pytest测试",
+            },
+            parameters={"project_root": str(project_root)},
+        )
+
+        service_files = list((project_root / "src" / "services").glob("*/*.py"))
+        test_files = list((project_root / "tests" / "services").glob("*/*.py"))
+        assert service_files
+        assert test_files
+        assert (project_root / "tests" / "conftest.py").exists()
+
+    def test_deep_developer_workflow_uses_generic_subsystem_pipeline_for_cpp_requirement(self, tmp_path):
+        bus = MessageBus()
+        store = ArtifactStore()
+        pm = ProductManagerAgent(bus, store)
+        arch = ArchitectAgent(bus, store)
+        dev = DeveloperAgent(bus, store)
+
+        project_root = tmp_path / "project_2-snake-cpp"
+        (project_root / "docs").mkdir(parents=True, exist_ok=True)
+        raw = "开发一个C++版本的贪吃蛇项目，要求可以编译和运行"
+        pm.execute_skill(
+            "deep_product_workflow",
+            {
+                "raw_requirements": raw,
+                "output_dir": str(project_root / "docs"),
+            },
+            parameters={"project_root": str(project_root)},
+        )
+        arch.execute_skill(
+            "deep_architecture_workflow",
+            {"output_dir": "docs", "source_dir": "src", "raw_requirements": raw},
+            parameters={"project_root": str(project_root)},
+        )
+
+        dev.execute_skill(
+            "deep_developer_workflow",
+            {
+                "source_dir": "src",
+                "tests_dir": "tests",
+                "raw_requirements": raw,
+            },
+            parameters={"project_root": str(project_root)},
+        )
+
+        assert (project_root / "src" / "services").exists()
+        assert (project_root / "tests" / "services").exists()
+        assert not (project_root / "CMakeLists.txt").exists()
