@@ -36,28 +36,131 @@ class DeepProductWorkflowSkill(Skill):
         project_name = context.project_name or str(input_data.get("project_name", "Untitled")).strip() or "Untitled"
         raw_requirements = str(input_data.get("raw_requirements", "")).strip()
         user_memory = self._normalize_memory(input_data.get("user_memory") or context.parameters.get("user_memory"))
+        recorder = context.parameters.get("task_memory_recorder") or input_data.get("_task_memory_recorder")
+        phase_key = str(context.parameters.get("phase_key") or context.parameters.get("phase") or "requirements")
+        retry_task_key = str(context.parameters.get("retry_task_key") or input_data.get("retry_task_key") or "")
+        execution_scope = str(context.parameters.get("execution_scope") or "full_skill")
         output_dir = self._resolve_output_dir(input_data, context)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        attempts: dict[str, int] = {}
+
+        def _step_start(task_key: str, *, notes: list[str] | None = None) -> None:
+            if retry_task_key and task_key != retry_task_key:
+                return
+            if not recorder or not hasattr(recorder, "record_task_attempt_start"):
+                return
+            started = recorder.record_task_attempt_start(
+                phase_key=phase_key,
+                task_key=task_key,
+                display_name=task_key.rsplit(".", 1)[-1],
+                kind="retry" if retry_task_key else "initial",
+                mode=str(context.parameters.get("retry_mode") or input_data.get("retry_mode") or "current"),
+                executor={
+                    "agent": "product_manager",
+                    "skill": "deep_product_workflow",
+                    "task_key": task_key,
+                    "execution_scope": execution_scope if retry_task_key else "full_skill",
+                },
+            )
+            attempt = started.get("attempt", {}) if isinstance(started, dict) else {}
+            attempt_no = int((attempt or {}).get("attempt_no", 0) or 0)
+            attempts[task_key] = attempt_no
+            if hasattr(recorder, "record_task_attempt_context") and attempt_no:
+                recorder.record_task_attempt_context(
+                    phase_key=phase_key,
+                    task_key=task_key,
+                    attempt_no=attempt_no,
+                    context={
+                        "input_keys": sorted(input_data.keys()),
+                        "notes": list(notes or []),
+                    },
+                )
+
+        def _step_end(task_key: str, *, status: str, error: str = "", outputs: dict[str, Any] | None = None) -> None:
+            if retry_task_key and task_key != retry_task_key:
+                return
+            attempt_no = attempts.get(task_key, 0)
+            if not recorder or not attempt_no:
+                return
+            if outputs and hasattr(recorder, "record_task_attempt_output"):
+                recorder.record_task_attempt_output(
+                    phase_key=phase_key,
+                    task_key=task_key,
+                    attempt_no=attempt_no,
+                    outputs=outputs,
+                )
+            if hasattr(recorder, "record_task_attempt_end"):
+                recorder.record_task_attempt_end(
+                    phase_key=phase_key,
+                    task_key=task_key,
+                    attempt_no=attempt_no,
+                    status=status,
+                    error=error,
+                )
+
         # Step 1: Product Designer expands understanding from raw requirements + memory.
-        expanded = self._designer_expand_requirements(
-            raw_requirements=raw_requirements,
-            user_memory=user_memory,
-            project_name=project_name,
-            context=context,
+        _step_start(
+            "product_manager.deep_product_workflow.step1",
+            notes=[f"requested_scope={execution_scope}"] if retry_task_key else None,
         )
+        try:
+            expanded = self._designer_expand_requirements(
+                raw_requirements=raw_requirements,
+                user_memory=user_memory,
+                project_name=project_name,
+                context=context,
+            )
+            _step_end("product_manager.deep_product_workflow.step1", status="completed")
+        except Exception as exc:
+            _step_end("product_manager.deep_product_workflow.step1", status="failed", error=str(exc))
+            raise
 
         # Step 2: Product design with paired review loop (at least two rounds).
-        design_rounds = self._run_product_design_review_rounds(expanded=expanded, context=context, min_rounds=2)
+        _step_start("product_manager.deep_product_workflow.step2.design")
+        _step_start("product_manager.deep_product_workflow.step2.review")
+        try:
+            design_rounds = self._run_product_design_review_rounds(expanded=expanded, context=context, min_rounds=2)
+            _step_end(
+                "product_manager.deep_product_workflow.step2.design",
+                status="completed",
+                outputs={"rounds": len(design_rounds)},
+            )
+            _step_end(
+                "product_manager.deep_product_workflow.step2.review",
+                status="completed",
+                outputs={"rounds": len(design_rounds)},
+            )
+        except Exception as exc:
+            _step_end("product_manager.deep_product_workflow.step2.design", status="failed", error=str(exc))
+            _step_end("product_manager.deep_product_workflow.step2.review", status="failed", error=str(exc))
+            raise
         latest_design = design_rounds[-1]["design"]
 
         # Step 3: System requirements with paired review loop (at least two rounds).
-        requirements_rounds = self._run_system_requirement_review_rounds(
-            expanded=expanded,
-            latest_design=latest_design,
-            context=context,
-            min_rounds=2,
-        )
+        _step_start("product_manager.deep_product_workflow.step3.design")
+        _step_start("product_manager.deep_product_workflow.step3.review")
+        try:
+            requirements_rounds = self._run_system_requirement_review_rounds(
+                expanded=expanded,
+                latest_design=latest_design,
+                context=context,
+                min_rounds=2,
+            )
+            _step_end(
+                "product_manager.deep_product_workflow.step3.design",
+                status="completed",
+                outputs={"rounds": len(requirements_rounds)},
+            )
+            _step_end(
+                "product_manager.deep_product_workflow.step3.review",
+                status="completed",
+                outputs={"rounds": len(requirements_rounds)},
+            )
+        except Exception as exc:
+            _step_end("product_manager.deep_product_workflow.step3.design", status="failed", error=str(exc))
+            _step_end("product_manager.deep_product_workflow.step3.review", status="failed", error=str(exc))
+            raise
         latest_requirements = requirements_rounds[-1]["system_requirements"]
 
         design_doc_path = output_dir / "system-design.md"
@@ -81,6 +184,11 @@ class DeepProductWorkflowSkill(Skill):
             ),
             encoding="utf-8",
         )
+        _step_end(
+            "product_manager.deep_product_workflow.step3.design",
+            status="completed",
+            outputs={"generated_files": [str(design_doc_path), str(req_doc_path)]},
+        ) if False else None
 
         requirements_artifact = Artifact(
             artifact_type=ArtifactType.REQUIREMENTS,
@@ -216,19 +324,40 @@ class DeepProductWorkflowSkill(Skill):
         project_name: str,
         context: SkillContext,
     ) -> dict[str, Any]:
-        prompt = (
-            "You are Product Designer.\n"
-            "Task: expand and clarify user raw requirements with user memory.\n"
-            "Return JSON with keys: intent_summary, business_goals, users, scenarios, constraints, assumptions, risks."
-        )
         memory_text = "\n".join(f"- {m}" for m in user_memory) or "- (none)"
-        llm_data = self._run_llm_json(
-            context=context,
-            system_prompt=prompt,
-            user_prompt=(
-                f"Project: {project_name}\nRaw requirements:\n{raw_requirements}\n\nUser memory:\n{memory_text}\n"
-            ),
+        common_prompt = (
+            f"Project: {project_name}\nRaw requirements:\n{raw_requirements}\n\nUser memory:\n{memory_text}\n"
         )
+        llm_core = self._run_llm_json_segment(
+            context=context,
+            purpose=(
+                f"subagent:product_designer step:requirement_expansion.core project:{self._purpose_token(project_name)}"
+            ),
+            system_prompt=(
+                "You are Product Designer.\n"
+                "Task: expand and clarify user raw requirements with user memory.\n"
+                "Return JSON only with keys: intent_summary, business_goals."
+            ),
+            user_prompt=common_prompt,
+            required_keys=["intent_summary", "business_goals"],
+        )
+        llm_context = self._run_llm_json_segment(
+            context=context,
+            purpose=(
+                "subagent:product_designer step:requirement_expansion.context "
+                f"project:{self._purpose_token(project_name)}"
+            ),
+            system_prompt=(
+                "You are Product Designer.\n"
+                "Task: derive delivery context and risks from user requirements.\n"
+                "Return JSON only with keys: users, scenarios, constraints, assumptions, risks."
+            ),
+            user_prompt=(
+                common_prompt + f"\nIntent summary (may be partial): {str(llm_core.get('intent_summary', ''))[:1000]}\n"
+            ),
+            required_keys=["users", "scenarios", "constraints", "assumptions", "risks"],
+        )
+        llm_data = {**llm_core, **llm_context}
         if llm_data:
             return {
                 "analysis_mode": "llm",
@@ -273,6 +402,66 @@ class DeepProductWorkflowSkill(Skill):
             "assumptions": ["Requirements can evolve through review loops"],
             "risks": ["Ambiguity in platform-specific behavior"],
         }
+
+    def _run_llm_json_segment(
+        self,
+        *,
+        context: SkillContext,
+        purpose: str,
+        system_prompt: str,
+        user_prompt: str,
+        required_keys: list[str],
+        max_attempts: int = 3,
+    ) -> dict[str, Any]:
+        last_partial: dict[str, Any] = {}
+        for attempt in range(1, max(1, max_attempts) + 1):
+            prompt = user_prompt
+            if attempt > 1:
+                missing = [key for key in required_keys if key not in last_partial]
+                prompt += (
+                    "\n\nRetry guidance:\n"
+                    "- Previous response was incomplete/truncated or missing required keys.\n"
+                    f"- Required keys: {', '.join(required_keys)}\n"
+                    f"- Missing keys: {', '.join(missing) if missing else '(schema invalid)'}\n"
+                )
+                if last_partial:
+                    prompt += f"Partial response:\n{self._compact_json(last_partial)}\n"
+                prompt += "Return compact valid JSON only.\n"
+            try:
+                payload = self._run_llm_json(
+                    context=context,
+                    purpose=purpose,
+                    system_prompt=system_prompt,
+                    user_prompt=prompt,
+                )
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                last_partial = payload
+            if self._segment_payload_ok(payload, required_keys):
+                return payload
+        return last_partial
+
+    def _segment_payload_ok(self, payload: dict[str, Any], required_keys: list[str]) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        for key in required_keys:
+            if key not in payload:
+                return False
+        if "intent_summary" in required_keys and len(str(payload.get("intent_summary", "")).strip()) < 20:
+            return False
+        for list_key in ("business_goals", "users", "scenarios", "constraints", "assumptions", "risks"):
+            if list_key in required_keys:
+                value = self._as_str_list(payload.get(list_key))
+                if not value:
+                    return False
+        return True
+
+    def _compact_json(self, payload: Any) -> str:
+        try:
+            return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            return str(payload)
 
     def _run_product_design_review_rounds(
         self,
@@ -438,32 +627,16 @@ class DeepProductWorkflowSkill(Skill):
         srs = previous_requirements.get("requirements", []) if previous_requirements else []
         if not srs:
             srs = []
-            for idx, sf in enumerate(design.get("system_features", []), start=1):
-                sr_id = f"SR-{idx:03d}"
-                scenario = f"As a user, I need {sf.get('goal', sf.get('name', 'the feature'))}."
-                srs.append(
-                    {
-                        "id": sr_id,
-                        "source_sfs": [sf.get("id", f"SF-{idx:03d}")],
-                        "title": sf.get("name", f"Requirement {idx}"),
-                        "requirement_overview": sf.get("goal", ""),
-                        "scenario": scenario,
-                        "users": expanded.get("users", ["End users"]),
-                        "interaction_process": self._goal_to_interactions(sf.get("goal", "")),
-                        "expected_result": f"System achieves: {sf.get('goal', '')}",
-                        "spec_targets": ["Availability >= 99.9%", "P95 response time <= 300ms"],
-                        "constraints": sf.get("constraints", []),
-                        "use_case_diagram": f"UseCase({sr_id}) -> Actor(User) -> System({sf.get('name', 'Feature')})",
-                        "use_case_description": (
-                            f"{sr_id} captures scenario, interactions, constraints, and measurable targets "
-                            "for implementation and verification."
-                        ),
-                        "type": "functional",
-                        "category": "Product Capability",
-                        "priority": sf.get("priority", "medium"),
-                        "verification_method": "integration_test",
-                    }
+            sr_index = 1
+            for sf_idx, sf in enumerate(design.get("system_features", []), start=1):
+                sf_srs = self._decompose_sf_to_system_requirements(
+                    sf=sf,
+                    sf_index=sf_idx,
+                    users=expanded.get("users", ["End users"]),
+                    start_index=sr_index,
                 )
+                srs.extend(sf_srs)
+                sr_index += len(sf_srs)
 
         if previous_review and previous_review.get("issues"):
             comment_note = " | ".join(str(i) for i in previous_review.get("issues", [])[:2])
@@ -479,9 +652,11 @@ class DeepProductWorkflowSkill(Skill):
             "design_goals": [
                 "Translate SF into complete SR with implementation-oriented details.",
                 "Maintain strict traceability between SF and SR.",
+                "Decompose each SF into multiple independent, verifiable SR entries.",
             ],
             "design_approach": [
                 "Feature to requirement decomposition",
+                "Function-level SR splitting under each SF",
                 "Scenario-driven interaction design",
                 "Measurable constraints and verification targets",
             ],
@@ -501,6 +676,9 @@ class DeepProductWorkflowSkill(Skill):
         issues: list[str] = []
         if not requirements:
             issues.append("No SR entries generated.")
+        sf_ids = [str(sf.get("id", "")).strip() for sf in design.get("system_features", []) if isinstance(sf, dict)]
+        sf_counts: dict[str, int] = {sf_id: 0 for sf_id in sf_ids if sf_id}
+        seen_titles: set[str] = set()
         for sr in requirements:
             required_fields = [
                 "requirement_overview",
@@ -517,6 +695,31 @@ class DeepProductWorkflowSkill(Skill):
                 value = sr.get(field)
                 if value is None or (isinstance(value, (str, list)) and len(value) == 0):
                     issues.append(f"{sr.get('id', 'SR-UNKNOWN')} missing {field}.")
+            source_sfs = sr.get("source_sfs", [])
+            if not isinstance(source_sfs, list) or not source_sfs:
+                issues.append(f"{sr.get('id', 'SR-UNKNOWN')} missing source_sfs mapping.")
+            else:
+                if len(source_sfs) != 1:
+                    issues.append(
+                        f"{sr.get('id', 'SR-UNKNOWN')} should map to exactly one "
+                        "primary SF for independent verification."
+                    )
+                for sf_id in source_sfs:
+                    sf_key = str(sf_id).strip()
+                    if sf_key:
+                        sf_counts[sf_key] = sf_counts.get(sf_key, 0) + 1
+            if len(sr.get("spec_targets", [])) < 2:
+                issues.append(f"{sr.get('id', 'SR-UNKNOWN')} should include at least 2 measurable spec targets.")
+            if not str(sr.get("verification_method", "")).strip():
+                issues.append(f"{sr.get('id', 'SR-UNKNOWN')} missing verification_method.")
+            title_key = str(sr.get("title", "")).strip().lower()
+            if title_key:
+                if title_key in seen_titles:
+                    issues.append(f"{sr.get('id', 'SR-UNKNOWN')} has duplicated title '{sr.get('title', '')}'.")
+                seen_titles.add(title_key)
+        for sf_id in sf_ids:
+            if sf_counts.get(sf_id, 0) < 2:
+                issues.append(f"{sf_id} should decompose into at least 2 independent SR entries.")
 
         approved = round_index >= 2 and not issues
         if round_index == 1 and not issues:
@@ -535,6 +738,117 @@ class DeepProductWorkflowSkill(Skill):
             "decision": "approve" if approved else "revise",
             "reviewed_sf_count": len(design.get("system_features", [])),
         }
+
+    def _decompose_sf_to_system_requirements(
+        self,
+        *,
+        sf: dict[str, Any],
+        sf_index: int,
+        users: list[str],
+        start_index: int,
+    ) -> list[dict[str, Any]]:
+        sf_id = str(sf.get("id", f"SF-{sf_index:03d}")).strip() or f"SF-{sf_index:03d}"
+        sf_name = str(sf.get("name", f"Feature {sf_index}")).strip() or f"Feature {sf_index}"
+        sf_goal = str(sf.get("goal", sf_name)).strip() or sf_name
+        functions = self._as_str_list(sf.get("functions"))
+        constraints = self._as_str_list(sf.get("constraints"))
+        priority = str(sf.get("priority", "medium"))
+
+        slices: list[tuple[str, str, str]] = []
+        for fn in functions[:4]:
+            cleaned = str(fn).strip()
+            if not cleaned:
+                continue
+            title = self._short_requirement_title_from_function(sf_name, cleaned)
+            slices.append((title, cleaned, "integration_test"))
+
+        # Guarantee multiple SRs per SF even when upstream functions are sparse.
+        if len(slices) < 2:
+            slices.append(
+                (
+                    f"{sf_name} input validation and error handling",
+                    (
+                        "System validates inputs, rejects invalid requests, and "
+                        f"returns deterministic error handling for {sf_goal}."
+                    ),
+                    "negative_integration_test",
+                )
+            )
+        if len(slices) < 2:
+            slices.append(
+                (
+                    f"{sf_name} observability and measurable outcomes",
+                    (
+                        "System emits auditable state transitions and metrics for "
+                        f"{sf_goal} to support verification and operations."
+                    ),
+                    "integration_test",
+                )
+            )
+
+        requirements: list[dict[str, Any]] = []
+        for offset, (title, focus_text, verification_method) in enumerate(slices, start=0):
+            sr_num = start_index + offset
+            sr_id = f"SR-{sr_num:03d}"
+            interaction_process = self._goal_to_interactions(focus_text)
+            expected = f"System independently satisfies: {focus_text}"
+            spec_targets = self._build_sr_spec_targets(sf_goal=sf_goal, focus_text=focus_text)
+            requirements.append(
+                {
+                    "id": sr_id,
+                    "source_sfs": [sf_id],
+                    "title": title,
+                    "requirement_overview": focus_text,
+                    "scenario": f"As a user/system actor, I need the system to support: {focus_text}",
+                    "users": users if isinstance(users, list) and users else ["End users"],
+                    "interaction_process": interaction_process,
+                    "expected_result": expected,
+                    "spec_targets": spec_targets,
+                    "constraints": constraints,
+                    "use_case_diagram": f"UseCase({sr_id}) -> Actor(User/System) -> System({sf_name})",
+                    "use_case_description": (
+                        f"{sr_id} is an independently verifiable system requirement decomposed from {sf_id} "
+                        f"covering one concrete behavior slice: {focus_text}"
+                    ),
+                    "type": "functional",
+                    "category": "Product Capability",
+                    "priority": priority,
+                    "verification_method": verification_method,
+                }
+            )
+        return requirements
+
+    def _short_requirement_title_from_function(self, sf_name: str, function_text: str) -> str:
+        text = str(function_text).strip()
+        lower = text.lower()
+        if "user-facing behavior" in lower:
+            return f"{sf_name} - user interaction behavior"
+        if "service logic and state transition" in lower:
+            return f"{sf_name} - service logic and state transition"
+        if "verifiable outcomes and telemetry" in lower:
+            return f"{sf_name} - observability and verification telemetry"
+        if ":" in text:
+            text = text.split(":", 1)[1].strip()
+        text = re.sub(r"\s+", " ", text)
+        # Keep title compact and specific.
+        if len(text) > 72:
+            text = text[:72].rstrip()
+        base = f"{sf_name} - {text}" if sf_name and text else (sf_name or text or "System Requirement")
+        return base
+
+    def _build_sr_spec_targets(self, *, sf_goal: str, focus_text: str) -> list[str]:
+        text = f"{sf_goal} {focus_text}".lower()
+        targets = [
+            "Functional correctness >= 95% pass rate in integration test suite for this SR",
+            "Deterministic expected result and error code coverage for defined scenario paths",
+        ]
+        if any(token in text for token in ("多人", "multiplayer", "sync", "同步", "realtime", "real-time")):
+            targets.append("P95 state synchronization/update latency <= 100ms under target load")
+        elif any(token in text for token in ("ai", "bot", "智能")):
+            targets.append("P95 decision response time <= 300ms with observable decision trace")
+        else:
+            targets.append("P95 request/response processing time <= 300ms for this scenario")
+        return targets[:3]
 
     def _to_system_design_artifact_content(self, project_name: str, design: dict[str, Any]) -> dict[str, Any]:
         all_features = []
@@ -741,7 +1055,14 @@ class DeepProductWorkflowSkill(Skill):
             return ["All reviewer comments addressed; no outstanding issues."]
         return [f"Addressed reviewer issue: {issue}" for issue in issues[:4]]
 
-    def _run_llm_json(self, *, context: SkillContext, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+    def _run_llm_json(
+        self,
+        *,
+        context: SkillContext,
+        system_prompt: str,
+        user_prompt: str,
+        purpose: str = "",
+    ) -> dict[str, Any]:
         if context.llm_client is None:
             raise RuntimeError("LLM client is required for deep_product_workflow")
         response = context.llm_client.complete(
@@ -750,11 +1071,18 @@ class DeepProductWorkflowSkill(Skill):
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
+            llm_purpose=purpose or "agent:product_manager role:product_manager skill:deep_product_workflow",
         )
         parsed = self._parse_json_response(response)
         if parsed is None:
+            if purpose:
+                raise RuntimeError(f"LLM response is not valid JSON object for {purpose}")
             raise RuntimeError("LLM response is not valid JSON object for deep_product_workflow")
         return parsed
+
+    def _purpose_token(self, value: str) -> str:
+        token = re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
+        return (token or "na")[:80]
 
     def _parse_json_response(self, text: str) -> dict[str, Any] | None:
         if not text:
@@ -828,14 +1156,46 @@ class DeepProductWorkflowSkill(Skill):
         return interactions
 
     def _as_str_list(self, value: Any) -> list[str]:
-        if not isinstance(value, list):
-            return []
-        output: list[str] = []
-        for item in value:
-            text = str(item).strip()
-            if text:
-                output.append(text)
-        return output
+        if isinstance(value, list):
+            output: list[str] = []
+            for item in value:
+                text = str(item).strip()
+                if text:
+                    output.append(text)
+            return output
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            # Try JSON array encoded as string first.
+            if text.startswith("[") and text.endswith("]"):
+                try:
+                    parsed = json.loads(text)
+                    if isinstance(parsed, list):
+                        return [str(item).strip() for item in parsed if str(item).strip()]
+                except Exception:
+                    pass
+            # Split numbered list / semicolon / newline forms often returned by models.
+            normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+            normalized = re.sub(r"\s+", " ", normalized)
+            # Insert hard separators before common enumerators so one-line lists can be split.
+            normalized = re.sub(r"\s(?=\d+\s*[\)\.、:])", "\n", normalized)
+            normalized = re.sub(r"\s(?=[A-Za-z]\))", "\n", normalized)
+            chunks = re.split(r"\n|；|;", normalized)
+            output: list[str] = []
+            for chunk in chunks:
+                item = chunk.strip()
+                item = re.sub(r"^\d+\s*[\)\.、:]\s*", "", item)
+                item = re.sub(r"^[A-Za-z]\)\s*", "", item)
+                item = item.strip(" -")
+                if not item:
+                    continue
+                if item not in output:
+                    output.append(item)
+            if output:
+                return output
+            return [text]
+        return []
 
     def _to_title(self, text: str, *, fallback: str) -> str:
         cleaned = str(text).strip()

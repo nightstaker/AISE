@@ -28,6 +28,10 @@ class DeepDeveloperWorkflowSkill(Skill):
 
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         project_name = context.project_name or str(input_data.get("project_name", "Untitled")).strip() or "Untitled"
+        recorder = context.parameters.get("task_memory_recorder") or input_data.get("_task_memory_recorder")
+        phase_key = str(context.parameters.get("phase_key") or context.parameters.get("phase") or "implementation")
+        retry_task_key = str(context.parameters.get("retry_task_key") or input_data.get("retry_task_key") or "")
+        execution_scope = str(context.parameters.get("execution_scope") or "full_skill")
         src_dir = self._resolve_dir(input_data, context, key="source_dir", default_subdir="src")
         tests_dir = self._resolve_dir(input_data, context, key="tests_dir", default_subdir="tests")
         architecture = self._load_architecture_design(context)
@@ -51,149 +55,224 @@ class DeepDeveloperWorkflowSkill(Skill):
         review_records: list[dict[str, Any]] = []
         merged_fn_ids: list[str] = []
 
+        attempts: dict[str, int] = {}
+
+        def _start(task_key: str) -> None:
+            if retry_task_key and task_key != retry_task_key:
+                return
+            if not recorder or not hasattr(recorder, "record_task_attempt_start"):
+                return
+            started = recorder.record_task_attempt_start(
+                phase_key=phase_key,
+                task_key=task_key,
+                display_name=task_key.rsplit(".", 1)[-1],
+                kind="retry" if retry_task_key else "initial",
+                mode=str(context.parameters.get("retry_mode") or input_data.get("retry_mode") or "current"),
+                executor={
+                    "agent": "developer",
+                    "skill": "deep_developer_workflow",
+                    "task_key": task_key,
+                    "execution_scope": execution_scope if retry_task_key else "full_skill",
+                },
+            )
+            attempt = started.get("attempt", {}) if isinstance(started, dict) else {}
+            attempts[task_key] = int((attempt or {}).get("attempt_no", 0) or 0)
+
+        def _end(task_key: str, *, status: str, error: str = "", outputs: dict[str, Any] | None = None) -> None:
+            if retry_task_key and task_key != retry_task_key:
+                return
+            attempt_no = attempts.get(task_key, 0)
+            if not recorder or not attempt_no:
+                return
+            if outputs and hasattr(recorder, "record_task_attempt_output"):
+                recorder.record_task_attempt_output(
+                    phase_key=phase_key,
+                    task_key=task_key,
+                    attempt_no=attempt_no,
+                    outputs=outputs,
+                )
+            if hasattr(recorder, "record_task_attempt_end"):
+                recorder.record_task_attempt_end(
+                    phase_key=phase_key,
+                    task_key=task_key,
+                    attempt_no=attempt_no,
+                    status=status,
+                    error=error,
+                )
+
+        _start("developer.deep_developer_workflow.step1")
+        _start("developer.deep_developer_workflow.step2.develop")
+        _start("developer.deep_developer_workflow.step2.review")
+        _start("developer.deep_developer_workflow.step2.revision")
+        _start("developer.deep_developer_workflow.step2.merge")
+
         # Step 1: task split and per-subsystem pairing.
-        for subsystem_key, fn_items in fn_by_subsystem.items():
-            assign = assignments.get(subsystem_key) or {
-                "programmer": "programmer_1",
-                "code_reviewer": "code_reviewer_1",
-                "subsystem": subsystem_key,
-            }
-            subsystem_slug = self._slugify(str(assign.get("subsystem") or subsystem_key))
-            src_subsystem_dir = src_dir / "services" / subsystem_slug
-            tests_subsystem_dir = tests_dir / "services" / subsystem_slug
-            src_subsystem_dir.mkdir(parents=True, exist_ok=True)
-            tests_subsystem_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            for subsystem_key, fn_items in fn_by_subsystem.items():
+                assign = assignments.get(subsystem_key) or {
+                    "programmer": "programmer_1",
+                    "code_reviewer": "code_reviewer_1",
+                    "subsystem": subsystem_key,
+                }
+                subsystem_slug = self._slugify(str(assign.get("subsystem") or subsystem_key))
+                src_subsystem_dir = src_dir / "services" / subsystem_slug
+                tests_subsystem_dir = tests_dir / "services" / subsystem_slug
+                src_subsystem_dir.mkdir(parents=True, exist_ok=True)
+                tests_subsystem_dir.mkdir(parents=True, exist_ok=True)
 
-            src_revision = src_subsystem_dir / "revision.md"
-            tests_revision = tests_subsystem_dir / "revision.md"
-            if not src_revision.exists():
-                src_revision.write_text(
-                    f"# {subsystem_slug} source revisions\n\nGenerated at {self._now_iso()}\n\n",
-                    encoding="utf-8",
-                )
-            if not tests_revision.exists():
-                tests_revision.write_text(
-                    f"# {subsystem_slug} test revisions\n\nGenerated at {self._now_iso()}\n\n",
-                    encoding="utf-8",
-                )
+                src_revision = src_subsystem_dir / "revision.md"
+                tests_revision = tests_subsystem_dir / "revision.md"
+                if not src_revision.exists():
+                    src_revision.write_text(
+                        f"# {subsystem_slug} source revisions\n\nGenerated at {self._now_iso()}\n\n",
+                        encoding="utf-8",
+                    )
+                if not tests_revision.exists():
+                    tests_revision.write_text(
+                        f"# {subsystem_slug} test revisions\n\nGenerated at {self._now_iso()}\n\n",
+                        encoding="utf-8",
+                    )
 
-            used_module_names: set[str] = set()
-            # Step 2: Programmer loops FN by FN; each FN has >=3 paired review rounds.
-            for fn_index, fn_item in enumerate(fn_items, start=1):
-                fn_id = str(fn_item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"
-                fn_description = str(fn_item.get("description", "")).strip() or "Feature implementation"
-                fn_spec = str(fn_item.get("spec", "")).strip() or "Conform to subsystem detail design"
-                fn_slug = self._derive_semantic_module_name(
-                    fn_id=fn_id,
-                    fn_description=fn_description,
-                    index=fn_index,
-                    used_names=used_module_names,
-                )
-
-                code_path = src_subsystem_dir / f"{fn_slug}.py"
-                test_path = tests_subsystem_dir / f"test_{subsystem_slug}_{fn_slug}.py"
-                comments: list[str] = []
-
-                for round_index in range(1, 4):
-                    generated = self._generate_python_fn_with_llm(
-                        context=context,
-                        subsystem_slug=subsystem_slug,
-                        module_name=fn_slug,
+                used_module_names: set[str] = set()
+                # Step 2: Programmer loops FN by FN; each FN has >=3 paired review rounds.
+                for fn_index, fn_item in enumerate(fn_items, start=1):
+                    fn_id = str(fn_item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"
+                    fn_description = str(fn_item.get("description", "")).strip() or "Feature implementation"
+                    fn_spec = str(fn_item.get("spec", "")).strip() or "Conform to subsystem detail design"
+                    fn_slug = self._derive_semantic_module_name(
                         fn_id=fn_id,
                         fn_description=fn_description,
-                        fn_spec=fn_spec,
-                        round_index=round_index,
-                        reviewer_comments=comments,
+                        index=fn_index,
+                        used_names=used_module_names,
                     )
-                    raw_test_content = generated.get("test_content", "")
-                    raw_code_content = generated.get("code_content", "")
-                    test_content = (
-                        raw_test_content
-                        if self._is_valid_generated_test_content(
-                            test_content=raw_test_content,
+
+                    code_path = src_subsystem_dir / f"{fn_slug}.py"
+                    test_path = tests_subsystem_dir / f"test_{subsystem_slug}_{fn_slug}.py"
+                    comments: list[str] = []
+
+                    for round_index in range(1, 4):
+                        generated = self._generate_python_fn_with_llm(
+                            context=context,
                             subsystem_slug=subsystem_slug,
                             module_name=fn_slug,
+                            fn_id=fn_id,
+                            fn_description=fn_description,
+                            fn_spec=fn_spec,
+                            round_index=round_index,
+                            reviewer_comments=comments,
                         )
-                        else ""
-                    ) or self._fallback_test_content(
-                        subsystem_slug=subsystem_slug,
-                        module_name=fn_slug,
-                        fn_id=fn_id,
-                        fn_description=fn_description,
-                    )
-                    code_content = (
-                        raw_code_content
-                        if self._is_valid_generated_code_content(raw_code_content, module_name=fn_slug)
-                        else ""
-                    ) or self._fallback_code_content(
-                        subsystem_slug=subsystem_slug,
-                        module_name=fn_slug,
-                        fn_id=fn_id,
-                        fn_description=fn_description,
-                        fn_spec=fn_spec,
-                    )
-                    test_path.write_text(test_content, encoding="utf-8")
-                    code_path.write_text(code_content, encoding="utf-8")
+                        raw_test_content = generated.get("test_content", "")
+                        raw_code_content = generated.get("code_content", "")
+                        test_content = (
+                            raw_test_content
+                            if self._is_valid_generated_test_content(
+                                test_content=raw_test_content,
+                                subsystem_slug=subsystem_slug,
+                                module_name=fn_slug,
+                            )
+                            else ""
+                        ) or self._fallback_test_content(
+                            subsystem_slug=subsystem_slug,
+                            module_name=fn_slug,
+                            fn_id=fn_id,
+                            fn_description=fn_description,
+                        )
+                        code_content = (
+                            raw_code_content
+                            if self._is_valid_generated_code_content(raw_code_content, module_name=fn_slug)
+                            else ""
+                        ) or self._fallback_code_content(
+                            subsystem_slug=subsystem_slug,
+                            module_name=fn_slug,
+                            fn_id=fn_id,
+                            fn_description=fn_description,
+                            fn_spec=fn_spec,
+                        )
+                        test_path.write_text(test_content, encoding="utf-8")
+                        code_path.write_text(code_content, encoding="utf-8")
 
-                    check_result = self._run_static_and_unit_checks(code_path, test_path)
+                        check_result = self._run_static_and_unit_checks(code_path, test_path)
 
-                    # Code Reviewer: inspect and feed revision comments.
-                    review = self._review_fn_change(
-                        subsystem=subsystem_slug,
-                        fn_id=fn_id,
-                        fn_description=fn_description,
-                        round_index=round_index,
-                        check_result=check_result,
-                        reviewer=str(assign.get("code_reviewer", "code_reviewer_1")),
-                    )
-                    comments = list(review.get("suggestions", []))
+                        # Code Reviewer: inspect and feed revision comments.
+                        review = self._review_fn_change(
+                            subsystem=subsystem_slug,
+                            fn_id=fn_id,
+                            fn_description=fn_description,
+                            round_index=round_index,
+                            check_result=check_result,
+                            reviewer=str(assign.get("code_reviewer", "code_reviewer_1")),
+                        )
+                        comments = list(review.get("suggestions", []))
 
-                    self._append_revision(
-                        src_revision,
-                        fn_id=fn_id,
-                        role="code_reviewer",
-                        round_index=round_index,
-                        summary=str(review.get("summary", "")),
-                        details=list(review.get("suggestions", [])),
-                    )
-                    self._append_revision(
-                        src_revision,
-                        fn_id=fn_id,
-                        role="programmer",
-                        round_index=round_index,
-                        summary="Applied review feedback and updated implementation.",
-                        details=[f"Response: addressed reviewer suggestions in round {round_index}."],
-                    )
-                    self._append_revision(
-                        tests_revision,
-                        fn_id=fn_id,
-                        role="programmer",
-                        round_index=round_index,
-                        summary="Updated tests to align with latest implementation.",
-                        details=[
-                            f"Static check: {check_result['static_check']}",
-                            f"Unit tests: {check_result['unit_test']}",
-                        ],
-                    )
+                        self._append_revision(
+                            src_revision,
+                            fn_id=fn_id,
+                            role="code_reviewer",
+                            round_index=round_index,
+                            summary=str(review.get("summary", "")),
+                            details=list(review.get("suggestions", [])),
+                        )
+                        self._append_revision(
+                            src_revision,
+                            fn_id=fn_id,
+                            role="programmer",
+                            round_index=round_index,
+                            summary="Applied review feedback and updated implementation.",
+                            details=[f"Response: addressed reviewer suggestions in round {round_index}."],
+                        )
+                        self._append_revision(
+                            tests_revision,
+                            fn_id=fn_id,
+                            role="programmer",
+                            round_index=round_index,
+                            summary="Updated tests to align with latest implementation.",
+                            details=[
+                                f"Static check: {check_result['static_check']}",
+                                f"Unit tests: {check_result['unit_test']}",
+                            ],
+                        )
 
-                    review_records.append(
-                        {
-                            "subsystem": subsystem_slug,
-                            "fn_id": fn_id,
-                            "round": round_index,
-                            "programmer": assign.get("programmer", "programmer_1"),
-                            "reviewer": assign.get("code_reviewer", "code_reviewer_1"),
-                            "check_result": check_result,
-                            "review": review,
-                        }
-                    )
+                        review_records.append(
+                            {
+                                "subsystem": subsystem_slug,
+                                "fn_id": fn_id,
+                                "round": round_index,
+                                "programmer": assign.get("programmer", "programmer_1"),
+                                "reviewer": assign.get("code_reviewer", "code_reviewer_1"),
+                                "check_result": check_result,
+                                "review": review,
+                            }
+                        )
 
-                merged_fn_ids.append(fn_id)
-                all_source_files.append(str(code_path))
-                all_test_files.append(str(test_path))
+                    merged_fn_ids.append(fn_id)
+                    all_source_files.append(str(code_path))
+                    all_test_files.append(str(test_path))
 
-            all_source_files.append(str(src_revision))
-            all_test_files.append(str(tests_revision))
+                all_source_files.append(str(src_revision))
+                all_test_files.append(str(tests_revision))
+        except Exception as exc:
+            for key in (
+                "developer.deep_developer_workflow.step1",
+                "developer.deep_developer_workflow.step2.develop",
+                "developer.deep_developer_workflow.step2.review",
+                "developer.deep_developer_workflow.step2.revision",
+                "developer.deep_developer_workflow.step2.merge",
+            ):
+                _end(key, status="failed", error=str(exc))
+            raise
+
+        _end(
+            "developer.deep_developer_workflow.step1",
+            status="completed",
+            outputs={"assignment_count": len(assignments)},
+        )
+        for key in (
+            "developer.deep_developer_workflow.step2.develop",
+            "developer.deep_developer_workflow.step2.review",
+            "developer.deep_developer_workflow.step2.revision",
+            "developer.deep_developer_workflow.step2.merge",
+        ):
+            _end(key, status="completed")
 
         all_test_files.append(str(test_bootstrap))
         all_test_files.append(str(pytest_ini))
@@ -347,33 +426,78 @@ class DeepDeveloperWorkflowSkill(Skill):
         reviewer_comments: list[str],
     ) -> dict[str, str]:
         comments = "\n".join(f"- {item}" for item in reviewer_comments[:8]) or "- (none)"
-        llm_data = self._run_llm_json(
+        base_prompt = (
+            f"Subsystem: {subsystem_slug}\n"
+            f"Module: {module_name}\n"
+            f"FN: {fn_id}\n"
+            f"Description: {fn_description}\n"
+            f"Spec: {fn_spec}\n"
+            f"Round: {round_index}\n"
+            f"Reviewer comments:\n{comments}\n"
+        )
+        purpose_suffix = (
+            f" fn:{self._purpose_token(fn_id)}"
+            f" subsystem:{self._purpose_token(subsystem_slug)}"
+            f" module:{self._purpose_token(module_name)}"
+            f" round:{round_index}"
+        )
+
+        code_payload = self._run_llm_json_segment(
             context=context,
+            purpose=f"subagent:programmer step:fn_code_generation{purpose_suffix}",
             system_prompt=(
-                "You are a senior software engineer. Generate Python module and pytest tests in JSON.\n"
-                "Return keys: code_content, test_content.\n"
+                "You are a senior software engineer. Generate Python module code in JSON.\n"
+                "Return JSON object only with key: code_content.\n"
                 "Rules:\n"
                 "- code_content must define implement_<module_name>(input_data: dict | None = None)\n"
                 "- function returns dict and includes keys: fn_id, description, status, result\n"
-                "- test_content must import the function and include at least 2 pytest test functions\n"
+                "- include input validation, observable metrics/logging, and retry/error handling when reasonable\n"
+                "- no markdown fences"
+            ),
+            user_prompt=base_prompt,
+            required_keys=["code_content"],
+            module_name=module_name,
+            subsystem_slug=subsystem_slug,
+        )
+        code_content = str(code_payload.get("code_content", "")) if isinstance(code_payload, dict) else ""
+
+        test_payload = self._run_llm_json_segment(
+            context=context,
+            purpose=f"subagent:programmer step:fn_test_generation{purpose_suffix}",
+            system_prompt=(
+                "You are a senior software engineer. Generate pytest tests in JSON.\n"
+                "Return JSON object only with key: test_content.\n"
+                "Rules:\n"
+                "- test_content must import from src.services.<subsystem>.<module> import implement_<module>\n"
+                "- include at least 2 pytest test functions\n"
+                "- keep tests deterministic (avoid flaky randomness)\n"
                 "- no markdown fences"
             ),
             user_prompt=(
-                f"Subsystem: {subsystem_slug}\n"
-                f"Module: {module_name}\n"
-                f"FN: {fn_id}\n"
-                f"Description: {fn_description}\n"
-                f"Spec: {fn_spec}\n"
-                f"Round: {round_index}\n"
-                f"Reviewer comments:\n{comments}\n"
+                base_prompt
+                + (
+                    "Exact import path: "
+                    f"from src.services.{subsystem_slug}.{module_name} "
+                    f"import implement_{module_name}\n"
+                )
+                + "Implementation summary (optional context, may be partial):\n"
+                + code_content[:3000]
+                + ("\n...(truncated)\n" if len(code_content) > 3000 else "\n")
             ),
+            required_keys=["test_content"],
+            module_name=module_name,
+            subsystem_slug=subsystem_slug,
         )
-        if not llm_data:
+        if not code_payload and not test_payload:
             return {}
         return {
-            "code_content": str(llm_data.get("code_content", "")),
-            "test_content": str(llm_data.get("test_content", "")),
+            "code_content": code_content,
+            "test_content": str(test_payload.get("test_content", "")) if isinstance(test_payload, dict) else "",
         }
+
+    def _purpose_token(self, value: str) -> str:
+        token = self._slugify(str(value))
+        return token[:80] if token else "na"
 
     def _fallback_test_content(
         self,
@@ -623,7 +747,111 @@ class DeepDeveloperWorkflowSkill(Skill):
             slug = f"fn_{slug}"
         return slug
 
-    def _run_llm_json(self, *, context: SkillContext, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+    def _compact_json(self, payload: Any) -> str:
+        try:
+            return json.dumps(payload, ensure_ascii=False, indent=2)
+        except TypeError:
+            return str(payload)
+
+    def _run_llm_json_segment(
+        self,
+        *,
+        context: SkillContext,
+        purpose: str,
+        system_prompt: str,
+        user_prompt: str,
+        required_keys: list[str],
+        module_name: str,
+        subsystem_slug: str,
+        max_attempts: int = 3,
+    ) -> dict[str, Any]:
+        last_partial: dict[str, Any] = {}
+        for attempt in range(1, max(1, max_attempts) + 1):
+            prompt = user_prompt
+            if attempt > 1:
+                missing = [key for key in required_keys if key not in last_partial]
+                prompt += (
+                    "\n\nRetry guidance:\n"
+                    "- Previous response was incomplete or truncated.\n"
+                    f"- You must include keys: {', '.join(required_keys)}.\n"
+                    f"- Missing keys: {', '.join(missing) if missing else '(schema invalid)'}.\n"
+                )
+                if last_partial:
+                    prompt += (
+                        "- Continue from the partial JSON below and return a FULL valid JSON object for this segment.\n"
+                        f"Partial response:\n{self._compact_json(last_partial)}\n"
+                    )
+                prompt += "- Return compact valid JSON object only.\n"
+            try:
+                payload = self._run_llm_json(
+                    context=context,
+                    purpose=purpose,
+                    system_prompt=system_prompt,
+                    user_prompt=prompt,
+                )
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                last_partial = payload
+            if self._segment_payload_ok(
+                payload,
+                required_keys=required_keys,
+                module_name=module_name,
+                subsystem_slug=subsystem_slug,
+            ):
+                return payload
+        return last_partial
+
+    def _segment_payload_ok(
+        self,
+        payload: dict[str, Any],
+        *,
+        required_keys: list[str],
+        module_name: str,
+        subsystem_slug: str,
+    ) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        for key in required_keys:
+            if key not in payload:
+                return False
+        if "code_content" in required_keys:
+            code = str(payload.get("code_content", "")).strip()
+            if len(code) < 80 or self._looks_truncated_text(code):
+                return False
+            if f"def implement_{module_name}(" not in code:
+                return False
+        if "test_content" in required_keys:
+            tests = str(payload.get("test_content", "")).strip()
+            if len(tests) < 80 or self._looks_truncated_text(tests):
+                return False
+            expected_import = f"from src.services.{subsystem_slug}.{module_name} import implement_{module_name}"
+            if expected_import not in tests:
+                return False
+            if tests.count("def test_") < 2:
+                return False
+        return True
+
+    def _looks_truncated_text(self, text: str) -> bool:
+        if not text:
+            return True
+        tail = text.rstrip()
+        if tail.endswith((":", ",", "\\", "/", "|", "(", "[", "{")):
+            return True
+        if tail.count("```") % 2 == 1:
+            return True
+        if tail.count('"') % 2 == 1:
+            return True
+        return False
+
+    def _run_llm_json(
+        self,
+        *,
+        context: SkillContext,
+        system_prompt: str,
+        user_prompt: str,
+        purpose: str = "",
+    ) -> dict[str, Any]:
         if context.llm_client is None:
             raise RuntimeError("LLM client is required for deep_developer_workflow")
         response = context.llm_client.complete(
@@ -632,28 +860,125 @@ class DeepDeveloperWorkflowSkill(Skill):
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
+            llm_purpose=purpose or "agent:developer role:developer skill:deep_developer_workflow",
         )
         parsed = self._parse_json_response(response)
         if parsed is None:
+            if purpose:
+                raise RuntimeError(f"LLM response is not valid JSON object for {purpose}")
             raise RuntimeError("LLM response is not valid JSON object for deep_developer_workflow")
         return parsed
 
     def _parse_json_response(self, text: str) -> dict[str, Any] | None:
         if not text:
             return None
+        candidates: list[str] = [text]
+        match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
+        if match:
+            candidates.append(match.group(1))
+        extracted = self._extract_first_json_object(text)
+        if extracted:
+            candidates.append(extracted)
+
+        for candidate in candidates:
+            parsed = self._try_parse_json_object(candidate)
+            if parsed is not None:
+                return parsed
+
+            repaired = self._repair_common_json_issues(candidate)
+            if repaired != candidate:
+                parsed = self._try_parse_json_object(repaired)
+                if parsed is not None:
+                    return parsed
+
+            truncated = self._repair_truncated_top_level_object(repaired)
+            if truncated is not None:
+                parsed = self._try_parse_json_object(truncated)
+                if parsed is not None:
+                    return parsed
+        return None
+
+    def _try_parse_json_object(self, text: str) -> dict[str, Any] | None:
         try:
             parsed = json.loads(text)
             return parsed if isinstance(parsed, dict) else None
         except json.JSONDecodeError:
-            pass
-        match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
-        if not match:
             return None
-        try:
-            parsed = json.loads(match.group(1))
-            return parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError:
+
+    def _extract_first_json_object(self, text: str) -> str | None:
+        start = text.find("{")
+        if start < 0:
             return None
+        depth = 0
+        in_string = False
+        escape = False
+        for idx, ch in enumerate(text[start:], start=start):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                depth += 1
+                continue
+            if ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : idx + 1]
+        return None
+
+    def _repair_common_json_issues(self, text: str) -> str:
+        repaired = text.strip()
+        repaired = re.sub(r',"\s*\n\s*([A-Za-z_][A-Za-z0-9_]*)"', r',\n"\1"', repaired)
+        return repaired
+
+    def _repair_truncated_top_level_object(self, text: str) -> str | None:
+        source = text.strip()
+        if not source.startswith("{") or source.endswith("}"):
+            return None
+
+        commas: list[int] = []
+        depth = 0
+        in_string = False
+        escape = False
+        for idx, ch in enumerate(source):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch in "{[":
+                depth += 1
+                continue
+            if ch in "}]":
+                depth = max(0, depth - 1)
+                continue
+            if ch == "," and depth == 1:
+                commas.append(idx)
+
+        for comma_idx in reversed(commas):
+            candidate = source[:comma_idx].rstrip() + "\n}"
+            if self._try_parse_json_object(candidate) is not None:
+                return candidate
+
+        fallback = re.sub(r"[,\s]+$", "", source)
+        if fallback != source and fallback.startswith("{"):
+            candidate = fallback + "}"
+            if self._try_parse_json_object(candidate) is not None:
+                return candidate
+        return None
 
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()

@@ -397,33 +397,24 @@ class TestLLMClient:
         )
         client = LLMClient(cfg)
 
-        class _Message:
-            content = "ok"
+        class _Event:
+            type = "response.output_text.delta"
+            delta = "ok"
 
-        class _Choice:
-            message = _Message()
-
-        class _Response:
-            choices = [_Choice()]
-
-        class _Completions:
-            def create(self, **kwargs):
-                if "model_id" in kwargs:
-                    raise TypeError("Completions.create() got an unexpected keyword argument 'model_id'")
-                if "model_name" in kwargs:
-                    raise TypeError("Completions.create() got an unexpected keyword argument 'model_name'")
-                return _Response()
-
-        class _Chat:
-            completions = _Completions()
+        class _Stream:
+            def __iter__(self):
+                yield _Event()
 
         class _Client:
-            chat = _Chat()
-
             class responses:
                 @staticmethod
                 def create(**kwargs):
-                    raise RuntimeError("force fallback to chat")
+                    if "model_id" in kwargs:
+                        raise TypeError("Responses.create() got an unexpected keyword argument 'model_id'")
+                    if "model_name" in kwargs:
+                        raise TypeError("Responses.create() got an unexpected keyword argument 'model_name'")
+                    assert kwargs.get("stream") is True
+                    return _Stream()
 
         client._build_openai_client = lambda: _Client()  # type: ignore[method-assign]
 
@@ -492,35 +483,27 @@ class TestLLMClient:
         assert "LLM request failed" in caplog.text
         assert "details=" in caplog.text
 
-    def test_complete_prefers_chat_when_response_format_is_set(self, monkeypatch):
+    def test_complete_passes_response_format_to_streaming_responses(self, monkeypatch):
         client = LLMClient(ModelConfig(provider="openai", model="gpt-4o", api_key="sk-test"))
-
-        class _Message:
-            content = '{"ok":true}'
-
-        class _Choice:
-            message = _Message()
-
-        class _Response:
-            choices = [_Choice()]
-
-        class _Completions:
-            @staticmethod
-            def create(**kwargs):
-                assert kwargs.get("response_format") == {"type": "json_object"}
-                return _Response()
-
-        class _Chat:
-            completions = _Completions()
 
         class _Responses:
             @staticmethod
             def create(**kwargs):
-                raise AssertionError("responses.create should not be called for response_format requests")
+                assert kwargs.get("response_format") == {"type": "json_object"}
+                assert kwargs.get("stream") is True
+
+                class _Event:
+                    type = "response.output_text.delta"
+                    delta = '{"ok":true}'
+
+                class _Stream:
+                    def __iter__(self):
+                        yield _Event()
+
+                return _Stream()
 
         class _Client:
             responses = _Responses()
-            chat = _Chat()
 
         monkeypatch.setattr(client, "_build_openai_client", lambda: _Client())
 

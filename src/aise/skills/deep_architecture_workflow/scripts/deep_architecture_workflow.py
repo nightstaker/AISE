@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,11 +30,61 @@ class DeepArchitectureWorkflowSkill(Skill):
 
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         project_name = context.project_name or str(input_data.get("project_name", "Untitled")).strip() or "Untitled"
+        recorder = context.parameters.get("task_memory_recorder") or input_data.get("_task_memory_recorder")
+        phase_key = str(context.parameters.get("phase_key") or context.parameters.get("phase") or "design")
+        retry_task_key = str(context.parameters.get("retry_task_key") or input_data.get("retry_task_key") or "")
+        execution_scope = str(context.parameters.get("execution_scope") or "full_skill")
         project_root = self._resolve_project_root(context)
         docs_dir = self._resolve_docs_dir(input_data, context)
         src_dir = self._resolve_src_dir(input_data, context)
         docs_dir.mkdir(parents=True, exist_ok=True)
         src_dir.mkdir(parents=True, exist_ok=True)
+
+        attempts: dict[str, int] = {}
+
+        def _start(task_key: str) -> None:
+            if retry_task_key and task_key != retry_task_key:
+                return
+            if not recorder or not hasattr(recorder, "record_task_attempt_start"):
+                return
+            started = recorder.record_task_attempt_start(
+                phase_key=phase_key,
+                task_key=task_key,
+                display_name=task_key.rsplit(".", 1)[-1],
+                kind="retry" if retry_task_key else "initial",
+                mode=str(context.parameters.get("retry_mode") or input_data.get("retry_mode") or "current"),
+                executor={
+                    "agent": "architect",
+                    "skill": "deep_architecture_workflow",
+                    "task_key": task_key,
+                    "execution_scope": execution_scope if retry_task_key else "full_skill",
+                },
+            )
+            attempt = started.get("attempt", {}) if isinstance(started, dict) else {}
+            attempt_no = int((attempt or {}).get("attempt_no", 0) or 0)
+            attempts[task_key] = attempt_no
+
+        def _end(task_key: str, *, status: str, error: str = "", outputs: dict[str, Any] | None = None) -> None:
+            if retry_task_key and task_key != retry_task_key:
+                return
+            attempt_no = attempts.get(task_key, 0)
+            if not recorder or not attempt_no:
+                return
+            if outputs and hasattr(recorder, "record_task_attempt_output"):
+                recorder.record_task_attempt_output(
+                    phase_key=phase_key,
+                    task_key=task_key,
+                    attempt_no=attempt_no,
+                    outputs=outputs,
+                )
+            if hasattr(recorder, "record_task_attempt_end"):
+                recorder.record_task_attempt_end(
+                    phase_key=phase_key,
+                    task_key=task_key,
+                    attempt_no=attempt_no,
+                    status=status,
+                    error=error,
+                )
 
         product_design = self._load_product_design(context, docs_dir)
         system_requirements = self._load_system_requirements(context, docs_dir)
@@ -41,44 +92,148 @@ class DeepArchitectureWorkflowSkill(Skill):
             system_requirements = self._fallback_requirements_from_product_design(product_design)
 
         # Step 1: architecture design + reviewer loop.
-        architecture_rounds = self._run_architecture_review_rounds(
-            context=context,
-            product_design=product_design,
-            system_requirements=system_requirements,
-            min_rounds=2,
-        )
-        architecture_design = architecture_rounds[-1]["architecture_design"]
-
-        # Step 2: initialize top-level source structure and API definitions.
-        bootstrap_files: list[str] = self._initialize_top_level_code(
-            src_dir=src_dir,
-            architecture_design=architecture_design,
-        )
-
-        # Step 3: split subsystem tasks, assign reviewer/architect instances.
-        assignments = self._build_subsystem_assignments(architecture_design)
-
-        # Step 4: per-subsystem detailed design + reviewer loop.
-        detail_designs: dict[str, dict[str, Any]] = {}
-        detail_rounds: dict[str, list[dict[str, Any]]] = {}
-        for subsystem in architecture_design.get("subsystems", []):
-            rounds = self._run_subsystem_detail_rounds(
+        _start("architect.deep_architecture_workflow.step1.design")
+        _start("architect.deep_architecture_workflow.step1.review")
+        try:
+            architecture_rounds = self._run_architecture_review_rounds(
                 context=context,
-                subsystem=subsystem,
+                product_design=product_design,
                 system_requirements=system_requirements,
-                architecture_design=architecture_design,
-                assignment=assignments.get(subsystem.get("id", ""), {}),
                 min_rounds=2,
             )
-            detail_rounds[str(subsystem.get("id", ""))] = rounds
-            detail_designs[str(subsystem.get("id", ""))] = rounds[-1]["detail_design"]
+            _end(
+                "architect.deep_architecture_workflow.step1.design",
+                status="completed",
+                outputs={"rounds": len(architecture_rounds)},
+            )
+            _end(
+                "architect.deep_architecture_workflow.step1.review",
+                status="completed",
+                outputs={"rounds": len(architecture_rounds)},
+            )
+        except Exception as exc:
+            _end("architect.deep_architecture_workflow.step1.design", status="failed", error=str(exc))
+            _end("architect.deep_architecture_workflow.step1.review", status="failed", error=str(exc))
+            raise
+        architecture_design = architecture_rounds[-1]["architecture_design"]
+
+        # Step 2+3: lightweight bootstrap and subsystem task split are grouped as one
+        # visible workflow task to reduce over-fragmented architecture phase tracking.
+        _start("architect.deep_architecture_workflow.step2_3")
+        try:
+            bootstrap_files: list[str] = self._initialize_top_level_code(
+                src_dir=src_dir,
+                architecture_design=architecture_design,
+            )
+            assignments = self._build_subsystem_assignments(architecture_design)
+            _end(
+                "architect.deep_architecture_workflow.step2_3",
+                status="completed",
+                outputs={
+                    "generated_files": bootstrap_files,
+                    "assignment_count": len(assignments),
+                },
+            )
+        except Exception as exc:
+            _end("architect.deep_architecture_workflow.step2_3", status="failed", error=str(exc))
+            raise
+
+        # Step 4: per-subsystem detailed design + reviewer loop.
+        # Each subsystem runs serially inside its own loop, but different subsystems
+        # can execute in parallel to reduce architecture-phase wall-clock time.
+        _start("architect.deep_architecture_workflow.step4.design")
+        _start("architect.deep_architecture_workflow.step4.review")
+        detail_designs: dict[str, dict[str, Any]] = {}
+        detail_rounds: dict[str, list[dict[str, Any]]] = {}
+        detail_doc_paths: list[Path] = []
+        try:
+            subsystems = [s for s in architecture_design.get("subsystems", []) if isinstance(s, dict)]
+            subsystem_order = [str(s.get("id", "")) for s in subsystems]
+
+            def _run_one_subsystem(
+                subsystem: dict[str, Any],
+            ) -> tuple[str, dict[str, Any], list[dict[str, Any]], str, str]:
+                subsystem_id = str(subsystem.get("id", ""))
+                rounds = self._run_subsystem_detail_rounds(
+                    context=context,
+                    subsystem=subsystem,
+                    system_requirements=system_requirements,
+                    architecture_design=architecture_design,
+                    assignment=assignments.get(subsystem.get("id", ""), {}),
+                    min_rounds=2,
+                )
+                detail = rounds[-1]["detail_design"]
+                file_name = f"{self._slugify(str(subsystem.get('name', subsystem_id)))}-detail-design.md"
+                rendered_doc = self._render_subsystem_detail_doc(
+                    project_name=project_name,
+                    subsystem=subsystem,
+                    architecture_design=architecture_design,
+                    system_requirements=system_requirements,
+                    detail_design=detail,
+                    rounds=rounds,
+                )
+                return subsystem_id, detail, rounds, file_name, rendered_doc
+
+            future_results: dict[str, tuple[dict[str, Any], list[dict[str, Any]], Path]] = {}
+            max_workers = min(4, max(1, len(subsystems)))
+            if len(subsystems) <= 1:
+                for subsystem in subsystems:
+                    sid, detail, rounds, file_name, rendered_doc = _run_one_subsystem(subsystem)
+                    path = docs_dir / file_name
+                    # Write immediately after this subsystem finishes so users can inspect
+                    # detail docs while other subsystems are still running.
+                    path.write_text(rendered_doc, encoding="utf-8")
+                    future_results[sid] = (detail, rounds, path)
+            else:
+                with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="arch-subsys") as pool:
+                    future_map = {pool.submit(_run_one_subsystem, subsystem): subsystem for subsystem in subsystems}
+                    for future in as_completed(future_map):
+                        sid, detail, rounds, file_name, rendered_doc = future.result()
+                        path = docs_dir / file_name
+                        # Real-time incremental persistence: each subsystem doc is flushed
+                        # as soon as its design+review loop completes.
+                        path.write_text(rendered_doc, encoding="utf-8")
+                        future_results[sid] = (detail, rounds, path)
+
+            for subsystem_id in subsystem_order:
+                packed = future_results.get(subsystem_id)
+                if not packed:
+                    continue
+                detail, rounds, path = packed
+                detail_rounds[subsystem_id] = rounds
+                detail_designs[subsystem_id] = detail
+                detail_doc_paths.append(path)
+            _end(
+                "architect.deep_architecture_workflow.step4.design",
+                status="completed",
+                outputs={"subsystems": list(detail_designs.keys())},
+            )
+            _end(
+                "architect.deep_architecture_workflow.step4.review",
+                status="completed",
+                outputs={"subsystems": list(detail_designs.keys())},
+            )
+        except Exception as exc:
+            _end("architect.deep_architecture_workflow.step4.design", status="failed", error=str(exc))
+            _end("architect.deep_architecture_workflow.step4.review", status="failed", error=str(exc))
+            raise
 
         # Step 5: initialize per-subsystem code and API contracts.
-        subsystem_scaffold_files: list[str] = self._initialize_subsystem_code(
-            src_dir=src_dir,
-            architecture_design=architecture_design,
-            detail_designs=detail_designs,
-        )
+        _start("architect.deep_architecture_workflow.step5")
+        try:
+            subsystem_scaffold_files: list[str] = self._initialize_subsystem_code(
+                src_dir=src_dir,
+                architecture_design=architecture_design,
+                detail_designs=detail_designs,
+            )
+            _end(
+                "architect.deep_architecture_workflow.step5",
+                status="completed",
+                outputs={"generated_files": subsystem_scaffold_files},
+            )
+        except Exception as exc:
+            _end("architect.deep_architecture_workflow.step5", status="failed", error=str(exc))
+            raise
 
         architecture_doc_path = docs_dir / "system-architecture.md"
         architecture_doc_path.write_text(
@@ -93,25 +248,7 @@ class DeepArchitectureWorkflowSkill(Skill):
             encoding="utf-8",
         )
 
-        detail_doc_paths: list[Path] = []
-        for subsystem in architecture_design.get("subsystems", []):
-            subsystem_id = str(subsystem.get("id", ""))
-            detail = detail_designs.get(subsystem_id, {})
-            rounds = detail_rounds.get(subsystem_id, [])
-            file_name = f"{self._slugify(str(subsystem.get('name', subsystem_id)))}-detail-design.md"
-            path = docs_dir / file_name
-            path.write_text(
-                self._render_subsystem_detail_doc(
-                    project_name=project_name,
-                    subsystem=subsystem,
-                    architecture_design=architecture_design,
-                    system_requirements=system_requirements,
-                    detail_design=detail,
-                    rounds=rounds,
-                ),
-                encoding="utf-8",
-            )
-            detail_doc_paths.append(path)
+        # Subsystem detail docs were already written incrementally during Step 4.
 
         api_contract = self._build_api_contract(architecture_design)
         tech_stack = {
@@ -229,16 +366,12 @@ class DeepArchitectureWorkflowSkill(Skill):
                         "status": "completed",
                         "rounds": len(architecture_rounds),
                     },
-                    "step2": {
-                        "name": "bootstrap_source_structure",
+                    "step2_3": {
+                        "name": "bootstrap_and_subsystem_task_split",
                         "status": "completed",
                         "files": bootstrap_files,
-                        "skipped": False,
-                    },
-                    "step3": {
-                        "name": "subsystem_task_split",
-                        "status": "completed",
                         "assignments": assignments,
+                        "merged_steps": ["step2", "step3"],
                     },
                     "step4": {
                         "name": "subsystem_detail_design_review_loop",
@@ -276,8 +409,48 @@ class DeepArchitectureWorkflowSkill(Skill):
         if not path.exists():
             return {"overview": "", "system_features": []}
         content = path.read_text(encoding="utf-8")
+        lines = content.splitlines()
         features: list[dict[str, Any]] = []
-        for idx, line in enumerate(content.splitlines(), start=1):
+        intent_summary = ""
+        business_goals: list[str] = []
+        users: list[str] = []
+        constraints: list[str] = []
+        in_business_goals = False
+        in_users = False
+        in_constraints = False
+
+        for idx, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if stripped.startswith("- Summary:"):
+                intent_summary = stripped.removeprefix("- Summary:").strip()
+            if stripped == "- Business Goals:":
+                in_business_goals = True
+                in_users = in_constraints = False
+                continue
+            if stripped == "- Users:":
+                in_users = True
+                in_business_goals = in_constraints = False
+                continue
+            if stripped == "- Constraints:":
+                in_constraints = True
+                in_business_goals = in_users = False
+                continue
+            if stripped.startswith("## ") or stripped.startswith("### "):
+                in_business_goals = in_users = in_constraints = False
+
+            if in_business_goals and stripped.startswith("- "):
+                goal = stripped.removeprefix("- ").strip()
+                if goal:
+                    business_goals.append(goal)
+            elif in_users and stripped.startswith("- "):
+                user = stripped.removeprefix("- ").strip()
+                if user:
+                    users.append(user)
+            elif in_constraints and stripped.startswith("- "):
+                cst = stripped.removeprefix("- ").strip()
+                if cst:
+                    constraints.append(cst)
+
             if line.strip().startswith("### SF-"):
                 section = line.strip().lstrip("# ")
                 sf_id = section.split(" ", 1)[0]
@@ -291,10 +464,32 @@ class DeepArchitectureWorkflowSkill(Skill):
                 )
             if len(features) >= 12:
                 break
+
+        if not features:
+            seed_items = business_goals[:8] or self._split_intent_summary_to_feature_seeds(intent_summary)
+            for index, seed in enumerate(seed_items, start=1):
+                feature_name = self._feature_title_from_seed(seed, index=index)
+                features.append(
+                    {
+                        "id": f"SF-{index:03d}",
+                        "name": feature_name,
+                        "goal": seed,
+                        "functions": [
+                            f"Deliver user-facing capability for {feature_name}",
+                            f"Provide observable state transitions and outcome feedback for {feature_name}",
+                        ],
+                        "constraints": constraints[:6],
+                        "users": users[:6],
+                    }
+                )
+
         return {
-            "overview": "Loaded from docs/system-design.md",
+            "overview": intent_summary or "Loaded from docs/system-design.md",
             "system_features": features,
             "all_features": features,
+            "intent_summary": intent_summary,
+            "users": users,
+            "constraints": constraints,
         }
 
     def _load_system_requirements(self, context: SkillContext, docs_dir: Path) -> dict[str, Any]:
@@ -364,6 +559,34 @@ class DeepArchitectureWorkflowSkill(Skill):
             )
         return {"requirements": requirements}
 
+    def _split_intent_summary_to_feature_seeds(self, intent_summary: str) -> list[str]:
+        text = str(intent_summary or "").strip()
+        if not text:
+            return []
+        segments = re.split(r"[。.!?；;]|,|，", text)
+        seeds: list[str] = []
+        for segment in segments:
+            item = segment.strip(" -")
+            if len(item) < 6:
+                continue
+            if item not in seeds:
+                seeds.append(item)
+            if len(seeds) >= 6:
+                break
+        return seeds
+
+    def _feature_title_from_seed(self, seed: str, *, index: int) -> str:
+        text = str(seed or "").strip()
+        if not text:
+            return f"Feature {index}"
+        if re.search(r"[\u4e00-\u9fff]", text):
+            return text[:24]
+        words = [w for w in re.split(r"[^a-zA-Z0-9]+", text) if w]
+        if not words:
+            return f"Feature {index}"
+        title = " ".join(words[:6]).strip()
+        return title[:64]
+
     def _run_architecture_review_rounds(
         self,
         *,
@@ -413,9 +636,6 @@ class DeepArchitectureWorkflowSkill(Skill):
         if not subsystems:
             subsystems = self._build_subsystems(requirements)
 
-        sr_allocation = self._allocate_srs_to_subsystems(requirements, subsystems)
-        components = self._build_components(subsystems, sr_allocation)
-
         if previous_review and previous_review.get("issues"):
             feedback = " | ".join(str(issue) for issue in previous_review.get("issues", [])[:3])
             for subsystem in subsystems:
@@ -425,13 +645,24 @@ class DeepArchitectureWorkflowSkill(Skill):
                         subsystem["constraints"].append(feedback)
 
         feature_count = len(product_design.get("system_features", []))
-        llm_design = self._run_llm_json(
+        current_context = self._build_current_architecture_context(previous_design, previous_review)
+        subsystem_summary = [
+            {
+                "id": subsystem.get("id", ""),
+                "name": subsystem.get("name", ""),
+                "apis": [api.get("path", "") for api in subsystem.get("apis", [])[:3]],
+            }
+            for subsystem in subsystems[:8]
+        ]
+        architecture_scope = f" round:{round_index} reqs:{len(requirements)} features:{feature_count}"
+
+        # Segmented generation reduces truncation risk for large architecture outputs.
+        llm_core = self._run_llm_json_segment(
             context=context,
-            purpose="subagent:architecture_designer step:architecture_design",
+            purpose=f"subagent:architecture_designer step:architecture_design.core{architecture_scope}",
             system_prompt=(
                 "You are an architecture designer. Return JSON only with optional keys: "
-                "design_goals (list[str]), principles (list[str]), architecture_overview (str), "
-                "architecture_diagram (str), layering (list[str])."
+                "design_goals (list[str]), principles (list[str]), architecture_overview (str)."
             ),
             user_prompt=(
                 f"Round: {round_index}\n"
@@ -439,10 +670,60 @@ class DeepArchitectureWorkflowSkill(Skill):
                 f"Feature count: {feature_count}\n"
                 "Product design document:\n"
                 f"{self._compact_json(product_design)}\n\n"
+                "Subsystem draft (for context):\n"
+                f"{self._compact_json(subsystem_summary)}\n\n"
                 "Current architecture design document:\n"
-                f"{self._build_current_architecture_context(previous_design, previous_review)}\n"
+                f"{current_context}\n"
             ),
+            required_keys=["design_goals", "principles", "architecture_overview"],
         )
+
+        llm_layering = self._run_llm_json_segment(
+            context=context,
+            purpose=f"subagent:architecture_designer step:architecture_design.layering{architecture_scope}",
+            system_prompt=(
+                "You are an architecture designer. Return JSON only with optional keys: layering (list[str])."
+            ),
+            user_prompt=(
+                f"Round: {round_index}\n"
+                "Generate a concise layered architecture list (4-8 items) for this system.\n"
+                "Each item should be one sentence naming the layer and main responsibility.\n"
+                f"Architecture overview context:\n{str(llm_core.get('architecture_overview', ''))[:2000]}\n"
+            ),
+            required_keys=["layering"],
+        )
+
+        reuse_previous_diagram = self._should_reuse_architecture_diagram(
+            previous_design=previous_design,
+            previous_review=previous_review,
+            round_index=round_index,
+        )
+        if reuse_previous_diagram:
+            llm_diagram = {"architecture_diagram": str(previous_design.get("architecture_diagram", ""))}
+        else:
+            llm_diagram = self._run_llm_json_segment(
+                context=context,
+                purpose=f"subagent:architecture_designer step:architecture_design.diagram{architecture_scope}",
+                system_prompt=(
+                    "You are an architecture designer. Return JSON only with optional keys: architecture_diagram (str)."
+                ),
+                user_prompt=(
+                    f"Round: {round_index}\n"
+                    "Generate a compact Mermaid flowchart diagram string.\n"
+                    "Constraints:\n"
+                    "- Use Mermaid syntax starting with `flowchart TD` or `graph TD`\n"
+                    "- No markdown code fence\n"
+                    "- Max 50 lines\n"
+                    "- Max 3000 chars total\n"
+                    "- Show only major layers/components and key flows\n"
+                    "- Prefer compactness over exhaustive detail\n\n"
+                    f"Architecture overview:\n{str(llm_core.get('architecture_overview', ''))[:2500]}\n\n"
+                    f"Layering:\n{self._compact_json(llm_layering.get('layering', []))}\n"
+                ),
+                required_keys=["architecture_diagram"],
+            )
+
+        llm_design = {**llm_core, **llm_layering, **llm_diagram}
         design_goals = self._as_str_list(
             llm_design.get("design_goals"),
             fallback=[
@@ -464,6 +745,16 @@ class DeepArchitectureWorkflowSkill(Skill):
             llm_design.get("layering"),
             fallback=["System Layer", "Subsystem Layer", "Component/Service Layer"],
         )
+        # Rebuild subsystem split from the generated architecture context so that
+        # the Subsystems/Components sections stay aligned with Overall/Layered design.
+        subsystems = self._build_subsystems_from_architecture_context(
+            requirements=requirements,
+            architecture_overview=str(llm_design.get("architecture_overview", "")).strip(),
+            layering=layering,
+            product_design=product_design,
+        )
+        sr_allocation = self._allocate_srs_to_subsystems(requirements, subsystems)
+        components = self._build_components(subsystems, sr_allocation)
         return {
             "round": round_index,
             "design_goals": design_goals,
@@ -471,13 +762,143 @@ class DeepArchitectureWorkflowSkill(Skill):
             "architecture_overview": str(llm_design.get("architecture_overview", "")).strip()
             or f"Architecture derived from {len(requirements)} SR items and {feature_count} product feature items.",
             "architecture_diagram": str(llm_design.get("architecture_diagram", "")).strip()
-            or "Client -> API Gateway -> Application Service Layer -> Domain Services -> Persistence/Infrastructure",
+            or (
+                "flowchart TD\n"
+                "  Client[Client] --> Gateway[API Gateway]\n"
+                "  Gateway --> App[Application Services]\n"
+                "  App --> Domain[Domain Logic]\n"
+                "  Domain --> Data[(Persistence)]\n"
+            ),
             "layering": layering,
             "subsystems": subsystems,
             "components": components,
             "sr_allocation": sr_allocation,
             "designer_response": self._build_designer_response(previous_review),
         }
+
+    def _run_llm_json_segment(
+        self,
+        *,
+        context: SkillContext,
+        purpose: str,
+        system_prompt: str,
+        user_prompt: str,
+        required_keys: list[str],
+        max_attempts: int = 3,
+    ) -> dict[str, Any]:
+        last_partial: dict[str, Any] = {}
+        for attempt in range(1, max(1, max_attempts) + 1):
+            prompt = user_prompt
+            if attempt > 1:
+                missing = [key for key in required_keys if key not in last_partial]
+                prompt += (
+                    "\n\nRetry guidance:\n"
+                    "- Previous response was incomplete or truncated.\n"
+                    f"- You must include keys: {', '.join(required_keys)}.\n"
+                    f"- Missing keys from previous response: {', '.join(missing) if missing else '(schema invalid)'}.\n"
+                )
+                if last_partial:
+                    prompt += (
+                        "- Continue from the partial response below and return a FULL valid JSON object "
+                        "for this segment (not just prose).\n"
+                        f"Partial response:\n{self._compact_json(last_partial)}\n"
+                    )
+                prompt += "- Return a compact valid JSON object only.\n"
+            try:
+                payload = self._run_llm_json(
+                    context=context,
+                    purpose=purpose,
+                    system_prompt=system_prompt,
+                    user_prompt=prompt,
+                )
+            except Exception:
+                continue
+
+            if isinstance(payload, dict):
+                last_partial = payload
+            if self._segment_payload_is_acceptable(payload, required_keys=required_keys):
+                return payload
+
+        return last_partial
+
+    def _should_reuse_architecture_diagram(
+        self,
+        *,
+        previous_design: dict[str, Any] | None,
+        previous_review: dict[str, Any] | None,
+        round_index: int,
+    ) -> bool:
+        if round_index <= 1 or not isinstance(previous_design, dict):
+            return False
+        diagram = str(previous_design.get("architecture_diagram", "")).strip()
+        if len(diagram) < 30:
+            return False
+        if self._looks_truncated_text(diagram):
+            return False
+        issues = [str(x).lower() for x in (previous_review or {}).get("issues", []) if str(x).strip()]
+        suggestions = [str(x).lower() for x in (previous_review or {}).get("suggestions", []) if str(x).strip()]
+        review_text = " | ".join(issues + suggestions)
+        if any(token in review_text for token in ("diagram", "flowchart", "mermaid", "topology")):
+            return False
+        return True
+
+    def _segment_payload_is_acceptable(self, payload: dict[str, Any], *, required_keys: list[str]) -> bool:
+        if not isinstance(payload, dict):
+            return False
+
+        for key in required_keys:
+            if key not in payload:
+                return False
+
+        if "design_goals" in required_keys:
+            goals = payload.get("design_goals")
+            if not isinstance(goals, list) or not any(str(item).strip() for item in goals):
+                return False
+        if "principles" in required_keys:
+            principles = payload.get("principles")
+            if not isinstance(principles, list) or not any(str(item).strip() for item in principles):
+                return False
+        if "architecture_overview" in required_keys:
+            overview = str(payload.get("architecture_overview", "")).strip()
+            if len(overview) < 60:
+                return False
+            if self._looks_truncated_text(overview):
+                return False
+        if "layering" in required_keys:
+            layering = payload.get("layering")
+            if not isinstance(layering, list) or not any(str(item).strip() for item in layering):
+                return False
+        if "architecture_diagram" in required_keys:
+            diagram = str(payload.get("architecture_diagram", "")).strip()
+            if len(diagram) < 30:
+                return False
+            if len(diagram) > 5000:
+                return False
+            if self._looks_truncated_text(diagram):
+                return False
+            if not (
+                diagram.startswith("flowchart ")
+                or diagram.startswith("graph ")
+                or diagram.startswith("flowchart\n")
+                or diagram.startswith("graph\n")
+            ):
+                return False
+
+        return True
+
+    def _looks_truncated_text(self, text: str) -> bool:
+        if not text:
+            return True
+        tail = text.rstrip()
+        if tail.endswith((":", ",", "\\", "/", "|", "├", "└", "─", "┬", "┴", "│")):
+            return True
+        # Unbalanced markdown/code fences often indicate truncation.
+        if tail.count("```") % 2 == 1:
+            return True
+        # Heuristic: abruptly cut in the middle of a quoted string phrase.
+        if tail.count('"') % 2 == 1:
+            return True
+        return False
 
     def _review_architecture_design(
         self,
@@ -518,7 +939,10 @@ class DeepArchitectureWorkflowSkill(Skill):
             approved = False
         llm_review = self._run_llm_json(
             context=context,
-            purpose="subagent:architecture_reviewer step:architecture_review",
+            purpose=(
+                "subagent:architecture_reviewer step:architecture_review "
+                f"round:{round_index} reqs:{len(requirements)} reviewers:{len(reviewer_instances)}"
+            ),
             system_prompt=(
                 "You are an architecture reviewer. Return JSON only with optional keys: "
                 "summary (str), suggestions (list[str])."
@@ -693,7 +1117,11 @@ class DeepArchitectureWorkflowSkill(Skill):
                     fn["notes"].append(f"Reviewer focus: {comment}")
         llm_detail = self._run_llm_json(
             context=context,
-            purpose="subagent:subsystem_architect step:subsystem_detail_design",
+            purpose=(
+                "subagent:subsystem_architect step:subsystem_detail_design "
+                f"round:{round_index} subsystem:{self._purpose_token(str(subsystem.get('id', '')))} "
+                f"owner:{self._purpose_token(str(assignment.get('subsystem_architect', '')))}"
+            ),
             system_prompt=(
                 "You are a subsystem architect. Return JSON only with optional keys: "
                 "logic_architecture_goals (list[str]), design_strategy (list[str]), "
@@ -770,7 +1198,11 @@ class DeepArchitectureWorkflowSkill(Skill):
             approved = False
         llm_review = self._run_llm_json(
             context=context,
-            purpose="subagent:architecture_reviewer step:subsystem_detail_review",
+            purpose=(
+                "subagent:architecture_reviewer step:subsystem_detail_review "
+                f"round:{round_index} subsystem:{self._purpose_token(str(subsystem.get('id', '')))} "
+                f"reviewer:{self._purpose_token(reviewer)}"
+            ),
             system_prompt=(
                 "You are an architecture reviewer. Return JSON only with optional keys: "
                 "summary (str), suggestions (list[str])."
@@ -1132,6 +1564,205 @@ class DeepArchitectureWorkflowSkill(Skill):
                 }
             )
         return subsystems
+
+    def _build_subsystems_from_architecture_context(
+        self,
+        *,
+        requirements: list[dict[str, Any]],
+        architecture_overview: str,
+        layering: list[str],
+        product_design: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        labels = self._extract_subsystem_labels_from_architecture_context(
+            architecture_overview=architecture_overview,
+            layering=layering,
+        )
+        if not labels:
+            labels = self._extract_feature_based_subsystem_labels(product_design or {}, requirements)
+        if not labels:
+            return self._build_subsystems(requirements)
+
+        # Prefer 3-6 concrete subsystems; avoid producing all infrastructure layers as "subsystems".
+        labels = [label for label in labels if label]
+        preferred_labels: list[str] = []
+        infra_tokens = ("data", "persistence", "storage", "network", "security", "observability", "compliance")
+        generic_tokens = ("backend microservices", "business services", "service layer")
+        for label in labels:
+            lower = label.lower()
+            if any(tok in lower for tok in infra_tokens):
+                continue
+            if any(tok in lower for tok in generic_tokens):
+                continue
+            preferred_labels.append(label)
+        pool = preferred_labels or labels
+        pool = [
+            item
+            for _, item in sorted(
+                enumerate(pool),
+                key=lambda row: (-self._subsystem_label_priority(row[1]), row[0]),
+            )
+        ]
+        target_count = max(3, (len(requirements) + 1) // 2)
+        if len(pool) >= 4 and target_count < 4:
+            target_count = 4
+        target_count = min(6, target_count)
+        selected = pool[: max(1, target_count)]
+        if len(selected) < 2:
+            selected = labels[: min(4, max(2, len(labels)))]
+
+        subsystems: list[dict[str, Any]] = []
+        for index, label in enumerate(selected, start=1):
+            subsystem_id = f"SUBSYS-{index:03d}"
+            slug = self._slugify(label)
+            api_base = self._subsystem_api_base_from_label(label)
+            description = self._subsystem_description_from_label(label)
+            subsystems.append(
+                {
+                    "id": subsystem_id,
+                    "name": slug,
+                    "description": description,
+                    "constraints": [],
+                    "apis": [
+                        {
+                            "method": "GET",
+                            "path": f"/api/v1/{api_base}/health",
+                            "description": f"Health endpoint for {label}",
+                        },
+                        {
+                            "method": "POST",
+                            "path": f"/api/v1/{api_base}/execute",
+                            "description": f"Primary command endpoint for {label}",
+                        },
+                    ],
+                }
+            )
+        return subsystems
+
+    def _subsystem_label_priority(self, label: str) -> int:
+        text = str(label).strip().lower()
+        score = 0
+        if any(tok in text for tok in ("matchmaking", "progression", "social", "monetization", "payment")):
+            score += 100
+        if any(tok in text for tok in ("real-time game", "game session", "session")):
+            score += 80
+        if any(tok in text for tok in ("gameplay client", "client")):
+            score += 50
+        if any(tok in text for tok in ("ai", "bot", "backfill")):
+            score += 40
+        if "tier" in text or "layer" in text:
+            score -= 10
+        if text in {"client", "ai bot", "ai", "real-time simulation"}:
+            score -= 5
+        return score
+
+    def _extract_subsystem_labels_from_architecture_context(
+        self,
+        *,
+        architecture_overview: str,
+        layering: list[str],
+    ) -> list[str]:
+        labels: list[str] = []
+
+        # Parse explicit numbered tier names from the overview.
+        for match in re.finditer(r"\(\d+\)\s*([A-Za-z][A-Za-z0-9 &/_-]{2,80}?)\s*Tier\s*:", architecture_overview):
+            raw = match.group(1).strip()
+            label = re.sub(r"\s+", " ", raw)
+            if label:
+                labels.append(label)
+
+        # Parse "X Layer: ..." and "X Layer - ..." style lines from layering bullets.
+        for item in layering:
+            text = str(item).strip()
+            if not text:
+                continue
+            m = re.match(r"([A-Za-z][A-Za-z0-9 &/_-]{2,80}?)\s+Layer\b", text)
+            if m:
+                labels.append(m.group(1).strip())
+
+        # Extract service groups mentioned in overview for richer domain-aligned splits.
+        overview_lower = architecture_overview.lower()
+        if "matchmaking" in overview_lower:
+            labels.append("Matchmaking Service")
+        if "progression" in overview_lower:
+            labels.append("Progression Service")
+        if "social" in overview_lower:
+            labels.append("Social Service")
+        if "monetization" in overview_lower or "payment" in overview_lower:
+            labels.append("Monetization Service")
+        if "game server" in overview_lower or "real-time" in overview_lower:
+            labels.append("Real-Time Game Session")
+        if "client" in overview_lower and "unity" in overview_lower:
+            labels.append("Gameplay Client")
+        if "bot" in overview_lower or "ai" in overview_lower:
+            labels.append("AI Backfill")
+
+        # Deduplicate while preserving order.
+        seen: set[str] = set()
+        out: list[str] = []
+        for raw in labels:
+            normalized = re.sub(r"\s+", " ", str(raw).strip())
+            if not normalized:
+                continue
+            lowered = normalized.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            out.append(normalized)
+        return out
+
+    def _extract_feature_based_subsystem_labels(
+        self,
+        product_design: dict[str, Any],
+        requirements: list[dict[str, Any]],
+    ) -> list[str]:
+        labels: list[str] = []
+        for feature in product_design.get("system_features", []) if isinstance(product_design, dict) else []:
+            if not isinstance(feature, dict):
+                continue
+            title = str(feature.get("title", "")).strip()
+            if title:
+                labels.append(title)
+        if not labels:
+            labels.extend(self._extract_requirement_keywords(requirements))
+        return labels
+
+    def _subsystem_api_base_from_label(self, label: str) -> str:
+        text = str(label).strip().lower()
+        if "real-time" in text or "game session" in text:
+            return "game-sessions"
+        if "matchmaking" in text:
+            return "matchmaking"
+        if "progression" in text:
+            return "progression"
+        if "social" in text:
+            return "social"
+        if "monetization" in text or "payment" in text:
+            return "monetization"
+        if "client" in text or "gameplay" in text:
+            return "gameplay-client"
+        if text.startswith("ai"):
+            return "ai-backfill"
+        slug = self._slugify(label)
+        return slug or "subsystem"
+
+    def _subsystem_description_from_label(self, label: str) -> str:
+        text = str(label).strip()
+        lower = text.lower()
+        if "real-time" in lower or "game session" in lower:
+            return "Authoritative game-session orchestration, simulation loop coordination, and runtime session APIs."
+        if "matchmaking" in lower:
+            return "Player queueing, rating-based matching, and room allocation orchestration."
+        if "progression" in lower:
+            return "Progress tracking, rewards, quests, and player progression lifecycle management."
+        if "social" in lower:
+            return "Friend graph, social interactions, sharing, and community-facing endpoints."
+        if "monetization" in lower or "payment" in lower:
+            return "Purchase validation, inventory entitlements, and monetization workflow integration."
+        if "client" in lower or "gameplay" in lower:
+            return "Client-side gameplay interaction surface and session-facing integration boundary."
+        if lower.startswith("ai"):
+            return "AI/bot backfill and gameplay assistance orchestration services."
+        return f"Subsystem boundary for {text}, aligned to the architecture layering and service responsibilities."
 
     def _allocate_srs_to_subsystems(
         self,
@@ -1559,6 +2190,10 @@ class DeepArchitectureWorkflowSkill(Skill):
             value = value[:48].rstrip("_")
         return value or "subsystem"
 
+    def _purpose_token(self, text: str) -> str:
+        token = self._slugify(text)
+        return token[:80] if token else "na"
+
     def _infer_subsystem_component_responsibilities(self, module: str) -> list[str]:
         return [
             f"Coordinate {module} requests and workflow routing",
@@ -1693,16 +2328,131 @@ class DeepArchitectureWorkflowSkill(Skill):
     def _parse_json_response(self, text: str) -> dict[str, Any] | None:
         if not text:
             return None
+        candidates: list[str] = [text]
+        block = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
+        if block:
+            candidates.append(block.group(1))
+
+        extracted = self._extract_first_json_object(text)
+        if extracted:
+            candidates.append(extracted)
+
+        for candidate in candidates:
+            parsed = self._try_parse_json_object(candidate)
+            if parsed is not None:
+                return parsed
+
+            repaired = self._repair_common_json_issues(candidate)
+            if repaired != candidate:
+                parsed = self._try_parse_json_object(repaired)
+                if parsed is not None:
+                    return parsed
+
+            truncated = self._repair_truncated_top_level_object(repaired)
+            if truncated is not None:
+                parsed = self._try_parse_json_object(truncated)
+                if parsed is not None:
+                    return parsed
+
+        return None
+
+    def _try_parse_json_object(self, text: str) -> dict[str, Any] | None:
         try:
             parsed = json.loads(text)
             return parsed if isinstance(parsed, dict) else None
         except json.JSONDecodeError:
-            pass
-        block = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
-        if not block:
             return None
-        try:
-            parsed = json.loads(block.group(1))
-            return parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError:
+
+    def _extract_first_json_object(self, text: str) -> str | None:
+        start = text.find("{")
+        if start < 0:
             return None
+
+        depth = 0
+        in_string = False
+        escape = False
+        for idx, ch in enumerate(text[start:], start=start):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                depth += 1
+                continue
+            if ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : idx + 1]
+
+        return None
+
+    def _repair_common_json_issues(self, text: str) -> str:
+        repaired = text.strip()
+        # Common model formatting error: comma + quote then newline before the next key.
+        # Example: `... ],"\nnext_key": ...` -> `... ],\n"next_key": ...`
+        repaired = re.sub(r',"\s*\n\s*([A-Za-z_][A-Za-z0-9_]*)"', r',\n"\1"', repaired)
+        return repaired
+
+    def _repair_truncated_top_level_object(self, text: str) -> str | None:
+        """Drop the last incomplete top-level field when JSON is truncated.
+
+        This is primarily to recover useful fields from long architecture outputs
+        when the model is cut off mid-field (often inside architecture_diagram).
+        """
+        source = text.strip()
+        if not source.startswith("{"):
+            return None
+        if source.endswith("}"):
+            return None
+
+        commas: list[int] = []
+        depth = 0
+        in_string = False
+        escape = False
+        for idx, ch in enumerate(source):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+                continue
+            if ch in "{[":
+                depth += 1
+                continue
+            if ch in "}]":
+                depth = max(0, depth - 1)
+                continue
+            if ch == "," and depth == 1:
+                commas.append(idx)
+
+        # Try trimming to progressively earlier top-level commas, then close object.
+        for comma_idx in reversed(commas):
+            candidate = source[:comma_idx].rstrip()
+            if not candidate.startswith("{"):
+                continue
+            candidate = candidate + "\n}"
+            if self._try_parse_json_object(candidate) is not None:
+                return candidate
+
+        # As a last resort, if there was a single complete key-value pair and no top-level comma,
+        # attempt to close the object directly after trimming trailing incomplete syntax.
+        fallback = re.sub(r"[,\s]+$", "", source)
+        if fallback.startswith("{") and fallback != source:
+            fallback = fallback + "}"
+            if self._try_parse_json_object(fallback) is not None:
+                return fallback
+        return None
