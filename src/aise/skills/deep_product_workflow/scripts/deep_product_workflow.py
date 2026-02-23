@@ -248,18 +248,19 @@ class DeepProductWorkflowSkill(Skill):
         users = ["End users", "Operations team"]
         scenarios = ["Primary usage flow", "Error handling and recovery"]
         constraints = ["Cross-platform support", "Scalable architecture"]
-        if self._is_snake_project(raw_requirements):
-            users = ["玩家", "观战者", "运营活动人员"]
-            scenarios = [
-                "单人模式：玩家本地操作并挑战关卡目标",
-                "人机模式：玩家与 AI 蛇对抗并比较积分",
-                "多人模式：多个玩家实时对战并结算排名",
+        has_ai = any(key in raw_requirements.lower() for key in ("ai", "bot", "智能"))
+        has_multi = any(key in raw_requirements.lower() for key in ("multiplayer", "多人", "联机", "协作"))
+        if has_multi:
+            users.append("Session host")
+            scenarios.append("Collaboration flow with participant synchronization")
+        if has_ai:
+            scenarios.append("AI-assisted flow with explainable decisions")
+        constraints.extend(
+            [
+                "Core state transitions should be reproducible and testable",
+                "Key events and failure reasons should be observable",
             ]
-            constraints = [
-                "实时输入响应与稳定帧率",
-                "公平积分与反作弊基础约束",
-                "关卡与食物扩展配置化",
-            ]
+        )
         return {
             "analysis_mode": "heuristic",
             "raw_requirements": raw_requirements,
@@ -408,7 +409,7 @@ class DeepProductWorkflowSkill(Skill):
 
         approved = round_index >= 2 and not issues
         if round_index == 1 and not issues:
-            issues.append("Add stronger traceability and reviewer response section before approval.")
+            issues.append("Round 1 baseline completed; run one refinement pass before approval.")
             approved = False
 
         return {
@@ -519,7 +520,7 @@ class DeepProductWorkflowSkill(Skill):
 
         approved = round_index >= 2 and not issues
         if round_index == 1 and not issues:
-            issues.append("Round 1 requires explicit update to traceability and reviewer feedback responses.")
+            issues.append("Round 1 baseline completed; run one refinement pass before approval.")
             approved = False
 
         return {
@@ -694,6 +695,24 @@ class DeepProductWorkflowSkill(Skill):
                 ]
             )
 
+        lines.extend(
+            [
+                "## Traceability Matrix",
+                "",
+                "| SF | SR |",
+                "|----|----|",
+            ]
+        )
+        for sr in latest_requirements.get("requirements", []):
+            sr_id = str(sr.get("id", "SR-UNKNOWN"))
+            source_sfs = sr.get("source_sfs", [])
+            if isinstance(source_sfs, list) and source_sfs:
+                for sf_id in source_sfs:
+                    lines.append(f"| {sf_id} | {sr_id} |")
+            else:
+                lines.append(f"| (unmapped) | {sr_id} |")
+        lines.append("")
+
         lines.extend(["## Revision History", ""])
         for item in rounds:
             review = item.get("review", {})
@@ -722,9 +741,9 @@ class DeepProductWorkflowSkill(Skill):
             return ["All reviewer comments addressed; no outstanding issues."]
         return [f"Addressed reviewer issue: {issue}" for issue in issues[:4]]
 
-    def _run_llm_json(self, *, context: SkillContext, system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
+    def _run_llm_json(self, *, context: SkillContext, system_prompt: str, user_prompt: str) -> dict[str, Any]:
         if context.llm_client is None:
-            return None
+            raise RuntimeError("LLM client is required for deep_product_workflow")
         response = context.llm_client.complete(
             [
                 {"role": "system", "content": system_prompt},
@@ -732,7 +751,10 @@ class DeepProductWorkflowSkill(Skill):
             ],
             response_format={"type": "json_object"},
         )
-        return self._parse_json_response(response)
+        parsed = self._parse_json_response(response)
+        if parsed is None:
+            raise RuntimeError("LLM response is not valid JSON object for deep_product_workflow")
+        return parsed
 
     def _parse_json_response(self, text: str) -> dict[str, Any] | None:
         if not text:
@@ -761,9 +783,21 @@ class DeepProductWorkflowSkill(Skill):
         combined = " ".join(raw_lines)
         segments = re.split(r"[。.!?\n]|，|,|；|;|、|并且|并|还要|且", combined)
         points: list[str] = []
+        stop_phrases = (
+            "请提供",
+            "提供",
+            "清晰文档",
+            "可运行代码",
+            "pytest测试",
+            "测试用例",
+            "文档",
+            "代码",
+        )
         for segment in segments:
             normalized = segment.strip().strip("-").strip()
             if len(normalized) < 4:
+                continue
+            if any(phrase in normalized for phrase in stop_phrases):
                 continue
             if normalized in points:
                 continue
@@ -772,23 +806,12 @@ class DeepProductWorkflowSkill(Skill):
             return raw_lines[:8]
         return points[:12]
 
-    def _is_snake_project(self, text: str) -> bool:
-        lowered = text.lower()
-        return "snake" in lowered or "贪吃蛇" in text
-
     def _goal_to_functions(self, goal: str) -> list[str]:
         result = [
             f"Define user-facing behavior for: {goal}",
             f"Implement service logic and state transition for: {goal}",
             f"Expose verifiable outcomes and telemetry for: {goal}",
         ]
-        if self._is_snake_project(goal):
-            result.extend(
-                [
-                    "Support snake movement/collision and food generation loop",
-                    "Track score, level objective, and match settlement",
-                ]
-            )
         return result
 
     def _goal_to_interactions(self, goal: str) -> list[str]:

@@ -33,13 +33,7 @@ class ArchitectureRequirementSkill(Skill):
 
         requirements = sr_artifact.content["requirements"]
         llm_ars = self._decompose_with_llm(requirements, context)
-        if llm_ars is not None:
-            ar_list = llm_ars
-        else:
-            ar_list = []
-            for sr in requirements:
-                ars = self._decompose_sr_to_ars(sr)
-                ar_list.extend(ars)
+        ar_list = llm_ars
 
         coverage = self._calculate_coverage(requirements, ar_list)
         matrix = self._build_traceability_matrix(requirements, ar_list)
@@ -50,7 +44,7 @@ class ArchitectureRequirementSkill(Skill):
             "architecture_requirements": ar_list,
             "traceability_matrix": matrix,
             "coverage_summary": coverage,
-            "analysis_mode": "llm" if llm_ars is not None else "heuristic",
+            "analysis_mode": "llm",
         }
 
         return Artifact(
@@ -192,9 +186,11 @@ class ArchitectureRequirementSkill(Skill):
         self,
         requirements: list[dict[str, Any]],
         context: SkillContext,
-    ) -> list[dict[str, Any]] | None:
-        if context.llm_client is None or not requirements:
-            return None
+    ) -> list[dict[str, Any]]:
+        if context.llm_client is None:
+            raise RuntimeError("LLM client is required for architecture_requirement_analysis")
+        if not requirements:
+            raise ValueError("No system requirements available for architecture_requirement_analysis")
 
         agent_prompt = self._load_prompt_file("../../../agents/architect_agent.md")
         skill_prompt = self._load_prompt_file("../skill.md")
@@ -210,24 +206,21 @@ class ArchitectureRequirementSkill(Skill):
             '"architecture_requirements":[{"source_sr":"SR-0001","target_layer":"api|business|data|integration","component_type":"service|component","description":"string","estimated_complexity":"low|medium|high"}]'
             "}"
         )
-        try:
-            response = context.llm_client.complete(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": "SR列表:\n" + "\n".join(req_lines)},
-                ],
-                response_format={"type": "json_object"},
-            )
-        except Exception:
-            return None
+        response = context.llm_client.complete(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": "SR列表:\n" + "\n".join(req_lines)},
+            ],
+            response_format={"type": "json_object"},
+        )
         parsed = self._parse_json_response(response)
-        if not isinstance(parsed, dict):
-            return None
         values = parsed.get("architecture_requirements")
         if not isinstance(values, list):
-            return None
+            raise RuntimeError("LLM response missing architecture_requirements list")
         rows = self._normalise_llm_ars(values, requirements)
-        return rows or None
+        if not rows:
+            raise RuntimeError("LLM response contains no valid architecture requirements")
+        return rows
 
     def _normalise_llm_ars(
         self,
@@ -280,17 +273,21 @@ class ArchitectureRequirementSkill(Skill):
         except OSError:
             return ""
 
-    def _parse_json_response(self, text: str) -> dict[str, Any] | None:
+    def _parse_json_response(self, text: str) -> dict[str, Any]:
         if not text:
-            return None
+            raise RuntimeError("Empty LLM response for architecture_requirement_analysis")
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             pass
         block = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
         if block:
             try:
-                return json.loads(block.group(1))
+                parsed = json.loads(block.group(1))
+                if isinstance(parsed, dict):
+                    return parsed
             except json.JSONDecodeError:
-                return None
-        return None
+                pass
+        raise RuntimeError("LLM response is not valid JSON object for architecture_requirement_analysis")

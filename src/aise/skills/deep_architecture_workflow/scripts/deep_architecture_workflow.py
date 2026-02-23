@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -40,6 +42,7 @@ class DeepArchitectureWorkflowSkill(Skill):
 
         # Step 1: architecture design + reviewer loop.
         architecture_rounds = self._run_architecture_review_rounds(
+            context=context,
             product_design=product_design,
             system_requirements=system_requirements,
             min_rounds=2,
@@ -47,7 +50,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         architecture_design = architecture_rounds[-1]["architecture_design"]
 
         # Step 2: initialize top-level source structure and API definitions.
-        bootstrap_files = self._initialize_top_level_code(
+        bootstrap_files: list[str] = self._initialize_top_level_code(
             src_dir=src_dir,
             architecture_design=architecture_design,
         )
@@ -60,6 +63,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         detail_rounds: dict[str, list[dict[str, Any]]] = {}
         for subsystem in architecture_design.get("subsystems", []):
             rounds = self._run_subsystem_detail_rounds(
+                context=context,
                 subsystem=subsystem,
                 system_requirements=system_requirements,
                 architecture_design=architecture_design,
@@ -70,7 +74,7 @@ class DeepArchitectureWorkflowSkill(Skill):
             detail_designs[str(subsystem.get("id", ""))] = rounds[-1]["detail_design"]
 
         # Step 5: initialize per-subsystem code and API contracts.
-        subsystem_scaffold_files = self._initialize_subsystem_code(
+        subsystem_scaffold_files: list[str] = self._initialize_subsystem_code(
             src_dir=src_dir,
             architecture_design=architecture_design,
             detail_designs=detail_designs,
@@ -111,9 +115,10 @@ class DeepArchitectureWorkflowSkill(Skill):
 
         api_contract = self._build_api_contract(architecture_design)
         tech_stack = {
-            "backend": {"language": "Python", "framework": "FastAPI"},
-            "database": {"name": "PostgreSQL"},
-            "deployment": {"container": "Docker", "orchestration": "Kubernetes"},
+            "implementation_language": "to_be_determined",
+            "runtime_framework": "to_be_determined",
+            "data_storage": "to_be_determined",
+            "deployment_model": "to_be_determined",
         }
         architecture_requirements = self._build_architecture_requirements(
             architecture_design=architecture_design,
@@ -228,6 +233,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                         "name": "bootstrap_source_structure",
                         "status": "completed",
                         "files": bootstrap_files,
+                        "skipped": False,
                     },
                     "step3": {
                         "name": "subsystem_task_split",
@@ -243,6 +249,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                         "name": "subsystem_source_initialization",
                         "status": "completed",
                         "files": subsystem_scaffold_files,
+                        "skipped": False,
                     },
                 },
                 "generated_docs": generated_docs,
@@ -360,6 +367,7 @@ class DeepArchitectureWorkflowSkill(Skill):
     def _run_architecture_review_rounds(
         self,
         *,
+        context: SkillContext,
         product_design: dict[str, Any],
         system_requirements: dict[str, Any],
         min_rounds: int,
@@ -371,6 +379,7 @@ class DeepArchitectureWorkflowSkill(Skill):
 
         for round_index in range(1, total_rounds + 1):
             design = self._designer_build_architecture_design(
+                context=context,
                 product_design=product_design,
                 system_requirements=system_requirements,
                 previous_design=previous_design,
@@ -378,6 +387,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                 round_index=round_index,
             )
             review = self._review_architecture_design(
+                context=context,
                 system_requirements=system_requirements,
                 architecture_design=design,
                 round_index=round_index,
@@ -391,6 +401,7 @@ class DeepArchitectureWorkflowSkill(Skill):
     def _designer_build_architecture_design(
         self,
         *,
+        context: SkillContext,
         product_design: dict[str, Any],
         system_requirements: dict[str, Any],
         previous_design: dict[str, Any] | None,
@@ -414,30 +425,54 @@ class DeepArchitectureWorkflowSkill(Skill):
                         subsystem["constraints"].append(feedback)
 
         feature_count = len(product_design.get("system_features", []))
-        return {
-            "round": round_index,
-            "design_goals": [
+        llm_design = self._run_llm_json(
+            context=context,
+            purpose="subagent:architecture_designer step:architecture_design",
+            system_prompt=(
+                "You are an architecture designer. Return JSON only with optional keys: "
+                "design_goals (list[str]), principles (list[str]), architecture_overview (str), "
+                "architecture_diagram (str), layering (list[str])."
+            ),
+            user_prompt=(
+                f"Round: {round_index}\n"
+                f"Requirement count: {len(requirements)}\n"
+                f"Feature count: {feature_count}\n"
+                "Product design document:\n"
+                f"{self._compact_json(product_design)}\n\n"
+                "Current architecture design document:\n"
+                f"{self._build_current_architecture_context(previous_design, previous_review)}\n"
+            ),
+        )
+        design_goals = self._as_str_list(
+            llm_design.get("design_goals"),
+            fallback=[
                 "Deliver a traceable architecture from SR to subsystem/component.",
                 "Keep API boundaries explicit and implementable.",
                 "Prepare subsystem-level detailed design and coding bootstrap.",
             ],
-            "principles": [
+        )
+        principles = self._as_str_list(
+            llm_design.get("principles"),
+            fallback=[
                 "Clear separation of concerns",
                 "API-first contract design",
                 "Traceability from SR to implementation units",
                 "Operational observability by default",
             ],
-            "architecture_overview": (
-                f"Architecture derived from {len(requirements)} SR items and {feature_count} product feature items."
-            ),
-            "architecture_diagram": (
-                "Client -> API Gateway -> Application Service Layer -> Domain Services -> Persistence/Infrastructure"
-            ),
-            "layering": [
-                "System Layer",
-                "Subsystem Layer",
-                "Component/Service Layer",
-            ],
+        )
+        layering = self._as_str_list(
+            llm_design.get("layering"),
+            fallback=["System Layer", "Subsystem Layer", "Component/Service Layer"],
+        )
+        return {
+            "round": round_index,
+            "design_goals": design_goals,
+            "principles": principles,
+            "architecture_overview": str(llm_design.get("architecture_overview", "")).strip()
+            or f"Architecture derived from {len(requirements)} SR items and {feature_count} product feature items.",
+            "architecture_diagram": str(llm_design.get("architecture_diagram", "")).strip()
+            or "Client -> API Gateway -> Application Service Layer -> Domain Services -> Persistence/Infrastructure",
+            "layering": layering,
             "subsystems": subsystems,
             "components": components,
             "sr_allocation": sr_allocation,
@@ -447,6 +482,7 @@ class DeepArchitectureWorkflowSkill(Skill):
     def _review_architecture_design(
         self,
         *,
+        context: SkillContext,
         system_requirements: dict[str, Any],
         architecture_design: dict[str, Any],
         round_index: int,
@@ -480,18 +516,31 @@ class DeepArchitectureWorkflowSkill(Skill):
         if round_index == 1 and not issues:
             issues.append("Round 1 requires at least one refinement pass before approval.")
             approved = False
+        llm_review = self._run_llm_json(
+            context=context,
+            purpose="subagent:architecture_reviewer step:architecture_review",
+            system_prompt=(
+                "You are an architecture reviewer. Return JSON only with optional keys: "
+                "summary (str), suggestions (list[str])."
+            ),
+            user_prompt=(f"Round: {round_index}\nCurrent issues:\n- " + "\n- ".join(issues or ["(none)"]) + "\n"),
+        )
 
         return {
             "reviewer_instances": reviewer_instances,
             "approved": approved,
             "decision": "approve" if approved else "revise",
-            "summary": "Architecture accepted" if approved else "Architecture requires revision",
+            "summary": str(llm_review.get("summary", "")).strip()
+            or ("Architecture accepted" if approved else "Architecture requires revision"),
             "issues": issues,
-            "suggestions": [
-                "Ensure every SR is mapped to exactly one primary subsystem.",
-                "Provide API contract examples for each subsystem.",
-                "Capture reviewer意见 and designer responses in revision history.",
-            ],
+            "suggestions": self._as_str_list(
+                llm_review.get("suggestions"),
+                fallback=[
+                    "Ensure every SR is mapped to exactly one primary subsystem.",
+                    "Provide API contract examples for each subsystem.",
+                    "Capture reviewer feedback and designer responses in revision history.",
+                ],
+            ),
         }
 
     def _initialize_top_level_code(
@@ -503,13 +552,33 @@ class DeepArchitectureWorkflowSkill(Skill):
         files: list[str] = []
         (src_dir / "services").mkdir(parents=True, exist_ok=True)
         app_file = src_dir / "main.py"
+        subsystem_modules = [
+            self._slugify(str(subsystem.get("name", subsystem.get("id", "service"))))
+            for subsystem in architecture_design.get("subsystems", [])
+        ]
+        include_contract_lines = []
+        for module in subsystem_modules:
+            include_contract_lines.extend(
+                [
+                    f"    from .services.{module}.api import build_contract as {module}_contract",
+                    f"    contracts.extend({module}_contract())",
+                ]
+            )
+
+        include_contract_block = "\n".join(include_contract_lines)
         app_file.write_text(
             (
-                "from fastapi import FastAPI\n\n"
-                "app = FastAPI(title='AISE Generated Service')\n\n"
-                "@app.get('/healthz')\n"
-                "def healthz() -> dict[str, str]:\n"
-                "    return {'status': 'ok'}\n"
+                "from __future__ import annotations\n\n"
+                "def build_application_manifest() -> dict[str, object]:\n"
+                "    contracts: list[dict[str, object]] = []\n"
+                f"{include_contract_block}\n"
+                "    return {\n"
+                "        'name': 'aise_generated_application',\n"
+                "        'version': '0.1.0',\n"
+                "        'status': 'ready',\n"
+                "        'contracts': contracts,\n"
+                "    }\n\n\n"
+                "APPLICATION_MANIFEST = build_application_manifest()\n"
             ),
             encoding="utf-8",
         )
@@ -555,6 +624,7 @@ class DeepArchitectureWorkflowSkill(Skill):
     def _run_subsystem_detail_rounds(
         self,
         *,
+        context: SkillContext,
         subsystem: dict[str, Any],
         system_requirements: dict[str, Any],
         architecture_design: dict[str, Any],
@@ -568,6 +638,7 @@ class DeepArchitectureWorkflowSkill(Skill):
 
         for round_index in range(1, total_rounds + 1):
             detail_design = self._subsystem_architect_design(
+                context=context,
                 subsystem=subsystem,
                 system_requirements=system_requirements,
                 architecture_design=architecture_design,
@@ -577,6 +648,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                 round_index=round_index,
             )
             review = self._review_subsystem_detail(
+                context=context,
                 subsystem=subsystem,
                 detail_design=detail_design,
                 round_index=round_index,
@@ -590,6 +662,7 @@ class DeepArchitectureWorkflowSkill(Skill):
     def _subsystem_architect_design(
         self,
         *,
+        context: SkillContext,
         subsystem: dict[str, Any],
         system_requirements: dict[str, Any],
         architecture_design: dict[str, Any],
@@ -618,27 +691,43 @@ class DeepArchitectureWorkflowSkill(Skill):
                 fn.setdefault("notes", [])
                 if comment:
                     fn["notes"].append(f"Reviewer focus: {comment}")
+        llm_detail = self._run_llm_json(
+            context=context,
+            purpose="subagent:subsystem_architect step:subsystem_detail_design",
+            system_prompt=(
+                "You are a subsystem architect. Return JSON only with optional keys: "
+                "logic_architecture_goals (list[str]), design_strategy (list[str]), "
+                "technology_choices (object with language/framework/storage)."
+            ),
+            user_prompt=(
+                f"Subsystem: {subsystem.get('id', '')} {subsystem.get('name', '')}\n"
+                f"Round: {round_index}\n"
+                f"Assigned SR IDs: {', '.join(sr_ids)}\n"
+            ),
+        )
 
         return {
             "round": round_index,
             "subsystem": subsystem.get("name", subsystem.get("id", "")),
             "owner": assignment.get("subsystem_architect", "subsystem_architect_1"),
-            "logic_architecture_goals": [
-                f"Ensure subsystem {subsystem.get('name', '')} delivers assigned SR with clear service split.",
-                "Keep interfaces stable and testable.",
-            ],
-            "design_strategy": [
-                "Decompose by domain capability",
-                "Encapsulate storage and integration concerns",
-                "API-first for component boundaries",
-            ],
+            "logic_architecture_goals": self._as_str_list(
+                llm_detail.get("logic_architecture_goals"),
+                fallback=[
+                    f"Ensure subsystem {subsystem.get('name', '')} delivers assigned SR with clear service split.",
+                    "Keep interfaces stable and testable.",
+                ],
+            ),
+            "design_strategy": self._as_str_list(
+                llm_detail.get("design_strategy"),
+                fallback=[
+                    "Decompose by domain capability",
+                    "Encapsulate storage and integration concerns",
+                    "API-first for component boundaries",
+                ],
+            ),
             "components": components,
             "apis": subsystem.get("apis", []),
-            "technology_choices": {
-                "language": "Python",
-                "framework": "FastAPI",
-                "storage": "PostgreSQL",
-            },
+            "technology_choices": self._normalize_technology_choices(llm_detail.get("technology_choices")),
             "sr_breakdown": [
                 {
                     "sr_id": item.get("id", ""),
@@ -654,6 +743,7 @@ class DeepArchitectureWorkflowSkill(Skill):
     def _review_subsystem_detail(
         self,
         *,
+        context: SkillContext,
         subsystem: dict[str, Any],
         detail_design: dict[str, Any],
         round_index: int,
@@ -678,21 +768,38 @@ class DeepArchitectureWorkflowSkill(Skill):
         if round_index == 1 and not issues:
             issues.append("Round 1 requires at least one revision response.")
             approved = False
+        llm_review = self._run_llm_json(
+            context=context,
+            purpose="subagent:architecture_reviewer step:subsystem_detail_review",
+            system_prompt=(
+                "You are an architecture reviewer. Return JSON only with optional keys: "
+                "summary (str), suggestions (list[str])."
+            ),
+            user_prompt=(
+                f"Subsystem: {subsystem.get('id', '')} {subsystem.get('name', '')}\n"
+                f"Round: {round_index}\n"
+                f"Issues:\n- " + "\n- ".join(issues or ["(none)"]) + "\n"
+            ),
+        )
 
         return {
             "reviewer": reviewer,
             "approved": approved,
             "decision": "approve" if approved else "revise",
-            "summary": (
+            "summary": str(llm_review.get("summary", "")).strip()
+            or (
                 f"{subsystem.get('name', subsystem.get('id', 'subsystem'))} detail design approved"
                 if approved
                 else "Detail design requires revision"
             ),
             "issues": issues,
-            "suggestions": [
-                "Ensure each SR maps to one or more component-level FN entries.",
-                "Keep FN specification concrete enough for developers.",
-            ],
+            "suggestions": self._as_str_list(
+                llm_review.get("suggestions"),
+                fallback=[
+                    "Ensure each SR maps to one or more component-level FN entries.",
+                    "Keep FN specification concrete enough for developers.",
+                ],
+            ),
         }
 
     def _initialize_subsystem_code(
@@ -713,25 +820,163 @@ class DeepArchitectureWorkflowSkill(Skill):
             init_path.write_text("# generated subsystem package\n", encoding="utf-8")
             files.append(str(init_path))
 
-            api_path = subsystem_dir / "api.py"
-            api_lines = [
-                "from fastapi import APIRouter",
+            api_prefix = f"/api/v1/{module_name}"
+
+            schemas_path = subsystem_dir / "schemas.py"
+            schemas_path.write_text(
+                (
+                    "from __future__ import annotations\n\n"
+                    "from dataclasses import dataclass, field\n\n\n"
+                    "@dataclass(slots=True)\n"
+                    "class OperationRequest:\n"
+                    "    session_id: str = 'default-session'\n"
+                    "    payload: dict[str, object] = field(default_factory=dict)\n\n\n"
+                    "@dataclass(slots=True)\n"
+                    "class OperationResponse:\n"
+                    "    subsystem: str\n"
+                    "    operation: str\n"
+                    "    accepted: bool\n"
+                    "    detail: str\n"
+                    "    state: dict[str, object] = field(default_factory=dict)\n"
+                ),
+                encoding="utf-8",
+            )
+            files.append(str(schemas_path))
+
+            service_path = subsystem_dir / "service.py"
+            service_lines = [
+                "from __future__ import annotations",
                 "",
-                f"router = APIRouter(prefix='/{module_name}', tags=['{module_name}'])",
+                "from .schemas import OperationRequest, OperationResponse",
+                "",
+                "",
+                "def health_check() -> dict[str, str]:",
+                "    return {'status': 'ok'}",
                 "",
             ]
             for index, api in enumerate(subsystem.get("apis", []), start=1):
                 method = str(api.get("method", "GET")).lower()
-                path = str(api.get("path", f"/{module_name}/{index}")).replace("'", "")
-                func_name = f"endpoint_{index}_{method}"
-                api_lines.extend(
+                raw_path = str(api.get("path", f"{api_prefix}/action_{index}")).replace("'", "")
+                normalized_path = self._normalize_router_path(raw_path, prefix=api_prefix)
+                operation_name = self._extract_operation_name(normalized_path, fallback=f"action_{index}")
+                if method == "get" and operation_name == "health":
+                    continue
+                handler_name = f"handle_{operation_name}"
+                service_lines.extend(
                     [
-                        f"@router.{method}('{path}')",
-                        f"def {func_name}() -> dict[str, str]:",
-                        f"    return {{'subsystem': '{module_name}', 'endpoint': '{func_name}'}}",
+                        f"def {handler_name}(request: OperationRequest) -> OperationResponse:",
+                        f"    detail = 'processed {operation_name} for session ' + request.session_id",
+                        "    state = {",
+                        "        'payload_keys': sorted(request.payload.keys()),",
+                        f"        'operation': '{operation_name}',",
+                        "    }",
+                        "    return OperationResponse(",
+                        f"        subsystem='{module_name}',",
+                        f"        operation='{operation_name}',",
+                        "        accepted=True,",
+                        "        detail=detail,",
+                        "        state=state,",
+                        "    )",
                         "",
                     ]
                 )
+            if len(service_lines) <= 8:
+                service_lines.extend(
+                    [
+                        "def handle_action(request: OperationRequest) -> OperationResponse:",
+                        "    return OperationResponse(",
+                        f"        subsystem='{module_name}',",
+                        "        operation='action',",
+                        "        accepted=True,",
+                        "        detail='default action processed',",
+                        "        state={'payload_keys': sorted(request.payload.keys())},",
+                        "    )",
+                        "",
+                    ]
+                )
+            service_path.write_text("\n".join(service_lines).rstrip() + "\n", encoding="utf-8")
+            files.append(str(service_path))
+
+            api_path = subsystem_dir / "api.py"
+            api_lines = [
+                "from .schemas import OperationRequest, OperationResponse",
+                "from .service import health_check",
+                "",
+                "",
+                "def build_contract() -> list[dict[str, object]]:",
+                "    return [",
+            ]
+            for index, api in enumerate(subsystem.get("apis", []), start=1):
+                method = str(api.get("method", "GET")).lower()
+                raw_path = str(api.get("path", f"{api_prefix}/action_{index}")).replace("'", "")
+                path = self._normalize_router_path(raw_path, prefix=api_prefix)
+                func_name = self._build_handler_name(method=method, path=path, index=index)
+                operation_name = self._extract_operation_name(path, fallback=f"action_{index}")
+                description = str(api.get("description", "")).strip().replace("'", "\\'")
+                if method == "get" and operation_name == "health":
+                    api_lines.extend(
+                        [
+                            "        {",
+                            f"            'method': '{method.upper()}',",
+                            f"            'path': '{path}',",
+                            "            'handler': 'get_health',",
+                            "            'description': 'health check endpoint',",
+                            "        },",
+                        ]
+                    )
+                    continue
+                api_lines.extend(
+                    [
+                        "        {",
+                        f"            'method': '{method.upper()}',",
+                        f"            'path': '{path}',",
+                        f"            'handler': '{func_name}',",
+                        f"            'description': '{description}',",
+                        "        },",
+                    ]
+                )
+            if not subsystem.get("apis", []):
+                default_method = "GET"
+                default_path = "/health"
+                default_func_name = "get_health"
+                api_lines.extend(
+                    [
+                        "        {",
+                        f"            'method': '{default_method}',",
+                        f"            'path': '{default_path}',",
+                        f"            'handler': '{default_func_name}',",
+                        "            'description': 'auto-generated default endpoint',",
+                        "        },",
+                    ]
+                )
+            api_lines.extend(
+                [
+                    "    ]",
+                    "",
+                    "def invoke(operation: str, request: OperationRequest) -> OperationResponse:",
+                    "    if operation == 'health':",
+                    "        state = {'health': health_check()}",
+                    "        return OperationResponse(",
+                    f"            subsystem='{module_name}',",
+                    "            operation='health',",
+                    "            accepted=True,",
+                    "            detail='health check succeeded',",
+                    "            state=state,",
+                    "        )",
+                    "    handler_name = f'handle_{operation}'",
+                    "    from . import service",
+                    "    handler = getattr(service, handler_name, None)",
+                    "    if handler is None:",
+                    "        return OperationResponse(",
+                    f"            subsystem='{module_name}',",
+                    "            operation=operation,",
+                    "            accepted=False,",
+                    "            detail='operation is not implemented',",
+                    "            state={'available_operations': [entry['handler'] for entry in build_contract()]},",
+                    "        )",
+                    "    return handler(request)",
+                ]
+            )
             api_path.write_text("\n".join(api_lines).rstrip() + "\n", encoding="utf-8")
             files.append(str(api_path))
 
@@ -751,6 +996,37 @@ class DeepArchitectureWorkflowSkill(Skill):
 
         return files
 
+    def _normalize_router_path(self, raw_path: str, *, prefix: str) -> str:
+        path = raw_path.strip()
+        if not path.startswith("/"):
+            path = f"/{path}"
+        if path.startswith(prefix):
+            path = path[len(prefix) :]
+        if not path:
+            return "/"
+        if not path.startswith("/"):
+            return f"/{path}"
+        return path
+
+    def _build_handler_name(self, *, method: str, path: str, index: int) -> str:
+        cleaned = path.strip("/").replace("-", "_").replace("/", "_")
+        cleaned = cleaned if cleaned else "root"
+        cleaned = "".join(ch for ch in cleaned if ch.isalnum() or ch == "_")
+        if not cleaned:
+            cleaned = f"action_{index}"
+        return f"{method}_{cleaned}"
+
+    def _extract_operation_name(self, path: str, *, fallback: str) -> str:
+        cleaned = path.strip("/").replace("-", "_")
+        if not cleaned:
+            return fallback
+        parts = [part for part in cleaned.split("/") if part]
+        if not parts:
+            return fallback
+        operation = parts[-1]
+        operation = "".join(ch for ch in operation if ch.isalnum() or ch == "_")
+        return operation or fallback
+
     def _build_api_contract(self, architecture_design: dict[str, Any]) -> dict[str, Any]:
         endpoints: list[dict[str, Any]] = []
         for subsystem in architecture_design.get("subsystems", []):
@@ -767,7 +1043,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                 )
         return {
             "version": "v1",
-            "style": "REST",
+            "style": "interface_contract",
             "endpoints": endpoints,
             "schemas": [
                 {
@@ -820,38 +1096,26 @@ class DeepArchitectureWorkflowSkill(Skill):
             "count": len(functions),
         }
 
-    def _build_subsystems(self, requirements: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        requirement_text = " ".join(
-            f"{item.get('title', '')} {item.get('requirement_overview', '')}"
-            for item in requirements
-            if isinstance(item, dict)
-        ).lower()
-        if "snake" in requirement_text or "贪吃蛇" in requirement_text:
-            seeds = [
-                ("SUBSYS-001", "gameplay_core", "Snake movement loop, collision, and map runtime"),
-                ("SUBSYS-002", "mode_matchmaking", "Single/AI/multiplayer mode setup and room/session management"),
-                ("SUBSYS-003", "scoring_progression", "Food effects, score settlement, and level progression"),
-            ]
-        else:
-            seeds = [
-                ("SUBSYS-001", "core_domain", "Core domain behavior and business orchestration"),
-                ("SUBSYS-002", "integration_service", "External integration and adapter layer"),
-                ("SUBSYS-003", "platform_ops", "Observability, operations, and maintenance support"),
-            ]
+    def _build_subsystems(
+        self,
+        requirements: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        keyword_candidates = self._extract_requirement_keywords(requirements)
+        requirement_count = max(1, len(requirements))
+        subsystem_count = min(4, max(1, (requirement_count + 1) // 2))
+        if not keyword_candidates:
+            keyword_candidates = ["capability"]
+
         subsystems: list[dict[str, Any]] = []
-        for subsystem_id, name, desc in seeds:
-            primary_action = "actions"
-            if "gameplay" in name:
-                primary_action = "tick"
-            elif "matchmaking" in name:
-                primary_action = "match"
-            elif "scoring" in name:
-                primary_action = "score"
+        for index in range(subsystem_count):
+            subsystem_id = f"SUBSYS-{index + 1:03d}"
+            keyword = keyword_candidates[index % len(keyword_candidates)]
+            name = self._slugify(f"{keyword}_capability")
             subsystems.append(
                 {
                     "id": subsystem_id,
                     "name": name,
-                    "description": desc,
+                    "description": f"Capability group {index + 1} for requirement fulfillment and service delivery.",
                     "constraints": [],
                     "apis": [
                         {
@@ -861,17 +1125,12 @@ class DeepArchitectureWorkflowSkill(Skill):
                         },
                         {
                             "method": "POST",
-                            "path": f"/api/v1/{name}/{primary_action}",
+                            "path": f"/api/v1/{name}/execute",
                             "description": f"Primary command endpoint for {name}",
                         },
                     ],
                 }
             )
-
-        if len(requirements) <= 1:
-            return subsystems
-        if len(requirements) == 2:
-            return subsystems[:2]
         return subsystems
 
     def _allocate_srs_to_subsystems(
@@ -1296,49 +1555,93 @@ class DeepArchitectureWorkflowSkill(Skill):
                     cleaned.append("_")
                 prev_dash = True
         value = "".join(cleaned).strip("_")
+        if len(value) > 48:
+            value = value[:48].rstrip("_")
         return value or "subsystem"
 
     def _infer_subsystem_component_responsibilities(self, module: str) -> list[str]:
-        if "gameplay" in module or "snake" in module:
-            return [
-                "Coordinate game tick, snake movement, and collision workflow",
-                "Apply map rules, collision rules, and deterministic state transitions",
-                "Persist round snapshots and expose replay/state query adapters",
-            ]
-        if "match" in module or "mode" in module:
-            return [
-                "Coordinate mode selection, room lifecycle, and player readiness",
-                "Apply matching policies and bot-player orchestration rules",
-                "Integrate session store and transport adapters for real-time sync",
-            ]
-        if "score" in module or "progress" in module:
-            return [
-                "Coordinate score changes, food effects, and settlement flow",
-                "Apply scoring formulas, level thresholds, and reward constraints",
-                "Integrate leaderboard/reward storage and query adapters",
-            ]
         return [
-            "Coordinate business process",
-            "Domain logic and validation",
-            "External systems and persistence integration",
+            f"Coordinate {module} requests and workflow routing",
+            f"Apply {module} domain logic and validation rules",
+            f"Integrate persistence and external dependencies for {module}",
         ]
+
+    def _extract_requirement_keywords(
+        self,
+        requirements: list[dict[str, Any]],
+    ) -> list[str]:
+        stopwords = {
+            "the",
+            "and",
+            "for",
+            "with",
+            "from",
+            "that",
+            "this",
+            "system",
+            "feature",
+            "requirement",
+            "user",
+            "users",
+            "support",
+            "supports",
+            "build",
+            "create",
+            "开发",
+            "系统",
+            "支持",
+            "用户",
+            "需求",
+        }
+        text_chunks: list[str] = []
+        for item in requirements:
+            if not isinstance(item, dict):
+                continue
+            text_chunks.append(str(item.get("title", "")))
+            text_chunks.append(str(item.get("requirement_overview", "")))
+        merged = " ".join(text_chunks).lower()
+        tokens = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{1,6}", merged)
+        words = [self._slugify(token) for token in tokens]
+        keywords: list[str] = []
+        for word in words:
+            if not word or word in stopwords or word.isdigit():
+                continue
+            if word.startswith("sr_") or word.startswith("sf_"):
+                continue
+            if word not in keywords:
+                keywords.append(word)
+            if len(keywords) >= 8:
+                break
+        return keywords
+
+    def _build_current_architecture_context(
+        self,
+        previous_design: dict[str, Any] | None,
+        previous_review: dict[str, Any] | None,
+    ) -> str:
+        if not previous_design:
+            return (
+                "Round 1 initial context:\n"
+                "- No previous architecture design.\n"
+                "- Generate the first architecture draft from product design document and system requirements."
+            )
+        payload = {
+            "previous_architecture_design": previous_design,
+            "reviewer_feedback": previous_review or {},
+        }
+        return self._compact_json(payload)
+
+    def _compact_json(self, payload: Any) -> str:
+        try:
+            return json.dumps(payload, ensure_ascii=False, indent=2)
+        except TypeError:
+            return str(payload)
 
     def _build_fn_description(self, sr_title: str, component: dict[str, Any]) -> str:
         comp_name = str(component.get("name", "component"))
-        if "snake" in sr_title.lower() or "贪吃蛇" in sr_title:
-            if "app-service" in comp_name:
-                return f"{comp_name} orchestrates mode flow, input actions, and game tick for {sr_title}"
-            if "domain-service" in comp_name:
-                return f"{comp_name} computes movement/collision/food effect rules for {sr_title}"
-            return f"{comp_name} persists game state, score, and replay snapshots for {sr_title}"
         return f"{comp_name} supports delivery of {sr_title}"
 
     def _build_fn_spec(self, sr_title: str, component: dict[str, Any]) -> str:
-        if "snake" in sr_title.lower() or "贪吃蛇" in sr_title:
-            return (
-                "Define clear input/output schema, deterministic state transition, "
-                "and verifiable checks for score/level or match outcome."
-            )
         return "Input/Output validated, observable metrics, and retry/error handling defined."
 
     def _bullet_or_default(self, values: Any, *, default: str) -> list[str]:
@@ -1349,3 +1652,57 @@ class DeepArchitectureWorkflowSkill(Skill):
 
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _normalize_technology_choices(self, value: Any) -> dict[str, str]:
+        if isinstance(value, dict):
+            language = str(value.get("language", "")).strip() or "to_be_determined"
+            framework = str(value.get("framework", "")).strip() or "to_be_determined"
+            storage = str(value.get("storage", "")).strip() or "to_be_determined"
+            return {"language": language, "framework": framework, "storage": storage}
+        return {"language": "to_be_determined", "framework": "to_be_determined", "storage": "to_be_determined"}
+
+    def _as_str_list(self, value: Any, *, fallback: list[str]) -> list[str]:
+        if not isinstance(value, list):
+            return fallback
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return items or fallback
+
+    def _run_llm_json(
+        self,
+        *,
+        context: SkillContext,
+        purpose: str,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> dict[str, Any]:
+        if context.llm_client is None:
+            raise RuntimeError("LLM client is required for deep_architecture_workflow")
+        response = context.llm_client.complete(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            llm_purpose=purpose,
+        )
+        parsed = self._parse_json_response(response)
+        if parsed is None:
+            raise RuntimeError(f"LLM response is not valid JSON object for {purpose}")
+        return parsed
+
+    def _parse_json_response(self, text: str) -> dict[str, Any] | None:
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            pass
+        block = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
+        if not block:
+            return None
+        try:
+            parsed = json.loads(block.group(1))
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            return None

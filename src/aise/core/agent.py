@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from ..config import ModelConfig
@@ -110,7 +111,25 @@ class Agent:
             llm_client=self.llm_client,
         )
 
-        artifact = skill.execute(input_data, context)
+        project_root = str((parameters or {}).get("project_root", "")).strip()
+        trace_dir = ""
+        if project_root:
+            trace_dir = str((Path(project_root) / "trace").resolve())
+
+        self.llm_client.set_call_context(
+            {
+                "agent": self.name,
+                "role": self.role.value,
+                "skill": skill_name,
+                "project_name": project_name,
+                "project_root": project_root,
+                "trace_dir": trace_dir,
+            }
+        )
+        try:
+            artifact = skill.execute(input_data, context)
+        finally:
+            self.llm_client.clear_call_context()
         self.artifact_store.store(artifact)
         logger.info(
             "Skill execution completed: agent=%s skill=%s artifact_id=%s artifact_type=%s",

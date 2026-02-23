@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,8 @@ class DocumentGenerationSkill(Skill):
 
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         store = context.artifact_store
-        output_dir = input_data.get("output_dir", ".")
+        output_dir = self._resolve_output_dir(input_data, context)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         results = {
             "generated_files": [],
@@ -40,7 +42,7 @@ class DocumentGenerationSkill(Skill):
         if system_design_content:
             try:
                 design_doc = self._generate_system_design_md(system_design_content)
-                design_path = Path(output_dir) / "system-design.md"
+                design_path = output_dir / "system-design.md"
                 design_path.write_text(design_doc, encoding="utf-8")
                 results["generated_files"].append(str(design_path))
             except Exception as e:
@@ -59,7 +61,7 @@ class DocumentGenerationSkill(Skill):
         if system_requirements_content:
             try:
                 req_doc = self._generate_system_requirements_md(system_requirements_content)
-                req_path = Path(output_dir) / "System-Requirements.md"
+                req_path = output_dir / "System-Requirements.md"
                 req_path.write_text(req_doc, encoding="utf-8")
                 results["generated_files"].append(str(req_path))
             except Exception as e:
@@ -71,8 +73,23 @@ class DocumentGenerationSkill(Skill):
             artifact_type=ArtifactType.PROGRESS_REPORT,
             content=results,
             producer="product_manager",
-            metadata={"output_dir": output_dir},
+            metadata={"output_dir": str(output_dir)},
         )
+
+    def _resolve_output_dir(self, input_data: dict[str, Any], context: SkillContext) -> Path:
+        raw = input_data.get("output_dir")
+        project_root = context.parameters.get("project_root")
+        root = Path(project_root).resolve() if isinstance(project_root, str) and project_root.strip() else None
+
+        if isinstance(raw, str) and raw.strip():
+            output = Path(raw)
+            if root is None:
+                return output.resolve()
+            return (root / output).resolve() if not output.is_absolute() else output.resolve()
+
+        if root is not None:
+            return (root / "docs").resolve()
+        return Path(tempfile.mkdtemp(prefix="aise-docs-")).resolve()
 
     def _generate_system_design_md(self, content: dict[str, Any]) -> str:
         """Generate system-design.md content."""

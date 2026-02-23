@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -28,9 +30,6 @@ class DeepDeveloperWorkflowSkill(Skill):
         project_name = context.project_name or str(input_data.get("project_name", "Untitled")).strip() or "Untitled"
         src_dir = self._resolve_dir(input_data, context, key="source_dir", default_subdir="src")
         tests_dir = self._resolve_dir(input_data, context, key="tests_dir", default_subdir="tests")
-        src_dir.mkdir(parents=True, exist_ok=True)
-        tests_dir.mkdir(parents=True, exist_ok=True)
-
         architecture = self._load_architecture_design(context)
         subsystem_defs = architecture.get("subsystems", []) if isinstance(architecture, dict) else []
         assignments = self._build_subsystem_assignments(subsystem_defs)
@@ -40,6 +39,12 @@ class DeepDeveloperWorkflowSkill(Skill):
             fn_by_subsystem = {
                 "subsystem": [{"id": "FN-SUBSYSTEM-01", "description": "core behavior", "spec": "basic"}]
             }
+
+        src_dir.mkdir(parents=True, exist_ok=True)
+        tests_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_source_package(src_dir)
+        test_bootstrap = self._ensure_test_bootstrap(tests_dir)
+        pytest_ini = self._ensure_pytest_config(tests_dir.parent)
 
         all_source_files: list[str] = []
         all_test_files: list[str] = []
@@ -72,34 +77,60 @@ class DeepDeveloperWorkflowSkill(Skill):
                     encoding="utf-8",
                 )
 
+            used_module_names: set[str] = set()
             # Step 2: Programmer loops FN by FN; each FN has >=3 paired review rounds.
-            for fn_item in fn_items:
+            for fn_index, fn_item in enumerate(fn_items, start=1):
                 fn_id = str(fn_item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"
                 fn_description = str(fn_item.get("description", "")).strip() or "Feature implementation"
                 fn_spec = str(fn_item.get("spec", "")).strip() or "Conform to subsystem detail design"
-                fn_slug = self._slugify(fn_id)
-                fn_tags = self._derive_fn_tags(f"{fn_description} {fn_spec}")
+                fn_slug = self._derive_semantic_module_name(
+                    fn_id=fn_id,
+                    fn_description=fn_description,
+                    index=fn_index,
+                    used_names=used_module_names,
+                )
 
                 code_path = src_subsystem_dir / f"{fn_slug}.py"
-                test_path = tests_subsystem_dir / f"test_{fn_slug}.py"
+                test_path = tests_subsystem_dir / f"test_{subsystem_slug}_{fn_slug}.py"
                 comments: list[str] = []
 
                 for round_index in range(1, 4):
-                    # Programmer: test-first then code update.
-                    test_content = self._build_test_content(
+                    generated = self._generate_python_fn_with_llm(
+                        context=context,
                         subsystem_slug=subsystem_slug,
-                        fn_id=fn_id,
-                        fn_description=fn_description,
-                        round_index=round_index,
-                    )
-                    code_content = self._build_code_content(
-                        subsystem_slug=subsystem_slug,
+                        module_name=fn_slug,
                         fn_id=fn_id,
                         fn_description=fn_description,
                         fn_spec=fn_spec,
                         round_index=round_index,
-                        comments=comments,
-                        tags=fn_tags,
+                        reviewer_comments=comments,
+                    )
+                    raw_test_content = generated.get("test_content", "")
+                    raw_code_content = generated.get("code_content", "")
+                    test_content = (
+                        raw_test_content
+                        if self._is_valid_generated_test_content(
+                            test_content=raw_test_content,
+                            subsystem_slug=subsystem_slug,
+                            module_name=fn_slug,
+                        )
+                        else ""
+                    ) or self._fallback_test_content(
+                        subsystem_slug=subsystem_slug,
+                        module_name=fn_slug,
+                        fn_id=fn_id,
+                        fn_description=fn_description,
+                    )
+                    code_content = (
+                        raw_code_content
+                        if self._is_valid_generated_code_content(raw_code_content, module_name=fn_slug)
+                        else ""
+                    ) or self._fallback_code_content(
+                        subsystem_slug=subsystem_slug,
+                        module_name=fn_slug,
+                        fn_id=fn_id,
+                        fn_description=fn_description,
+                        fn_spec=fn_spec,
                     )
                     test_path.write_text(test_content, encoding="utf-8")
                     code_path.write_text(code_content, encoding="utf-8")
@@ -163,6 +194,9 @@ class DeepDeveloperWorkflowSkill(Skill):
 
             all_source_files.append(str(src_revision))
             all_test_files.append(str(tests_revision))
+
+        all_test_files.append(str(test_bootstrap))
+        all_test_files.append(str(pytest_ini))
 
         source_artifact = Artifact(
             artifact_type=ArtifactType.SOURCE_CODE,
@@ -300,67 +334,93 @@ class DeepDeveloperWorkflowSkill(Skill):
             }
         return assignments
 
-    def _build_test_content(
+    def _generate_python_fn_with_llm(
         self,
         *,
+        context: SkillContext,
         subsystem_slug: str,
-        fn_id: str,
-        fn_description: str,
-        round_index: int,
-    ) -> str:
-        module_name = self._slugify(fn_id)
-        safe_fn_id = fn_id.replace("'", "\\'")
-        safe_desc = fn_description.replace("'", "\\'")
-        return (
-            f'"""Tests for {fn_id}."""\n\n'
-            f"from src.services.{subsystem_slug}.{module_name} import implement_{module_name}\n\n\n"
-            f"def test_{module_name}_returns_expected_shape() -> None:\n"
-            f"    result = implement_{module_name}(input_data={{'round': {round_index}}})\n"
-            f"    assert isinstance(result, dict)\n"
-            f"    assert result['fn_id'] == '{safe_fn_id}'\n"
-            f"    assert 'status' in result\n"
-            f"\n"
-            f"def test_{module_name}_description_is_not_empty() -> None:\n"
-            f"    result = implement_{module_name}(input_data={{}})\n"
-            f"    assert result['description'] == '{safe_desc}'\n"
-        )
-
-    def _build_code_content(
-        self,
-        *,
-        subsystem_slug: str,
+        module_name: str,
         fn_id: str,
         fn_description: str,
         fn_spec: str,
         round_index: int,
-        comments: list[str],
-        tags: list[str],
+        reviewer_comments: list[str],
+    ) -> dict[str, str]:
+        comments = "\n".join(f"- {item}" for item in reviewer_comments[:8]) or "- (none)"
+        llm_data = self._run_llm_json(
+            context=context,
+            system_prompt=(
+                "You are a senior software engineer. Generate Python module and pytest tests in JSON.\n"
+                "Return keys: code_content, test_content.\n"
+                "Rules:\n"
+                "- code_content must define implement_<module_name>(input_data: dict | None = None)\n"
+                "- function returns dict and includes keys: fn_id, description, status, result\n"
+                "- test_content must import the function and include at least 2 pytest test functions\n"
+                "- no markdown fences"
+            ),
+            user_prompt=(
+                f"Subsystem: {subsystem_slug}\n"
+                f"Module: {module_name}\n"
+                f"FN: {fn_id}\n"
+                f"Description: {fn_description}\n"
+                f"Spec: {fn_spec}\n"
+                f"Round: {round_index}\n"
+                f"Reviewer comments:\n{comments}\n"
+            ),
+        )
+        if not llm_data:
+            return {}
+        return {
+            "code_content": str(llm_data.get("code_content", "")),
+            "test_content": str(llm_data.get("test_content", "")),
+        }
+
+    def _fallback_test_content(
+        self,
+        *,
+        subsystem_slug: str,
+        module_name: str,
+        fn_id: str,
+        fn_description: str,
     ) -> str:
-        module_name = self._slugify(fn_id)
+        safe_fn_id = fn_id.replace("'", "\\'")
+        safe_desc = fn_description.replace("'", "\\'")
+        return (
+            f"from src.services.{subsystem_slug}.{module_name} import implement_{module_name}\n\n\n"
+            f"def test_{module_name}_returns_dict() -> None:\n"
+            f"    result = implement_{module_name}({{'round': 1}})\n"
+            "    assert isinstance(result, dict)\n"
+            f"    assert result.get('fn_id') == '{safe_fn_id}'\n\n"
+            f"def test_{module_name}_description() -> None:\n"
+            f"    result = implement_{module_name}()\n"
+            f"    assert result.get('description') == '{safe_desc}'\n"
+        )
+
+    def _fallback_code_content(
+        self,
+        *,
+        subsystem_slug: str,
+        module_name: str,
+        fn_id: str,
+        fn_description: str,
+        fn_spec: str,
+    ) -> str:
         safe_fn_id = fn_id.replace("'", "\\'")
         safe_desc = fn_description.replace("'", "\\'")
         safe_spec = fn_spec.replace("'", "\\'")
-        comment_lines = "\n".join(f"# - {item}" for item in comments[:5]) if comments else "# - none"
-        logic_lines = self._build_logic_lines(tags)
         return (
             "from __future__ import annotations\n\n"
-            f'"""Implementation for {fn_id} in subsystem {subsystem_slug}."""\n\n'
-            f"REVISION_NOTES = [\n"
-            f"    'round_{round_index}: implementation updated',\n"
-            f"]\n\n"
+            f'"""Implementation for {fn_id} in {subsystem_slug}."""\n\n'
             f"def implement_{module_name}(input_data: dict | None = None) -> dict[str, object]:\n"
-            f'    """{fn_description}"""\n'
             "    payload = input_data or {}\n"
-            f"{logic_lines}"
-            f"    return {{\n"
+            "    result = {'processed': True, 'input_keys': sorted(payload.keys())}\n"
+            "    return {\n"
             f"        'fn_id': '{safe_fn_id}',\n"
             f"        'description': '{safe_desc}',\n"
             f"        'spec': '{safe_spec}',\n"
-            f"        'status': 'implemented',\n"
+            "        'status': 'implemented',\n"
             "        'result': result,\n"
-            f"    }}\n\n"
-            f"# Reviewer suggestions addressed in this round:\n"
-            f"{comment_lines}\n"
+            "    }\n"
         )
 
     def _run_static_and_unit_checks(self, code_path: Path, test_path: Path) -> dict[str, str]:
@@ -369,6 +429,28 @@ class DeepDeveloperWorkflowSkill(Skill):
         static_ok = "passed" if "implement_" in code_text and "return" in code_text else "failed"
         unit_ok = "passed" if "def test_" in test_text else "failed"
         return {"static_check": static_ok, "unit_test": unit_ok}
+
+    def _is_valid_generated_code_content(self, code_content: str, *, module_name: str) -> bool:
+        if not code_content.strip():
+            return False
+        expected_signature = f"def implement_{module_name}("
+        return expected_signature in code_content
+
+    def _is_valid_generated_test_content(
+        self,
+        *,
+        test_content: str,
+        subsystem_slug: str,
+        module_name: str,
+    ) -> bool:
+        if not test_content.strip():
+            return False
+        if "from your_module import" in test_content:
+            return False
+        expected_import = f"from src.services.{subsystem_slug}.{module_name} import implement_{module_name}"
+        if expected_import not in test_content:
+            return False
+        return f"implement_{module_name}" in test_content and "def test_" in test_content
 
     def _review_fn_change(
         self,
@@ -451,6 +533,78 @@ class DeepDeveloperWorkflowSkill(Skill):
             return default_path
         return candidate
 
+    def _ensure_source_package(self, src_dir: Path) -> None:
+        src_pkg = src_dir / "__init__.py"
+        if not src_pkg.exists():
+            src_pkg.write_text('"""Generated source package."""\n', encoding="utf-8")
+
+    def _ensure_test_bootstrap(self, tests_dir: Path) -> Path:
+        path = tests_dir / "conftest.py"
+        path.write_text(
+            (
+                "from __future__ import annotations\n\n"
+                "import sys\n"
+                "from pathlib import Path\n\n"
+                "# Keep generated project importable even when pytest rootdir is outside project.\n"
+                "PROJECT_ROOT = Path(__file__).resolve().parent.parent\n"
+                "if str(PROJECT_ROOT) not in sys.path:\n"
+                "    sys.path.insert(0, str(PROJECT_ROOT))\n"
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def _ensure_pytest_config(self, project_root: Path) -> Path:
+        path = project_root / "pytest.ini"
+        path.write_text(
+            ("[pytest]\ntestpaths = tests\npython_files = test_*.py\naddopts = -q\n"),
+            encoding="utf-8",
+        )
+        return path
+
+    def _derive_semantic_module_name(
+        self,
+        *,
+        fn_id: str,
+        fn_description: str,
+        index: int,
+        used_names: set[str],
+    ) -> str:
+        candidates: list[str] = []
+
+        generic_words = {
+            "implement",
+            "behavior",
+            "supports",
+            "delivery",
+            "for",
+            "in",
+            "app",
+            "service",
+            "domain",
+            "gateway",
+            "core",
+            "subsystem",
+            "the",
+            "and",
+            "with",
+        }
+        words = [self._slugify(word) for word in fn_description.split() if word.strip()]
+        words = [word for word in words if word and word not in generic_words and not word.startswith("fn_")]
+        if words:
+            candidates.append("_".join(words[:2]))
+
+        for raw in candidates:
+            base = self._slugify(raw) or "feature_logic"
+            if len(base) > 42:
+                base = "_".join(base.split("_")[:4])[:42].strip("_") or "feature_logic"
+            if base not in used_names:
+                used_names.add(base)
+                return base
+        fallback = f"feature_logic_{index:02d}"
+        used_names.add(fallback)
+        return fallback
+
     def _slugify(self, value: str) -> str:
         chars: list[str] = []
         last_dash = False
@@ -469,85 +623,37 @@ class DeepDeveloperWorkflowSkill(Skill):
             slug = f"fn_{slug}"
         return slug
 
-    def _derive_fn_tags(self, text: str) -> list[str]:
-        lowered = text.lower()
-        tags: list[str] = []
-        keyword_groups = {
-            "snake": ["snake", "贪吃蛇"],
-            "movement": ["movement", "移动", "position", "坐标", "collision", "碰撞"],
-            "food": ["food", "食物"],
-            "score": ["score", "积分", "settlement", "结算"],
-            "level": ["level", "关卡", "progression", "进度"],
-            "ai": ["ai", "人机", "bot"],
-            "multiplayer": ["multiplayer", "多人", "room", "match"],
-        }
-        for tag, keys in keyword_groups.items():
-            if any(key in lowered for key in keys):
-                tags.append(tag)
-        return tags
-
-    def _build_logic_lines(self, tags: list[str]) -> str:
-        lines: list[str] = [
-            "    state = payload.get('state', {})",
-            "    result: dict[str, object] = {}",
-        ]
-        if "snake" in tags or "movement" in tags:
-            lines.extend(
-                [
-                    "    direction = payload.get('direction', 'right')",
-                    "    head = tuple(payload.get('head', (0, 0)))",
-                    "    delta = {'up': (0, -1), 'down': (0, 1), "
-                    "'left': (-1, 0), 'right': (1, 0)}.get(direction, (1, 0))",
-                    "    next_head = (head[0] + delta[0], head[1] + delta[1])",
-                    "    result['next_head'] = next_head",
-                ]
-            )
-        if "food" in tags:
-            lines.extend(
-                [
-                    "    food_type = payload.get('food_type', 'normal')",
-                    "    score_gain = {'normal': 1, 'gold': 3, 'mystery': 5}.get(food_type, 1)",
-                    "    result['score_gain'] = score_gain",
-                ]
-            )
-        if "score" in tags:
-            lines.extend(
-                [
-                    "    current_score = int(payload.get('score', 0))",
-                    "    result['new_score'] = current_score + int(result.get('score_gain', 0))",
-                ]
-            )
-        if "level" in tags:
-            lines.extend(
-                [
-                    "    score_for_level = int(result.get('new_score', payload.get('score', 0)))",
-                    "    result['level'] = max(1, score_for_level // 10 + 1)",
-                ]
-            )
-        if "ai" in tags:
-            lines.extend(
-                [
-                    "    target = tuple(payload.get('target', (5, 5)))",
-                    "    head_for_ai = tuple(result.get('next_head', payload.get('head', (0, 0))))",
-                    "    ai_move = 'right' if target[0] > head_for_ai[0] else 'left'",
-                    "    result['ai_move'] = ai_move",
-                ]
-            )
-        if "multiplayer" in tags:
-            lines.extend(
-                [
-                    "    players = payload.get('players', [])",
-                    "    result['player_count'] = len(players)",
-                    "    result['sync_required'] = len(players) > 1",
-                ]
-            )
-        lines.extend(
+    def _run_llm_json(self, *, context: SkillContext, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        if context.llm_client is None:
+            raise RuntimeError("LLM client is required for deep_developer_workflow")
+        response = context.llm_client.complete(
             [
-                "    result['state_keys'] = sorted(state.keys()) if isinstance(state, dict) else []",
-                "    result['processed'] = True",
-            ]
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
         )
-        return "\n".join(f"{line}\n" for line in lines)
+        parsed = self._parse_json_response(response)
+        if parsed is None:
+            raise RuntimeError("LLM response is not valid JSON object for deep_developer_workflow")
+        return parsed
+
+    def _parse_json_response(self, text: str) -> dict[str, Any] | None:
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            pass
+        match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
+        if not match:
+            return None
+        try:
+            parsed = json.loads(match.group(1))
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            return None
 
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()

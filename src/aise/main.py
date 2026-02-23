@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
+from datetime import datetime
+from pathlib import Path
 
 from .agents import (
     ArchitectAgent,
@@ -55,6 +58,8 @@ def _get_agent_class(role: AgentRole):
 def create_team(
     config: ProjectConfig | None = None,
     agent_counts: dict[AgentRole, int] | None = None,
+    *,
+    project_root: str | None = None,
 ) -> Orchestrator:
     """Create a fully configured development team.
 
@@ -77,7 +82,7 @@ def create_team(
         if config.is_github_mode:
             agent_counts[AgentRole.REVIEWER] = 1
 
-    orchestrator = Orchestrator()
+    orchestrator = Orchestrator(project_root=project_root)
     bus = orchestrator.message_bus
     store = orchestrator.artifact_store
 
@@ -125,11 +130,51 @@ def run_project(requirements: str, project_name: str = "My Project") -> list[dic
     Returns:
         List of phase results.
     """
-    orchestrator = create_team()
+    project_root = _prepare_run_project_root(project_name)
+    orchestrator = create_team(project_root=str(project_root))
     return orchestrator.run_default_workflow(
         project_input={"raw_requirements": requirements},
         project_name=project_name,
     )
+
+
+def _slugify_name(text: str) -> str:
+    chars: list[str] = []
+    prev_sep = False
+    for ch in text.lower().strip():
+        if ch.isalnum():
+            chars.append(ch)
+            prev_sep = False
+            continue
+        if not prev_sep:
+            chars.append("-")
+        prev_sep = True
+    value = "".join(chars).strip("-")
+    return value or "project"
+
+
+def _prepare_run_project_root(project_name: str) -> Path:
+    projects_root = Path("projects")
+    projects_root.mkdir(parents=True, exist_ok=True)
+    ts = int(datetime.now().timestamp())
+    run_root = projects_root / f"project_{_next_project_index(projects_root)}-{_slugify_name(project_name)}-{ts}"
+    run_root.mkdir(parents=True, exist_ok=True)
+    for subdir in ("docs", "src", "tests", "trace"):
+        (run_root / subdir).mkdir(parents=True, exist_ok=True)
+    return run_root
+
+
+def _next_project_index(projects_root: Path) -> int:
+    max_index = -1
+    pattern = re.compile(r"^project_(\d+)-")
+    for path in projects_root.iterdir():
+        if not path.is_dir():
+            continue
+        match = pattern.match(path.name)
+        if not match:
+            continue
+        max_index = max(max_index, int(match.group(1)))
+    return max_index + 1
 
 
 def start_demand_session(project_name: str = "My Project") -> OnDemandSession:
@@ -241,9 +286,26 @@ def _apply_github_config(args: argparse.Namespace, config: ProjectConfig) -> Non
         config.github.repo_name = args.github_repo_name
 
 
+def _load_cli_project_config(project_name: str) -> ProjectConfig:
+    candidates = [
+        Path("config/global_project_config.json"),
+        Path("global_project_config.json"),
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            config = ProjectConfig.from_json_file(path)
+            config.project_name = project_name
+            return config
+        except Exception:
+            continue
+    return ProjectConfig(project_name=project_name)
+
+
 def main() -> None:
     """CLI entry point."""
-    configure_logging(ProjectConfig().logging)
+    configure_logging(_load_cli_project_config("Untitled Project").logging)
     parser = argparse.ArgumentParser(
         description="AISE - Multi-Agent Software Development Team",
     )
@@ -373,10 +435,11 @@ def main() -> None:
         except (FileNotFoundError, IsADirectoryError, PermissionError):
             pass  # Use as raw text
 
-        config = ProjectConfig(project_name=args.project_name)
+        config = _load_cli_project_config(args.project_name)
         _apply_github_config(args, config)
         configure_logging(config.logging, force=True)
-        orchestrator = create_team(config)
+        project_root = _prepare_run_project_root(args.project_name)
+        orchestrator = create_team(config, project_root=str(project_root))
         results = orchestrator.run_default_workflow(
             project_input={"raw_requirements": requirements},
             project_name=args.project_name,
@@ -387,6 +450,7 @@ def main() -> None:
                 json.dump(results, f, indent=2, default=str)
             print(f"Results written to {args.output}")
         else:
+            print(f"Project root: {project_root}")
             for result in results:
                 phase = result.get("phase", "unknown")
                 status = result.get("status", "unknown")
@@ -396,7 +460,9 @@ def main() -> None:
                     print(f"  {task_key}: {task_result.get('status', 'unknown')}")
 
     elif args.command == "demand":
-        configure_logging(ProjectConfig(project_name=args.project_name).logging, force=True)
+        config = _load_cli_project_config(args.project_name)
+        _apply_github_config(args, config)
+        configure_logging(config.logging, force=True)
         session = start_demand_session(args.project_name)
 
         # Seed with initial requirements if provided
@@ -413,7 +479,7 @@ def main() -> None:
         session.start()
 
     elif args.command == "whatsapp":
-        config = ProjectConfig(project_name=args.project_name)
+        config = _load_cli_project_config(args.project_name)
         _apply_github_config(args, config)
         if args.phone_number_id:
             config.whatsapp.phone_number_id = args.phone_number_id
@@ -446,8 +512,9 @@ def main() -> None:
         session.start(start_webhook=args.webhook)
 
     elif args.command == "team":
-        configure_logging(ProjectConfig().logging, force=True)
-        orchestrator = create_team()
+        config = _load_cli_project_config("AISE Team")
+        configure_logging(config.logging, force=True)
+        orchestrator = create_team(config)
         print("AISE Development Team")
         print("=" * 40)
         for name, agent in orchestrator.agents.items():
@@ -457,7 +524,8 @@ def main() -> None:
                     print(f"  - {skill_name}: {skill.description}")
 
     elif args.command == "multi-project":
-        configure_logging(ProjectConfig().logging, force=True)
+        config = _load_cli_project_config("Multi Project Session")
+        configure_logging(config.logging, force=True)
         session = start_multi_project_session()
         session.start()
 
@@ -469,10 +537,8 @@ def main() -> None:
 
         from .core.dev_session import SessionManager
 
-        config = ProjectConfig(
-            project_name=args.project_name,
-            development_mode=args.mode,
-        )
+        config = _load_cli_project_config(args.project_name)
+        config.development_mode = args.mode
         config.session.max_concurrent_sessions = args.max_sessions
         _apply_github_config(args, config)
         configure_logging(config.logging, force=True)

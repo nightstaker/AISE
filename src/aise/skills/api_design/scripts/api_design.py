@@ -25,166 +25,11 @@ class APIDesignSkill(Skill):
     def execute(self, input_data: dict[str, Any], context: SkillContext) -> Artifact:
         components = context.artifact_store.get_content(ArtifactType.ARCHITECTURE_DESIGN, "components", [])
         llm_contract = self._design_with_llm(components, context)
-        if llm_contract is not None:
-            return Artifact(
-                artifact_type=ArtifactType.API_CONTRACT,
-                content=llm_contract,
-                producer="architect",
-                metadata={"project_name": context.project_name, "analysis_mode": "llm"},
-            )
-
-        paths: dict[str, Any] = {}
-        schemas: dict[str, Any] = {}
-        endpoints: list[dict[str, Any]] = []
-
-        for comp in components:
-            if comp["type"] != "service":
-                continue
-
-            resource = comp["name"].replace("Service", "").lower()
-            resource_plural = self._pluralize(resource)
-
-            base_path = f"/api/v1/{resource_plural}"
-            item_path = f"/api/v1/{resource_plural}/{{id}}"
-
-            # Build OpenAPI paths object
-            paths[base_path] = {
-                "get": {
-                    "summary": f"List all {resource_plural}",
-                    "responses": {
-                        "200": {"description": "Success"},
-                        "401": {"description": "Unauthorized"},
-                    },
-                },
-                "post": {
-                    "summary": f"Create a new {resource}",
-                    "requestBody": {
-                        "content": {
-                            "application/json": {
-                                "schema": {"$ref": f"#/components/schemas/{resource}_create"},
-                            }
-                        }
-                    },
-                    "responses": {
-                        "201": {"description": "Created"},
-                        "400": {"description": "Bad Request"},
-                        "401": {"description": "Unauthorized"},
-                    },
-                },
-            }
-            paths[item_path] = {
-                "get": {
-                    "summary": f"Get {resource} by ID",
-                    "responses": {
-                        "200": {"description": "Success"},
-                        "404": {"description": "Not Found"},
-                    },
-                },
-                "put": {
-                    "summary": f"Update {resource}",
-                    "requestBody": {
-                        "content": {
-                            "application/json": {
-                                "schema": {"$ref": f"#/components/schemas/{resource}_update"},
-                            }
-                        }
-                    },
-                    "responses": {
-                        "200": {"description": "Success"},
-                        "400": {"description": "Bad Request"},
-                        "404": {"description": "Not Found"},
-                    },
-                },
-                "delete": {
-                    "summary": f"Delete {resource}",
-                    "responses": {
-                        "204": {"description": "No Content"},
-                        "404": {"description": "Not Found"},
-                    },
-                },
-            }
-
-            # Also keep a flat endpoint list for internal consumption
-            for method, path, desc, codes in [
-                ("GET", base_path, f"List all {resource_plural}", {"200": "Success", "401": "Unauthorized"}),
-                (
-                    "POST",
-                    base_path,
-                    f"Create a new {resource}",
-                    {"201": "Created", "400": "Bad Request", "401": "Unauthorized"},
-                ),
-                ("GET", item_path, f"Get {resource} by ID", {"200": "Success", "404": "Not Found"}),
-                (
-                    "PUT",
-                    item_path,
-                    f"Update {resource}",
-                    {"200": "Success", "400": "Bad Request", "404": "Not Found"},
-                ),
-                ("DELETE", item_path, f"Delete {resource}", {"204": "No Content", "404": "Not Found"}),
-            ]:
-                endpoints.append({"method": method, "path": path, "description": desc, "status_codes": codes})
-
-            # Schemas
-            schemas[f"{resource}_detail"] = {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "format": "uuid"},
-                    "created_at": {"type": "string", "format": "date-time"},
-                    "updated_at": {"type": "string", "format": "date-time"},
-                },
-            }
-            schemas[f"{resource}_create"] = {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            }
-            schemas[f"{resource}_update"] = {
-                "type": "object",
-                "properties": {},
-            }
-            schemas[f"{resource}_list"] = {
-                "type": "object",
-                "properties": {
-                    "items": {
-                        "type": "array",
-                        "items": {"$ref": f"#/components/schemas/{resource}_detail"},
-                    },
-                    "total": {"type": "integer"},
-                    "page": {"type": "integer"},
-                    "page_size": {"type": "integer"},
-                },
-            }
-
-        # Standard error schema
-        schemas["error"] = {
-            "type": "object",
-            "properties": {
-                "code": {"type": "string"},
-                "message": {"type": "string"},
-                "details": {"type": "object"},
-            },
-            "required": ["code", "message"],
-        }
-
-        contract = {
-            "openapi": "3.0.0",
-            "info": {
-                "title": f"{context.project_name or 'Project'} API",
-                "version": "1.0.0",
-            },
-            "paths": paths,
-            "components": {"schemas": schemas, "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer"}}},
-            # Keep flat endpoint list for internal skill consumption
-            "endpoints": endpoints,
-            "schemas": schemas,
-            "analysis_mode": "heuristic",
-        }
-
         return Artifact(
             artifact_type=ArtifactType.API_CONTRACT,
-            content=contract,
+            content=llm_contract,
             producer="architect",
-            metadata={"project_name": context.project_name, "analysis_mode": "heuristic"},
+            metadata={"project_name": context.project_name, "analysis_mode": "llm"},
         )
 
     @staticmethod
@@ -200,12 +45,14 @@ class APIDesignSkill(Skill):
         self,
         components: Any,
         context: SkillContext,
-    ) -> dict[str, Any] | None:
-        if context.llm_client is None or not isinstance(components, list):
-            return None
+    ) -> dict[str, Any]:
+        if context.llm_client is None:
+            raise RuntimeError("LLM client is required for api_design")
+        if not isinstance(components, list):
+            raise ValueError("Architecture components are required for api_design")
         services = [c for c in components if isinstance(c, dict) and c.get("type") == "service"]
         if not services:
-            return None
+            raise ValueError("No service components available for api_design")
 
         agent_prompt = self._load_prompt_file("../../../agents/architect_agent.md")
         skill_prompt = self._load_prompt_file("../skill.md")
@@ -222,23 +69,18 @@ class APIDesignSkill(Skill):
         )
         user_prompt = "服务列表:\n" + "\n".join(service_lines)
 
-        try:
-            response = context.llm_client.complete(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
-            )
-        except Exception:
-            return None
+        response = context.llm_client.complete(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
         parsed = self._parse_json_response(response)
-        if not isinstance(parsed, dict):
-            return None
 
         endpoints = self._normalise_endpoints(parsed.get("endpoints"))
         if not endpoints:
-            return None
+            raise RuntimeError("LLM response contains no valid endpoints for api_design")
 
         schemas = parsed.get("schemas")
         if not isinstance(schemas, dict):
@@ -317,17 +159,21 @@ class APIDesignSkill(Skill):
         except OSError:
             return ""
 
-    def _parse_json_response(self, text: str) -> dict[str, Any] | None:
+    def _parse_json_response(self, text: str) -> dict[str, Any]:
         if not text:
-            return None
+            raise RuntimeError("Empty LLM response for api_design")
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             pass
         block = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
         if block:
             try:
-                return json.loads(block.group(1))
+                parsed = json.loads(block.group(1))
+                if isinstance(parsed, dict):
+                    return parsed
             except json.JSONDecodeError:
-                return None
-        return None
+                pass
+        raise RuntimeError("LLM response is not valid JSON object for api_design")

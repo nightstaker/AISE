@@ -136,7 +136,7 @@ class WorkspaceConfig:
 class LoggingConfig:
     """Configuration for logging system."""
 
-    level: str = "INFO"
+    level: str = "DEBUG"
     log_dir: str = "logs"
     json_format: bool = False
     rotate_daily: bool = True
@@ -280,11 +280,18 @@ class ProjectConfig:
             return [self.default_model]
 
         if definition.is_local:
+            provider_map = {item.provider: item for item in self.model_providers}
+            local_provider = provider_map.get("local")
+            local_base_url = ""
+            if local_provider and local_provider.enabled:
+                local_base_url = local_provider.base_url
+            if not local_base_url:
+                local_base_url = self.default_model.base_url
             local_cfg = ModelConfig(
                 provider="local",
                 model=definition.api_model or definition.id,
                 api_key="",
-                base_url="",
+                base_url=local_base_url,
                 temperature=self.default_model.temperature,
                 max_tokens=self.default_model.max_tokens,
                 extra={

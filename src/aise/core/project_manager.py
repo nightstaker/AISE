@@ -137,7 +137,7 @@ class ProjectManager:
         safe_name = "-".join(filter(None, safe_name.split("-"))) or "project"
         project_root = self._projects_root / f"{project_id}-{safe_name}"
         project_root.mkdir(parents=True, exist_ok=True)
-        for subdir in ("docs", "src", "tests", "scripts", "config", "artifacts"):
+        for subdir in ("docs", "src", "tests", "scripts", "config", "artifacts", "trace"):
             (project_root / subdir).mkdir(parents=True, exist_ok=True)
         return project_root
 
@@ -220,7 +220,24 @@ class ProjectManager:
                 requirements,
                 project.project_name,
             )
-            return self._normalize_deep_workflow_result(deep_result)
+            rows = self._normalize_deep_workflow_result(deep_result)
+            if rows:
+                return rows
+
+            # Deep runtime produced no usable phase rows (e.g. repeated network failures).
+            # Fall back to the wrapped classic orchestrator to keep delivery progressing.
+            base_orchestrator = getattr(orchestrator, "orchestrator", None)
+            if base_orchestrator is not None and hasattr(base_orchestrator, "run_default_workflow"):
+                logger.warning(
+                    "Deep workflow returned empty result, falling back to classic workflow: project_id=%s name=%s",
+                    project_id,
+                    project.project_name,
+                )
+                return base_orchestrator.run_default_workflow(  # type: ignore[no-any-return]
+                    requirements,
+                    project.project_name,
+                )
+            return rows
 
         raise ValueError(f"Project {project_id} orchestrator does not support workflow execution")
 

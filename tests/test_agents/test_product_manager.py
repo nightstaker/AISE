@@ -272,3 +272,25 @@ class TestProductManagerAgent:
         assert all(str(project_root / "docs") in path for path in generated)
         assert (project_root / "docs" / "system-design.md").exists()
         assert (project_root / "docs" / "system-requirements.md").exists()
+
+    def test_deep_product_workflow_snake_cli_filters_delivery_meta_points(self, tmp_path):
+        agent, _ = self._make_agent()
+        project_root = tmp_path / "project_snake_pm"
+        output_dir = project_root / "docs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        raw = (
+            "开发一个命令行贪吃蛇游戏：支持开始/暂停/结束、边界碰撞判定、吃到食物加分、速度随分数提升、最终结算与重开。"
+            "请提供清晰文档、可运行代码和pytest测试。"
+        )
+        agent.execute_skill(
+            "deep_product_workflow",
+            {"raw_requirements": raw, "output_dir": str(output_dir)},
+            project_name="SnakeDocQuality",
+            parameters={"project_root": str(project_root)},
+        )
+        design_doc = (output_dir / "system-design.md").read_text(encoding="utf-8")
+
+        assert "清晰文档" not in design_doc
+        assert "可运行代码和pytest测试" not in design_doc
+        assert "Traceability Matrix" in (output_dir / "system-requirements.md").read_text(encoding="utf-8")
