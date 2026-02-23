@@ -181,7 +181,7 @@ function setupDashboardReact() {
 
     return h(
       "div",
-      { className: "dashboard-shell" },
+      { className: "dashboard-shell dashboard-layout" },
       h(
         "section",
         { className: "split" },
@@ -276,9 +276,11 @@ function setupProjectReact() {
     const [submitting, setSubmitting] = window.React.useState(false);
     const [deleting, setDeleting] = window.React.useState(false);
     const [error, setError] = window.React.useState("");
+    const [projectMissing, setProjectMissing] = window.React.useState(false);
 
     window.React.useEffect(() => {
       let active = true;
+      let timer = 0;
       async function refresh() {
         try {
           const [requirementsData, runsData] = await Promise.all([
@@ -288,17 +290,25 @@ function setupProjectReact() {
           if (!active) return;
           setRequirements(Array.isArray(requirementsData.requirements) ? requirementsData.requirements : []);
           setRuns(Array.isArray(runsData.runs) ? runsData.runs : []);
-        } catch {
-          // keep current state
+          setProjectMissing(false);
+        } catch (err) {
+          if (!active) return;
+          const message = err instanceof Error ? err.message : "";
+          if (String(message).includes("404")) {
+            setProjectMissing(true);
+            setError("项目不存在或已被删除。");
+            if (timer) window.clearInterval(timer);
+          }
         }
       }
+      if (projectMissing) return () => {};
       refresh();
-      const timer = window.setInterval(refresh, 3000);
+      timer = window.setInterval(refresh, 3000);
       return () => {
         active = false;
-        window.clearInterval(timer);
+        if (timer) window.clearInterval(timer);
       };
-    }, [projectId]);
+    }, [projectId, projectMissing]);
 
     async function submitRequirement(event) {
       event.preventDefault();
@@ -336,10 +346,10 @@ function setupProjectReact() {
 
     return h(
       "div",
-      null,
+      { className: "project-layout" },
       h(
         "section",
-        { className: "card card-glow" },
+        { className: "card card-glow project-header-card" },
         h("h1", null, project.info.project_name),
         h("p", { className: "muted" }, `ID: ${project.info.project_id} | 状态: ${project.info.status} | 模式: ${project.info.development_mode}`),
         h(
@@ -347,18 +357,26 @@ function setupProjectReact() {
           {
             type: "button",
             className: "btn danger",
-            disabled: deleting,
+            disabled: deleting || projectMissing,
             onClick: deleteCurrentProject,
           },
           deleting ? "删除中..." : "删除项目"
         )
       ),
+      projectMissing
+        ? h(
+            "section",
+            { className: "card" },
+            h("p", { className: "warning" }, "当前项目已不存在，已停止轮询。"),
+            h("a", { className: "btn secondary", href: "/" }, "返回项目列表")
+          )
+        : null,
       h(
         "section",
-        { className: "split" },
+        { className: "split project-top-grid" },
         h(
           "article",
-          { className: "card" },
+          { className: "card project-new-req-card" },
           h("h2", null, "下发新需求"),
           h(
             "form",
@@ -369,15 +387,20 @@ function setupProjectReact() {
               rows: 6,
               placeholder: "输入新需求",
               value: text,
+              disabled: projectMissing,
               onChange: (e) => setText(e.target.value),
             }),
             error ? h("p", { className: "warning" }, error) : null,
-            h("button", { className: "btn", type: "submit", disabled: submitting }, submitting ? "提交中..." : "提交并运行工作流")
+            h(
+              "button",
+              { className: "btn", type: "submit", disabled: submitting || projectMissing },
+              submitting ? "提交中..." : "提交并运行工作流"
+            )
           )
         ),
         h(
           "article",
-          { className: "card" },
+          { className: "card project-workflow-card" },
           h("h2", null, "工作流节点"),
           h(
             "ol",
@@ -395,63 +418,71 @@ function setupProjectReact() {
         )
       ),
       h(
-        "section",
-        { className: "card" },
-        h("h2", null, "历时需求"),
+        "div",
+        { className: "project-bottom-grid" },
         h(
-          "ul",
-          { className: "history-list" },
-          ...(requirements.length
-            ? requirements.map((req, idx) => h("li", { key: `${req.created_at}-${idx}` }, `${req.created_at} - ${req.text}`))
-            : [h("li", { key: "empty", className: "muted" }, "暂无需求历史。")])
-        )
-      ),
-      h(
-        "section",
-        { className: "card" },
-        h("h2", null, "工作流执行记录"),
-        h(
-          "table",
-          null,
+          "section",
+          { className: "card project-history-card" },
+          h("h2", null, "历时需求"),
           h(
-            "thead",
-            null,
+            "ul",
+            { className: "history-list" },
+            ...(requirements.length
+              ? requirements.map((req, idx) => h("li", { key: `${req.created_at}-${idx}` }, `${req.created_at} - ${req.text}`))
+              : [h("li", { key: "empty", className: "muted" }, "暂无需求历史。")])
+          )
+        ),
+        h(
+          "section",
+          { className: "card project-runs-card" },
+          h("h2", null, "工作流执行记录"),
+          h(
+            "div",
+            { className: "table-scroll" },
             h(
-              "tr",
+              "table",
               null,
-              h("th", null, "执行ID"),
-              h("th", null, "时间"),
-              h("th", null, "状态"),
-              h("th", null, "需求摘要"),
-              h("th", null, "查看")
-            )
-          ),
-          h(
-            "tbody",
-            null,
-            ...(runs.length
-              ? runs.map((run) =>
-                  h(
-                    "tr",
-                    { key: run.run_id },
-                    h("td", null, run.run_id),
-                    h("td", null, run.started_at),
-                    h("td", null, run.status || "pending"),
-                    h("td", null, String(run.requirement_text || "").slice(0, 80)),
-                    h(
-                      "td",
-                      null,
+              h(
+                "thead",
+                null,
+                h(
+                  "tr",
+                  null,
+                  h("th", null, "执行ID"),
+                  h("th", null, "时间"),
+                  h("th", null, "状态"),
+                  h("th", null, "需求摘要"),
+                  h("th", null, "查看")
+                )
+              ),
+              h(
+                "tbody",
+                null,
+                ...(runs.length
+                  ? runs.map((run) =>
                       h(
-                        "a",
-                        {
-                          href: `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(run.run_id)}`,
-                        },
-                        "详情"
+                        "tr",
+                        { key: run.run_id },
+                        h("td", null, run.run_id),
+                        h("td", null, run.started_at),
+                        h("td", null, run.status || "pending"),
+                        h("td", null, String(run.requirement_text || "").slice(0, 80)),
+                        h(
+                          "td",
+                          null,
+                          h(
+                            "a",
+                            {
+                              href: `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(run.run_id)}`,
+                            },
+                            "详情"
+                          )
+                        )
                       )
                     )
-                  )
-                )
-              : [h("tr", { key: "empty" }, h("td", { colSpan: 5, className: "muted" }, "暂无执行记录。"))])
+                  : [h("tr", { key: "empty" }, h("td", { colSpan: 5, className: "muted" }, "暂无执行记录。"))])
+              )
+            )
           )
         )
       )
@@ -471,7 +502,21 @@ function setupRunReact() {
     const [run, setRun] = window.React.useState(initial.run);
     const [pollError, setPollError] = window.React.useState("");
     const [selectedTask, setSelectedTask] = window.React.useState(null);
+    const [taskLogsByKey, setTaskLogsByKey] = window.React.useState({});
+    const [taskLogError, setTaskLogError] = window.React.useState("");
+    const [taskLogLoading, setTaskLogLoading] = window.React.useState(false);
+    const [taskStateDetail, setTaskStateDetail] = window.React.useState(null);
+    const [taskStateLoading, setTaskStateLoading] = window.React.useState(false);
+    const [taskStateError, setTaskStateError] = window.React.useState("");
+    const [retryMode, setRetryMode] = window.React.useState("current");
+    const [retrySubmitting, setRetrySubmitting] = window.React.useState(false);
+    const [retryError, setRetryError] = window.React.useState("");
+    const [retryNotice, setRetryNotice] = window.React.useState("");
     const phases = Array.isArray(run.phase_results) ? run.phase_results : [];
+    const liveTaskStates = run && run.live_task_states && typeof run.live_task_states === "object" ? run.live_task_states : {};
+    const taskStateSummary =
+      run && run.task_state_summary && typeof run.task_state_summary === "object" ? run.task_state_summary : {};
+    const activeOperation = run && run.active_operation && typeof run.active_operation === "object" ? run.active_operation : null;
     const runStatus = String(run.status || "pending");
     const isRunning = runStatus === "pending" || runStatus === "running";
     const workflowNodes = Array.isArray(project.workflow_nodes) ? project.workflow_nodes : [];
@@ -518,6 +563,54 @@ function setupRunReact() {
     function toTaskLabel(taskKey) {
       const parts = String(taskKey || "").split(".");
       return parts.length > 1 ? parts[1] : String(taskKey || "");
+    }
+
+    function laneKind(agentName) {
+      const name = String(agentName || "").toLowerCase();
+      if (name.includes("reviewer")) return "review";
+      if (name.includes("designer") || name.includes("architect")) return "design";
+      if (name.includes("programmer") || name.includes("developer")) return "build";
+      if (name.includes("qa")) return "qa";
+      return "task";
+    }
+
+    function isParallelLane(agentName) {
+      return String(agentName || "").includes("[*]");
+    }
+
+    function buildPhaseRelations(phaseKey, agentTasks) {
+      const lanes = Array.isArray(agentTasks) ? agentTasks : [];
+      const badges = [];
+      const hints = [];
+      const hasManyLanes = lanes.length > 1;
+      const hasWildcardLane = lanes.some((lane) => isParallelLane(lane.agent));
+      const hasReviewer = lanes.some((lane) => String(lane.agent || "").toLowerCase().includes("reviewer"));
+      const hasDesignerOrBuilder = lanes.some((lane) => {
+        const n = String(lane.agent || "").toLowerCase();
+        return n.includes("designer") || n.includes("architect") || n.includes("programmer");
+      });
+
+      if (hasManyLanes) {
+        badges.push({ type: "split", label: `任务拆分 ${lanes.length} 路` });
+        hints.push("阶段内任务已按角色/子代理拆分");
+      }
+      if (hasWildcardLane || lanes.length >= 2) {
+        badges.push({ type: "parallel", label: "并发执行" });
+        hints.push("不同 lane 可并行推进，等待阶段汇总");
+      }
+      if (hasReviewer && hasDesignerOrBuilder) {
+        badges.push({ type: "collab", label: "设计/开发-评审协同" });
+        hints.push("设计/开发与评审形成往返反馈回路");
+      }
+      if (!badges.length) {
+        badges.push({ type: "sequence", label: "串行执行" });
+      } else {
+        badges.push({ type: "sequence", label: "阶段内有序编排" });
+      }
+      if (phaseKey === "testing") {
+        hints.push("QA 阶段先产出测试设计，再执行测试自动化与验收评审");
+      }
+      return { badges, hints };
     }
 
     function buildAgentTasksFromTaskItems(taskItems) {
@@ -591,6 +684,32 @@ function setupRunReact() {
       return { result: null, resultKey: "" };
     }
 
+    function getLiveTaskState(phaseKey, taskKey) {
+      const key = `${phaseKey}::${taskKey}`;
+      const value = liveTaskStates[key];
+      return value && typeof value === "object" ? value : null;
+    }
+
+    function getTaskStateSummaryItem(phaseKey, taskKey) {
+      const key = `${phaseKey}::${taskKey}`;
+      const value = taskStateSummary[key];
+      return value && typeof value === "object" ? value : null;
+    }
+
+    function summarizeLiveTaskProgress(liveState) {
+      if (!liveState || typeof liveState !== "object") return "";
+      const evt = liveState.last_event && typeof liveState.last_event === "object" ? liveState.last_event : null;
+      if (!evt) return "";
+      const meta = evt.purpose_meta && typeof evt.purpose_meta === "object" ? evt.purpose_meta : {};
+      const parts = [];
+      if (meta.subagent) parts.push(String(meta.subagent));
+      if (meta.step) parts.push(String(meta.step));
+      if (meta.fn) parts.push(`fn:${String(meta.fn)}`);
+      if (meta.subsystem) parts.push(`subsys:${String(meta.subsystem)}`);
+      const prefix = parts.length ? `${parts.join(" · ")} · ` : "";
+      return `${prefix}${String(evt.message || "")}`.slice(0, 160);
+    }
+
     function buildFlowData() {
       const phaseResultMap = {};
       phases.forEach((p) => {
@@ -628,13 +747,24 @@ function setupRunReact() {
         const agentTasks = rawAgentTasks.map((entry) => {
           const agent = String(entry.agent || "");
           const entryTasks = Array.isArray(entry.tasks) ? entry.tasks : [];
+          const laneType = laneKind(agent);
           return {
             agent,
+            laneType,
+            parallelized: isParallelLane(agent),
             tasks: entryTasks.map((task) => {
               const taskKey = String(task.key || "");
               const taskName = String(task.name || toTaskLabel(taskKey));
               const inputHints = Array.isArray(task.input_hints) ? task.input_hints : [];
               const { result: taskResult, resultKey } = resolveTaskResult(taskStatusMap, agent, phaseKey, taskKey);
+              const liveState = getLiveTaskState(phaseKey, taskKey);
+              const taskStateItem = getTaskStateSummaryItem(phaseKey, taskKey);
+              const resolvedStatus =
+                taskStateItem && typeof taskStateItem.latest_status === "string" && taskStateItem.latest_status
+                  ? String(taskStateItem.latest_status)
+                  : liveState && typeof liveState.status === "string" && liveState.status
+                  ? String(liveState.status)
+                  : normalizeTaskState(taskResult, phaseState);
               return {
                 phaseKey,
                 phaseTitle: phaseNameMap[phaseKey] || phaseKey,
@@ -642,13 +772,19 @@ function setupRunReact() {
                 key: taskKey,
                 name: taskName,
                 inputHints,
-                status: normalizeTaskState(taskResult, phaseState),
+                status: resolvedStatus,
                 runtimeResult: taskResult,
                 runtimeTaskKey: resultKey,
+                liveState,
+                taskStateItem,
+                progressText: summarizeLiveTaskProgress(liveState),
+                parallelized: isParallelLane(agent),
+                laneType,
               };
             }),
           };
         });
+        const relations = buildPhaseRelations(phaseKey, agentTasks);
 
         return {
           key: phaseKey,
@@ -657,6 +793,7 @@ function setupRunReact() {
           status: phaseState,
           tasks,
           agentTasks,
+          relations,
         };
       });
     }
@@ -668,13 +805,162 @@ function setupRunReact() {
           .flatMap((agentBlock) => agentBlock.tasks || [])
           .find((item) => item.phaseKey === selectedTask.phaseKey && item.key === selectedTask.taskKey) || null
       : null;
+    const selectedTaskStoreKey = selectedTaskDetail
+      ? `${selectedTaskDetail.phaseKey}::${selectedTaskDetail.key}`
+      : "";
+    const selectedTaskLogs = selectedTaskStoreKey ? taskLogsByKey[selectedTaskStoreKey] || [] : [];
+
+    window.React.useEffect(() => {
+      if (selectedTask) return;
+      const candidates = flowData
+        .flatMap((phase) => phase.agentTasks || [])
+        .flatMap((agentBlock) => agentBlock.tasks || []);
+      const preferred =
+        candidates.find((item) => item.status === "running" && item.liveState && item.liveState.last_event) ||
+        candidates.find((item) => item.status === "running") ||
+        candidates.find((item) => item.liveState && item.liveState.last_event) ||
+        null;
+      if (preferred) {
+        setSelectedTask({ phaseKey: preferred.phaseKey, taskKey: preferred.key });
+      }
+    }, [selectedTask, flowData]);
+
+    window.React.useEffect(() => {
+      let active = true;
+      if (!selectedTaskDetail) {
+        setTaskLogError("");
+        setTaskLogLoading(false);
+        return () => {
+          active = false;
+        };
+      }
+
+      async function refreshTaskLogs() {
+        setTaskLogLoading(true);
+        try {
+          const payload = await fetchJson(
+            `/api/projects/${encodeURIComponent(project.info.project_id)}/runs/${encodeURIComponent(
+              run.run_id
+            )}/task-logs?phase_key=${encodeURIComponent(selectedTaskDetail.phaseKey)}&task_key=${encodeURIComponent(
+              selectedTaskDetail.key
+            )}&limit=250`
+          );
+          if (!active) return;
+          const incoming = Array.isArray(payload.events) ? payload.events : [];
+          setTaskLogsByKey((prev) => {
+            const existing = Array.isArray(prev[selectedTaskStoreKey]) ? prev[selectedTaskStoreKey] : [];
+            const merged = [...existing];
+            const seen = new Set(existing.map((item) => String(item.id || "")));
+            incoming.forEach((item) => {
+              const id = String(item && item.id ? item.id : "");
+              if (!id || seen.has(id)) return;
+              seen.add(id);
+              merged.push(item);
+            });
+            merged.sort((a, b) => String(a.ts || "").localeCompare(String(b.ts || "")));
+            return { ...prev, [selectedTaskStoreKey]: merged };
+          });
+          setTaskLogError("");
+        } catch (err) {
+          if (!active) return;
+          setTaskLogError(err instanceof Error ? err.message : "任务日志加载失败");
+        } finally {
+          if (active) setTaskLogLoading(false);
+        }
+      }
+
+      refreshTaskLogs();
+      const timer = window.setInterval(refreshTaskLogs, isRunning ? 2500 : 6000);
+      return () => {
+        active = false;
+        window.clearInterval(timer);
+      };
+    }, [
+      project.info.project_id,
+      run.run_id,
+      isRunning,
+      selectedTaskStoreKey,
+      selectedTaskDetail && selectedTaskDetail.phaseKey,
+      selectedTaskDetail && selectedTaskDetail.key,
+    ]);
+
+    window.React.useEffect(() => {
+      let active = true;
+      if (!selectedTaskDetail) {
+        setTaskStateDetail(null);
+        setTaskStateError("");
+        setTaskStateLoading(false);
+        return () => {
+          active = false;
+        };
+      }
+      async function refreshTaskState() {
+        setTaskStateLoading(true);
+        try {
+          const payload = await fetchJson(
+            `/api/projects/${encodeURIComponent(project.info.project_id)}/runs/${encodeURIComponent(
+              run.run_id
+            )}/task-state?phase_key=${encodeURIComponent(selectedTaskDetail.phaseKey)}&task_key=${encodeURIComponent(
+              selectedTaskDetail.key
+            )}`
+          );
+          if (!active) return;
+          setTaskStateDetail(payload);
+          setTaskStateError("");
+        } catch (err) {
+          if (!active) return;
+          setTaskStateDetail(null);
+          setTaskStateError(err instanceof Error ? err.message : "任务记忆体加载失败");
+        } finally {
+          if (active) setTaskStateLoading(false);
+        }
+      }
+      refreshTaskState();
+      const timer = window.setInterval(refreshTaskState, isRunning ? 3000 : 6000);
+      return () => {
+        active = false;
+        window.clearInterval(timer);
+      };
+    }, [
+      project.info.project_id,
+      run.run_id,
+      isRunning,
+      selectedTaskDetail && selectedTaskDetail.phaseKey,
+      selectedTaskDetail && selectedTaskDetail.key,
+    ]);
+
+    async function submitRetry() {
+      if (!selectedTaskDetail || retrySubmitting) return;
+      setRetrySubmitting(true);
+      setRetryError("");
+      setRetryNotice("");
+      try {
+        const payload = await fetchJson(
+          `/api/projects/${encodeURIComponent(project.info.project_id)}/runs/${encodeURIComponent(run.run_id)}/task-retries`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              phase_key: selectedTaskDetail.phaseKey,
+              task_key: selectedTaskDetail.key,
+              mode: retryMode === "downstream" ? "downstream" : "current",
+            }),
+          }
+        );
+        setRetryNotice(`已提交重试: ${payload.op_id || ""}`);
+      } catch (err) {
+        setRetryError(err instanceof Error ? err.message : "任务重试提交失败");
+      } finally {
+        setRetrySubmitting(false);
+      }
+    }
 
     return h(
       "div",
-      null,
+      { className: "run-layout" },
       h(
         "section",
-        { className: "card card-glow" },
+        { className: "card card-glow run-summary-card" },
         h("h1", null, "工作流执行详情"),
         h(
           "p",
@@ -690,73 +976,154 @@ function setupRunReact() {
         h("p", null, `需求: ${run.requirement_text}`)
       ),
       h(
-        "section",
-        { className: "card" },
-        h("h2", null, "端到端流程图"),
+        "div",
+        { className: "run-main-grid" },
         h(
-          "div",
-          { className: "flow-chart-track" },
-          ...flowData.map((phase, index) =>
-            h(
-              "div",
-              {
-                key: `${phase.key}-${index}`,
-                className: `flow-step ${phase.status} ${index < flowData.length - 1 ? "has-next" : ""}`,
-              },
-              h("div", { className: "flow-step-dot" }, phase.status === "completed" ? "✓" : index + 1),
-              h("div", { className: "flow-step-title" }, phase.title),
-              h("div", { className: "flow-step-subtitle" }, phase.rawTitle),
-              phase.agentTasks && phase.agentTasks.length
-                ? h(
+          "section",
+          { className: "card run-flow-card" },
+          h("h2", null, "端到端流程图"),
+          h(
+            "div",
+            { className: "flow-chart-track" },
+            ...flowData.map((phase, index) =>
+              h(
+                "div",
+                {
+                  key: `${phase.key}-${index}`,
+                  className: `flow-step ${phase.status} ${index < flowData.length - 1 ? "has-next" : ""}`,
+                },
+                h("div", { className: "flow-step-dot" }, phase.status === "completed" ? "✓" : index + 1),
+                h(
+                  "div",
+                  { className: "flow-step-head" },
+                  h("div", { className: "flow-step-title" }, phase.title),
+                  h("div", { className: "flow-step-subtitle" }, phase.rawTitle),
+                  h(
                     "div",
-                    { className: "flow-agent-groups" },
-                    ...phase.agentTasks.map((agentBlock) =>
-                      h(
-                        "section",
-                        { className: "flow-agent-group", key: `${phase.key}-${agentBlock.agent}` },
-                        h("div", { className: "flow-agent-label" }, agentBlock.agent),
-                        h(
-                          "div",
-                          { className: "flow-agent-task-list" },
-                          ...(agentBlock.tasks || []).map((task) => {
-                            const selected =
-                              selectedTask && selectedTask.phaseKey === task.phaseKey && selectedTask.taskKey === task.key;
-                            return h(
-                              "button",
-                              {
-                                key: `${task.phaseKey}-${task.key}`,
-                                type: "button",
-                                className: `flow-agent-task ${task.status}${selected ? " active" : ""}`,
-                                onClick: () => setSelectedTask({ phaseKey: task.phaseKey, taskKey: task.key }),
-                              },
-                              task.name
-                            );
-                          })
-                        )
-                      )
-                    )
-                  )
-                : h(
-                    "div",
-                    { className: "flow-task-list" },
-                    ...phase.tasks.map((task) =>
+                    { className: "flow-phase-badges" },
+                    ...((phase.relations && phase.relations.badges) || []).map((badge) =>
                       h(
                         "span",
                         {
-                          key: `${phase.key}-${task.key}`,
-                          className: `flow-task-chip ${task.status}`,
+                          key: `${phase.key}-${badge.type}-${badge.label}`,
+                          className: `flow-badge ${badge.type}`,
                         },
-                        task.label
+                        badge.label
                       )
                     )
                   )
+                ),
+                phase.relations && Array.isArray(phase.relations.hints) && phase.relations.hints.length
+                  ? h(
+                      "ul",
+                      { className: "flow-relation-hints" },
+                      ...phase.relations.hints.map((hint, hintIdx) =>
+                        h("li", { key: `${phase.key}-hint-${hintIdx}` }, hint)
+                      )
+                    )
+                  : null,
+                phase.agentTasks && phase.agentTasks.length
+                  ? h(
+                      "div",
+                      { className: "flow-lane-grid" },
+                      ...phase.agentTasks.map((agentBlock) =>
+                        h(
+                          "section",
+                          {
+                            className: `flow-lane ${agentBlock.laneType || "task"}${
+                              agentBlock.parallelized ? " parallel" : ""
+                            }`,
+                            key: `${phase.key}-${agentBlock.agent}`,
+                          },
+                          h(
+                            "div",
+                            { className: "flow-lane-header" },
+                            h("div", { className: "flow-agent-label" }, agentBlock.agent),
+                            h(
+                              "div",
+                              { className: "flow-lane-meta" },
+                              h("span", { className: "flow-lane-kind" }, agentBlock.laneType || "task"),
+                              agentBlock.parallelized ? h("span", { className: "flow-lane-kind parallel" }, "并发实例") : null
+                            )
+                          ),
+                          h(
+                            "ol",
+                            { className: "flow-lane-task-list" },
+                            ...(agentBlock.tasks || []).map((task) => {
+                              const selected =
+                                selectedTask && selectedTask.phaseKey === task.phaseKey && selectedTask.taskKey === task.key;
+                              return h(
+                                "li",
+                                { key: `${task.phaseKey}-${task.key}` },
+                                h(
+                                  "button",
+                                  {
+                                    type: "button",
+                                    className: `flow-task-node ${task.status}${selected ? " active" : ""}`,
+                                    onClick: () => setSelectedTask({ phaseKey: task.phaseKey, taskKey: task.key }),
+                                  },
+                                  h(
+                                    "span",
+                                    { className: "flow-task-node-top" },
+                                    h("span", { className: "flow-task-node-name" }, task.name),
+                                    h(
+                                      "span",
+                                      { className: `flow-task-node-state ${task.status}` },
+                                      task.status === "completed"
+                                        ? "完成"
+                                        : task.status === "running"
+                                          ? "执行中"
+                                          : task.status === "failed"
+                                            ? "失败"
+                                            : "待执行"
+                                    )
+                                  ),
+                                  h(
+                                    "span",
+                                    { className: "flow-task-node-meta" },
+                                    task.parallelized ? "并发节点" : "串行节点",
+                                    task.liveState && typeof task.liveState.event_count === "number"
+                                      ? ` · 轨迹:${task.liveState.event_count}`
+                                      : "",
+                                    task.inputHints && task.inputHints.length
+                                      ? ` · 输入: ${task.inputHints.slice(0, 2).join(", ")}`
+                                      : ""
+                                  ),
+                                  task.progressText
+                                    ? h(
+                                        "span",
+                                        { className: "flow-task-node-progress", title: task.progressText },
+                                        task.progressText
+                                      )
+                                    : null
+                                )
+                              );
+                            })
+                          )
+                        )
+                      )
+                    )
+                  : h(
+                      "div",
+                      { className: "flow-task-list" },
+                      ...phase.tasks.map((task) =>
+                        h(
+                          "span",
+                          {
+                            key: `${phase.key}-${task.key}`,
+                            className: `flow-task-chip ${task.status}`,
+                          },
+                          task.label
+                        )
+                      )
+                    )
+              )
             )
           )
-        )
-      ),
-      h(
-        "section",
-        { className: "card" },
+        ),
+        h(
+          "section",
+          { className: "card run-task-card" },
         h("h2", null, "任务详细信息"),
         h(
           "div",
@@ -770,6 +1137,65 @@ function setupRunReact() {
                 h("p", null, `任务: ${selectedTaskDetail.name}`),
                 h("p", null, `任务Key: ${selectedTaskDetail.key}`),
                 h("p", null, `状态: ${selectedTaskDetail.status}`),
+                selectedTaskDetail.taskStateItem
+                  ? h(
+                      "p",
+                      { className: "muted" },
+                      `重试记录: ${selectedTaskDetail.taskStateItem.attempt_count || 0} 次 · 最新Attempt #${
+                        selectedTaskDetail.taskStateItem.latest_attempt_no || 0
+                      }`
+                    )
+                  : null,
+                h(
+                  "div",
+                  { className: "task-retry-controls" },
+                  h(
+                    "label",
+                    { className: "task-retry-mode" },
+                    "重试模式",
+                    h(
+                      "select",
+                      {
+                        value: retryMode,
+                        onChange: (e) => setRetryMode(String(e.target.value || "current")),
+                        disabled: !!(activeOperation && activeOperation.status === "running") || retrySubmitting,
+                      },
+                      h("option", { value: "current" }, "仅当前任务"),
+                      h("option", { value: "downstream" }, "当前任务 + 后续任务（跨阶段）")
+                    )
+                  ),
+                  h(
+                    "button",
+                    {
+                      type: "button",
+                      className: "secondary",
+                      onClick: submitRetry,
+                      disabled: !!(activeOperation && activeOperation.status === "running") || retrySubmitting,
+                    },
+                    retrySubmitting ? "提交中..." : "重试任务"
+                  )
+                ),
+                activeOperation && activeOperation.status === "running"
+                  ? h(
+                      "p",
+                      { className: "warning" },
+                      `当前有执行中的重试: ${activeOperation.phase_key || ""} / ${activeOperation.task_key || ""}`
+                    )
+                  : null,
+                retryError ? h("p", { className: "warning" }, retryError) : null,
+                retryNotice ? h("p", { className: "muted" }, retryNotice) : null,
+                selectedTaskDetail.liveState && selectedTaskDetail.liveState.last_event
+                  ? h(
+                      "div",
+                      { className: "task-live-summary" },
+                      h("p", null, "最近进展"),
+                      h(
+                        "pre",
+                        { className: "task-detail-json" },
+                        JSON.stringify(selectedTaskDetail.liveState.last_event, null, 2)
+                      )
+                    )
+                  : null,
                 selectedTaskDetail.runtimeTaskKey
                   ? h("p", { className: "muted" }, `运行时匹配任务: ${selectedTaskDetail.runtimeTaskKey}`)
                   : null,
@@ -782,6 +1208,90 @@ function setupRunReact() {
                 selectedTaskDetail.runtimeResult && selectedTaskDetail.runtimeResult.error
                   ? h("pre", { className: "error" }, String(selectedTaskDetail.runtimeResult.error))
                   : null,
+                h(
+                  "div",
+                  { className: "task-memory-panel" },
+                  h("h3", null, "任务记忆体"),
+                  taskStateLoading ? h("p", { className: "muted" }, "加载中...") : null,
+                  taskStateError ? h("p", { className: "warning" }, `加载失败: ${taskStateError}`) : null,
+                  taskStateDetail && taskStateDetail.task_state
+                    ? h(
+                        "div",
+                        null,
+                        h(
+                          "pre",
+                          { className: "task-detail-json" },
+                          JSON.stringify(taskStateDetail.task_state, null, 2)
+                        )
+                      )
+                    : !taskStateLoading && !taskStateError
+                      ? h("p", { className: "muted" }, "暂无任务记忆体（首次重试后将生成）。")
+                      : null
+                ),
+                h(
+                  "div",
+                  { className: "task-log-panel" },
+                  h(
+                    "div",
+                    { className: "task-log-header" },
+                    h("h3", null, "任务日志"),
+                    h(
+                      "p",
+                      { className: "muted" },
+                      `${taskLogLoading ? "刷新中" : "已同步"} · ${selectedTaskLogs.length} 条`
+                    )
+                  ),
+                  taskLogError ? h("p", { className: "warning" }, `日志加载失败: ${taskLogError}`) : null,
+                  selectedTaskLogs.length
+                    ? h(
+                        "div",
+                        { className: "task-log-list" },
+                        ...selectedTaskLogs.map((evt) =>
+                          h(
+                            "article",
+                            {
+                              key: String(evt.id || `${evt.ts}-${evt.message}`),
+                              className: `task-log-item ${String(evt.level || "info")}`,
+                            },
+                            h(
+                              "div",
+                              { className: "task-log-item-head" },
+                              h("span", { className: "task-log-ts" }, String(evt.ts || "")),
+                              h("span", { className: "task-log-source" }, String(evt.source || "log")),
+                              h("span", { className: `task-log-level ${String(evt.level || "info")}` }, String(evt.level || "info"))
+                            ),
+                            h("div", { className: "task-log-message" }, String(evt.message || "")),
+                            evt.source === "trace" && evt.details && typeof evt.details === "object"
+                              ? (() => {
+                                  const meta = evt.details.purpose_meta && typeof evt.details.purpose_meta === "object"
+                                    ? evt.details.purpose_meta
+                                    : {};
+                                  const providerMeta =
+                                    evt.details.provider_response_meta && typeof evt.details.provider_response_meta === "object"
+                                      ? evt.details.provider_response_meta
+                                      : {};
+                                  const tags = [];
+                                  ["subagent", "step", "round", "subsystem", "fn", "module", "reviewer", "owner"].forEach((k) => {
+                                    if (meta[k]) tags.push(`${k}:${meta[k]}`);
+                                  });
+                                  if (providerMeta.finish_reason) tags.push(`finish:${providerMeta.finish_reason}`);
+                                  return tags.length
+                                    ? h(
+                                        "div",
+                                        { className: "task-log-tags" },
+                                        ...tags.map((tag) => h("span", { key: `${evt.id}-${tag}`, className: "task-log-tag" }, tag))
+                                      )
+                                    : null;
+                                })()
+                              : null,
+                            evt.details
+                              ? h("pre", { className: "task-log-details" }, JSON.stringify(evt.details, null, 2))
+                              : null
+                          )
+                        )
+                      )
+                    : h("p", { className: "muted" }, "暂无任务日志，等待任务启动或日志写入。")
+                ),
                 h(
                   "pre",
                   { className: "task-detail-json" },
@@ -799,6 +1309,7 @@ function setupRunReact() {
               )
             : h("p", { className: "muted" }, "点击上方任意任务以查看详细信息。")
         )
+      )
       )
     );
   }

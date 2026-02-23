@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 
 from ..config import ModelConfig
-from ..core.artifact import ArtifactType
+from ..core.artifact import ArtifactStore, ArtifactType
 from ..core.skill import SkillContext
 from ..utils.logging import get_logger
 from .deep_agent_adapter import create_runtime_agent, extract_text_from_runtime_result
@@ -355,22 +355,84 @@ def _execute_playbook_skills(
 ) -> tuple[str, list[str]]:
     produced_artifact_ids: list[str] = []
     executed: list[str] = []
+    recorder = defaults.get("_task_memory_recorder")
+    run_id = str(defaults.get("_run_id", ""))
+    project_id = str(defaults.get("_project_id", ""))
     for skill_name in skill_names:
         input_data = _build_skill_input(skill_name, defaults)
-        artifact = agent.execute_skill(
-            skill_name=skill_name,
-            input_data=input_data,
-            project_name=project_name,
-            parameters={
-                **base_parameters,
-                "phase": phase,
-                "agent_name": agent.name,
-                "project_name": project_name,
-                "input_defaults": defaults,
-            },
-        )
+        task_key = f"{agent.name}.{skill_name}"
+        attempt_no = 0
+        if hasattr(recorder, "record_task_attempt_start"):
+            started = recorder.record_task_attempt_start(
+                phase_key=phase,
+                task_key=task_key,
+                display_name=skill_name,
+                kind="initial",
+                mode="current",
+                executor={
+                    "agent": agent.name,
+                    "skill": skill_name,
+                    "task_key": task_key,
+                    "execution_scope": "full_skill",
+                },
+            )
+            attempt = started.get("attempt", {}) if isinstance(started, dict) else {}
+            attempt_no = int((attempt or {}).get("attempt_no", 0) or 0)
+            if hasattr(recorder, "record_task_attempt_context"):
+                recorder.record_task_attempt_context(
+                    phase_key=phase,
+                    task_key=task_key,
+                    attempt_no=attempt_no,
+                    context={
+                        "input_hints": list(SKILL_INPUT_HINTS.get(skill_name, [])),
+                        "input_keys": sorted(input_data.keys()),
+                        "notes": [f"run_id:{run_id}"] if run_id else [],
+                        "project_id": project_id,
+                    },
+                )
+        try:
+            artifact = agent.execute_skill(
+                skill_name=skill_name,
+                input_data=input_data,
+                project_name=project_name,
+                parameters={
+                    **base_parameters,
+                    "phase": phase,
+                    "agent_name": agent.name,
+                    "project_name": project_name,
+                    "input_defaults": defaults,
+                    "task_memory_recorder": recorder,
+                    "phase_key": phase,
+                    "run_id": run_id,
+                },
+            )
+        except Exception as exc:
+            if hasattr(recorder, "record_task_attempt_end") and attempt_no:
+                recorder.record_task_attempt_end(
+                    phase_key=phase,
+                    task_key=task_key,
+                    attempt_no=attempt_no,
+                    status="failed",
+                    error=str(exc),
+                )
+            raise
         produced_artifact_ids.append(artifact.id)
         executed.append(skill_name)
+        if hasattr(recorder, "record_task_attempt_output") and attempt_no:
+            recorder.record_task_attempt_output(
+                phase_key=phase,
+                task_key=task_key,
+                attempt_no=attempt_no,
+                outputs={"artifact_ids": [artifact.id]},
+            )
+        if hasattr(recorder, "record_task_attempt_end") and attempt_no:
+            recorder.record_task_attempt_end(
+                phase_key=phase,
+                task_key=task_key,
+                attempt_no=attempt_no,
+                status="completed",
+                error="",
+            )
     summary = (
         f"{agent.name} completed phase '{phase}' via direct playbook execution. "
         f"skills={executed} artifacts={len(produced_artifact_ids)}"
@@ -424,6 +486,33 @@ def _build_default_input_data(
             defaults.setdefault(alias, artifact.content)
 
     return defaults
+
+
+def build_retry_skill_input(
+    *,
+    artifact_store: ArtifactStore,
+    skill_name: str,
+    project_input: dict[str, Any],
+    phase: str,
+    phase_results: dict[str, Any] | None = None,
+    artifact_ids: list[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build retry input payload and defaults using the same artifact-derived context as agent nodes."""
+    context = SkillContext(artifact_store=artifact_store)
+    state: AgentWorkflowState = {
+        "messages": [],
+        "project_name": str(project_input.get("project_name", "")) if isinstance(project_input, dict) else "",
+        "project_input": dict(project_input) if isinstance(project_input, dict) else {},
+        "current_phase": phase,
+        "phase_results": dict(phase_results or {}),
+        "artifact_ids": list(artifact_ids or []),
+        "next_agent": "",
+        "error": None,
+        "iteration": 0,
+    }
+    defaults = _build_default_input_data(context, state, phase)
+    payload = _build_skill_input(skill_name, defaults)
+    return payload, defaults
 
 
 def _build_task_prompt(

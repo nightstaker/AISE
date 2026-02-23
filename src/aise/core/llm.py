@@ -33,6 +33,7 @@ class LLMClient:
         self.config = config
         self._call_context: dict[str, Any] = {}
         self._active_call_id: str = ""
+        self._last_response_meta: dict[str, Any] = {}
 
     @property
     def provider(self) -> str:
@@ -55,6 +56,7 @@ class LLMClient:
         """
         call_id = uuid4().hex
         self._active_call_id = call_id
+        self._last_response_meta = {}
         started_at = datetime.now()
         purpose = str(kwargs.get("llm_purpose", "")).strip() or self._derive_call_purpose()
         trace_meta = self._build_trace_meta(
@@ -82,7 +84,14 @@ class LLMClient:
         )
         try:
             result, attempts = self._complete_with_provider_failover(messages, **kwargs)
-            self._write_trace_file(trace_meta | {"output": result, "attempts": attempts})
+            self._write_trace_file(
+                trace_meta
+                | {
+                    "output": result,
+                    "attempts": attempts,
+                    "provider_response_meta": self._safe_json(self._last_response_meta),
+                }
+            )
             logger.info(
                 "Inference response: call_id=%s provider=%s model=%s result=%s",
                 call_id,
@@ -103,6 +112,7 @@ class LLMClient:
                 | {
                     "output": "",
                     "error": {"type": type(exc).__name__, "message": str(exc)},
+                    "provider_response_meta": self._safe_json(self._last_response_meta),
                 }
             )
             raise
@@ -127,31 +137,24 @@ class LLMClient:
 
         payload = self._build_common_payload(messages, **kwargs)
         try:
-            stream = client.responses.create(stream=True, **payload)
+            stream = client.responses.create(
+                stream=True,
+                timeout=self._resolve_stream_event_timeout_seconds(),
+                **payload,
+            )
             for event in stream:
                 delta = self._extract_event_text(event)
                 if delta:
                     yield delta
             return
         except Exception:
-            pass
-
-        chat_payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": [{"role": str(m.get("role", "user")), "content": str(m.get("content", ""))} for m in messages],
-            "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
-        }
-        if "tools" in kwargs:
-            chat_payload["tools"] = kwargs["tools"]
-        chat_payload.update(self.config.extra)
-        for chunk in client.chat.completions.create(stream=True, **chat_payload):
-            choices = getattr(chunk, "choices", None) or []
-            for choice in choices:
-                delta = getattr(choice, "delta", None)
-                content = getattr(delta, "content", "") if delta is not None else ""
-                if content:
-                    yield str(content)
+            logger.debug(
+                "Responses streaming API failed in stream(): provider=%s model=%s",
+                self.provider,
+                self.model,
+                exc_info=True,
+            )
+            raise
 
     def _complete_openai_compatible(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         client = self._build_openai_client()
@@ -161,11 +164,7 @@ class LLMClient:
             )
         if bool(kwargs.pop("stream", False)):
             return self._complete_with_stream(client, messages, **kwargs)
-        # Structured JSON generation is more stable on chat.completions across
-        # OpenAI-compatible providers than Responses API in this workflow.
-        if "response_format" in kwargs:
-            return self._complete_with_chat_completions(client, messages, **kwargs)
-        return self._complete_with_responses(client, messages, **kwargs)
+        return self._complete_with_stream(client, messages, **kwargs)
 
     def _complete_with_provider_failover(
         self,
@@ -182,7 +181,10 @@ class LLMClient:
             self.config = cfg
             for attempt_index in range(1, max_attempts_per_provider + 1):
                 try:
-                    result = self._complete_openai_compatible(messages, **kwargs)
+                    attempt_client = self._build_attempt_client(cfg)
+                    result = attempt_client._complete_openai_compatible(messages, **dict(kwargs))
+                    response_meta = dict(attempt_client._last_response_meta or {})
+                    self._last_response_meta = dict(response_meta or {})
                     if not result.strip():
                         raise RuntimeError("Empty response from LLM provider")
                     attempts.append(
@@ -227,7 +229,7 @@ class LLMClient:
                         type(exc).__name__,
                         str(exc),
                         details,
-                        exc_info=True,
+                        exc_info=self._should_log_retry_traceback(exc, attempt_index, max_attempts_per_provider),
                     )
                     last_error = exc
 
@@ -247,6 +249,17 @@ class LLMClient:
                 f"All LLM providers failed for model={original_config.model} provider={original_config.provider}"
             ) from last_error
         raise RuntimeError("All LLM providers failed with unknown errors")
+
+    def _build_attempt_client(self, cfg: ModelConfig) -> LLMClient:
+        attempt_client = self.__class__(cfg)
+        attempt_client.set_call_context(dict(self._call_context))
+        attempt_client._active_call_id = self._active_call_id
+        # Preserve instance-level monkeypatches/hooks (commonly used in unit tests and
+        # local overrides) when provider failover spawns a per-attempt client.
+        for attr_name in ("_complete_openai_compatible", "_build_openai_client", "_provider_chain"):
+            if attr_name in self.__dict__:
+                setattr(attempt_client, attr_name, self.__dict__[attr_name])
+        return attempt_client
 
     def _provider_chain(self) -> list[ModelConfig]:
         chain = [self.config]
@@ -291,6 +304,7 @@ class LLMClient:
             api_key=api_key,
             base_url=base_url,
             timeout=self._resolve_timeout_seconds(),
+            max_retries=0,
         )
 
     def _resolve_api_key(self) -> str:
@@ -414,7 +428,12 @@ class LLMClient:
         payload: dict[str, Any] = self._build_common_payload(messages, **kwargs)
         chunks: list[str] = []
         try:
-            stream = self._call_with_filtered_kwargs(client.responses.create, payload, stream=True)
+            stream = self._call_with_filtered_kwargs(
+                client.responses.create,
+                payload,
+                stream=True,
+                timeout=self._resolve_stream_event_timeout_seconds(),
+            )
             for event in stream:
                 delta = self._extract_event_text(event)
                 if delta:
@@ -424,10 +443,7 @@ class LLMClient:
                 return text
         except Exception as exc:
             logger.debug(
-                (
-                    "Responses streaming API failed, falling back to chat.completions stream: "
-                    "provider=%s model=%s error_type=%s error=%s details=%s"
-                ),
+                ("Responses streaming API failed: provider=%s model=%s error_type=%s error=%s details=%s"),
                 self.provider,
                 self.model,
                 type(exc).__name__,
@@ -435,7 +451,7 @@ class LLMClient:
                 self._extract_exception_details(exc),
                 exc_info=True,
             )
-        return self._complete_with_chat_completions(client, messages, stream=True, **kwargs)
+            raise
 
     def _complete_with_chat_completions(
         self,
@@ -458,20 +474,33 @@ class LLMClient:
         payload.update(self.config.extra)
         if stream:
             chunks: list[str] = []
-            stream_obj = self._call_with_filtered_kwargs(client.chat.completions.create, payload, stream=True)
+            finish_reason = ""
+            stream_obj = self._call_with_filtered_kwargs(
+                client.chat.completions.create,
+                payload,
+                stream=True,
+                timeout=self._resolve_stream_event_timeout_seconds(),
+            )
             for chunk in stream_obj:
                 choices = getattr(chunk, "choices", None) or []
                 for choice in choices:
+                    reason = getattr(choice, "finish_reason", None)
+                    if reason:
+                        finish_reason = str(reason)
                     delta = getattr(choice, "delta", None)
                     content = getattr(delta, "content", "") if delta is not None else ""
                     if content:
                         chunks.append(str(content))
+            if finish_reason:
+                self._last_response_meta = dict(self._last_response_meta or {})
+                self._last_response_meta["finish_reason"] = finish_reason
             return "".join(chunks).strip()
 
         response = self._call_with_filtered_kwargs(client.chat.completions.create, payload)
         choices = getattr(response, "choices", None) or []
         if not choices:
             return ""
+        self._capture_response_meta(response)
         message = getattr(choices[0], "message", None)
         content = getattr(message, "content", "") if message is not None else ""
         return str(content).strip()
@@ -501,6 +530,7 @@ class LLMClient:
     def _extract_response_text(self, response: Any) -> str:
         direct = getattr(response, "output_text", None)
         if isinstance(direct, str):
+            self._capture_response_meta(response)
             return direct
 
         # SDK object path
@@ -522,7 +552,41 @@ class LLMClient:
                     text = part.get("text")
                 if isinstance(text, str):
                     chunks.append(text)
+        self._capture_response_meta(response)
         return "".join(chunks).strip()
+
+    def _capture_response_meta(self, response: Any) -> None:
+        meta: dict[str, Any] = {}
+        finish_reason = self._extract_finish_reason(response)
+        if finish_reason:
+            meta["finish_reason"] = finish_reason
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            meta["usage"] = self._safe_json(usage)
+        if meta:
+            self._last_response_meta = meta
+
+    def _extract_finish_reason(self, response: Any) -> str:
+        # Chat Completions shape
+        choices = getattr(response, "choices", None)
+        if choices is None and isinstance(response, dict):
+            choices = response.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            finish = getattr(first, "finish_reason", None)
+            if finish is None and isinstance(first, dict):
+                finish = first.get("finish_reason")
+            if finish:
+                return str(finish)
+
+        # Responses API shape (best effort; provider SDKs vary)
+        for attr in ("finish_reason", "status"):
+            value = getattr(response, attr, None)
+            if value:
+                return str(value)
+            if isinstance(response, dict) and response.get(attr):
+                return str(response.get(attr))
+        return ""
 
     def _extract_event_text(self, event: Any) -> str:
         event_type = getattr(event, "type", None)
@@ -608,8 +672,20 @@ class LLMClient:
 
         return details
 
+    def _should_log_retry_traceback(self, exc: Exception, attempt_index: int, max_attempts: int) -> bool:
+        if attempt_index >= max_attempts:
+            return True
+        error_type = type(exc).__name__.lower()
+        if "connection" in error_type or "timeout" in error_type:
+            return False
+        message = str(exc).lower()
+        if "connection error" in message or "timed out" in message:
+            return False
+        return True
+
     _UNEXPECTED_KWARG_RE = re.compile(r"unexpected keyword argument '([^']+)'")
     _DEFAULT_TIMEOUT_SECONDS = 45.0
+    _DEFAULT_STREAM_EVENT_TIMEOUT_SECONDS = 120.0
 
     def _resolve_timeout_seconds(self) -> float:
         raw = os.environ.get("AISE_LLM_TIMEOUT_SECONDS", "").strip()
@@ -620,3 +696,13 @@ class LLMClient:
             return value if value > 0 else self._DEFAULT_TIMEOUT_SECONDS
         except ValueError:
             return self._DEFAULT_TIMEOUT_SECONDS
+
+    def _resolve_stream_event_timeout_seconds(self) -> float:
+        raw = os.environ.get("AISE_LLM_STREAM_EVENT_TIMEOUT_SECONDS", "").strip()
+        if not raw:
+            return self._DEFAULT_STREAM_EVENT_TIMEOUT_SECONDS
+        try:
+            value = float(raw)
+            return value if value > 0 else 0.0
+        except ValueError:
+            return self._DEFAULT_STREAM_EVENT_TIMEOUT_SECONDS

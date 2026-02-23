@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import shutil
 import uuid
@@ -24,7 +25,9 @@ from ..config import ProjectConfig
 from ..core.artifact import Artifact, ArtifactType
 from ..core.project import Project, ProjectStatus
 from ..core.project_manager import ProjectManager
+from ..core.task_state import RunTaskStateStore, TaskDocRef, TaskMemoryRecorder
 from ..core.workflow import WorkflowEngine
+from ..langchain.agent_node import SKILL_INPUT_HINTS, build_retry_skill_input
 from ..main import create_team
 from ..utils.logging import configure_logging, configure_module_file_logger, get_logger
 
@@ -57,6 +60,17 @@ class RequirementEntry:
     text: str
     created_at: datetime
     source: str = "web"
+
+
+@dataclass
+class TaskExecUnit:
+    phase_key: str
+    task_key: str
+    agent_name: str
+    skill_name: str
+    execution_scope: str = "full_skill"
+    downstream_index: int = 0
+    display_name: str = ""
 
 
 class WebProjectService:
@@ -158,11 +172,156 @@ class WebProjectService:
 
     def get_run(self, project_id: str, run_id: str) -> dict[str, Any] | None:
         with self._lock:
+            project = self.project_manager.get_project(project_id)
             run = self._find_run(project_id, run_id)
             if run is not None:
                 payload = self._serialize_run(run)
-                return self._augment_live_phase_results(project_id, payload)
+                payload = self._augment_live_phase_results(project_id, payload, run=run, project=project)
+                task_summary = self.get_run_task_state_summary(project_id, run_id)
+                payload["task_state_summary"] = task_summary.get("tasks", {})
+                payload["active_operation"] = task_summary.get("active_operation")
+                payload["retry_supported"] = True
+                payload["retry_modes"] = ["current", "downstream"]
+                return payload
         return None
+
+    def get_task_logs(
+        self,
+        project_id: str,
+        run_id: str,
+        *,
+        phase_key: str,
+        task_key: str,
+        limit: int = 300,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            project = self.project_manager.get_project(project_id)
+            run = self._find_run(project_id, run_id)
+            if project is None or run is None:
+                return None
+
+            events: list[dict[str, Any]] = []
+            events.extend(self._collect_runtime_task_events(run, phase_key=phase_key, task_key=task_key))
+            events.extend(self._collect_trace_task_events(project, run, phase_key=phase_key, task_key=task_key))
+            events.extend(self._collect_app_log_events(project, run, phase_key=phase_key, task_key=task_key))
+
+            def _sort_key(item: dict[str, Any]) -> tuple[str, str]:
+                return (str(item.get("ts", "")), str(item.get("id", "")))
+
+            dedup: dict[str, dict[str, Any]] = {}
+            for item in sorted(events, key=_sort_key):
+                event_id = str(item.get("id", "")).strip()
+                if not event_id:
+                    continue
+                dedup[event_id] = item
+
+            merged = sorted(dedup.values(), key=_sort_key)
+            if limit > 0:
+                merged = merged[-limit:]
+
+            return {
+                "project_id": project_id,
+                "run_id": run_id,
+                "phase_key": phase_key,
+                "task_key": task_key,
+                "events": merged,
+            }
+
+    def get_task_state(
+        self,
+        project_id: str,
+        run_id: str,
+        *,
+        phase_key: str,
+        task_key: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            project = self.project_manager.get_project(project_id)
+            run = self._find_run(project_id, run_id)
+            if project is None or run is None:
+                return None
+            store = self._run_task_state_store(project_id, run_id)
+            item = store.get_task(phase_key, task_key)
+            summary = store.summary()
+            return {
+                "project_id": project_id,
+                "run_id": run_id,
+                "phase_key": phase_key,
+                "task_key": task_key,
+                "task_state": item,
+                "active_operation": summary.get("active_operation"),
+            }
+
+    def get_run_task_state_summary(self, project_id: str, run_id: str) -> dict[str, Any]:
+        store = self._run_task_state_store(project_id, run_id)
+        return store.summary()
+
+    def retry_task(
+        self,
+        project_id: str,
+        run_id: str,
+        *,
+        phase_key: str,
+        task_key: str,
+        mode: str = "current",
+    ) -> dict[str, Any]:
+        normalized_mode = "downstream" if str(mode).strip().lower() == "downstream" else "current"
+        with self._lock:
+            project = self.project_manager.get_project(project_id)
+            run = self._find_run(project_id, run_id)
+            if project is None or run is None:
+                raise ValueError("Run not found")
+            if str(run.status).lower() in {"pending", "running"}:
+                store_check = self._run_task_state_store(project_id, run_id).load().get("active_operation")
+                if not (isinstance(store_check, dict) and str(store_check.get("status", "")).lower() == "running"):
+                    raise RuntimeError("当前 run 正在执行中，暂不支持并发任务重试")
+            store = self._run_task_state_store(project_id, run_id)
+            current_state = store.load()
+            active = current_state.get("active_operation")
+            if isinstance(active, dict) and str(active.get("status", "")).lower() == "running":
+                raise RuntimeError("当前 run 已有任务正在执行/重试，请稍后再试")
+
+            plan = self._build_task_execution_plan(
+                project,
+                run,
+                phase_key=phase_key,
+                task_key=task_key,
+                mode=normalized_mode,
+            )
+            if not plan:
+                raise ValueError("未找到可执行任务计划")
+
+            op_id = f"retry_{uuid.uuid4().hex[:10]}"
+            active_op = {
+                "op_id": op_id,
+                "type": "task_retry",
+                "status": "running",
+                "phase_key": phase_key,
+                "task_key": task_key,
+                "mode": normalized_mode,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+            }
+            store.set_active_operation(active_op)
+            run.status = "running"
+            run.error = ""
+            self._save_state()
+
+        Thread(
+            target=self._execute_task_retry,
+            args=(project_id, run_id, plan, active_op),
+            daemon=True,
+        ).start()
+
+        return {
+            "accepted": True,
+            "status": "queued",
+            "op_id": op_id,
+            "project_id": project_id,
+            "run_id": run_id,
+            "phase_key": phase_key,
+            "task_key": task_key,
+            "mode": normalized_mode,
+        }
 
     def run_requirement(self, project_id: str, requirement_text: str) -> str:
         """Submit requirement and execute workflow asynchronously."""
@@ -214,7 +373,187 @@ class WebProjectService:
 
         return run_id
 
+    def _execute_task_retry(
+        self,
+        project_id: str,
+        run_id: str,
+        plan: list[TaskExecUnit],
+        active_op: dict[str, Any],
+    ) -> None:
+        store = self._run_task_state_store(project_id, run_id)
+        op_id = str(active_op.get("op_id", ""))
+        error_message = ""
+        try:
+            for index, unit in enumerate(plan):
+                self._execute_task_exec_unit(
+                    project_id=project_id,
+                    run_id=run_id,
+                    unit=TaskExecUnit(
+                        phase_key=unit.phase_key,
+                        task_key=unit.task_key,
+                        agent_name=unit.agent_name,
+                        skill_name=unit.skill_name,
+                        execution_scope=unit.execution_scope,
+                        downstream_index=index,
+                        display_name=unit.display_name,
+                    ),
+                    mode=str(active_op.get("mode", "current")),
+                    kind="retry",
+                )
+        except Exception as exc:
+            logger.exception("Task retry failed: project_id=%s run_id=%s op_id=%s", project_id, run_id, op_id)
+            error_message = str(exc)
+        finally:
+            with self._lock:
+                run = self._find_run(project_id, run_id)
+                if run is not None:
+                    run.error = error_message
+                    run.status = "failed" if error_message else "completed"
+                    run.completed_at = datetime.now(timezone.utc)
+                    self._save_state()
+            latest = store.load()
+            active = latest.get("active_operation")
+            if isinstance(active, dict) and str(active.get("op_id", "")) == op_id:
+                latest["active_operation"] = {
+                    **active,
+                    "status": "failed" if error_message else "completed",
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "error": error_message,
+                }
+                store.save(latest)
+
+    def _execute_task_exec_unit(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        unit: TaskExecUnit,
+        mode: str,
+        kind: str,
+    ) -> None:
+        with self._lock:
+            project = self.project_manager.get_project(project_id)
+            run = self._find_run(project_id, run_id)
+            if project is None or run is None:
+                raise ValueError("Run not found")
+            project_input = {
+                "raw_requirements": run.requirement_text,
+                "user_memory": [
+                    entry.text for entry in self._requirements_by_project.get(project_id, []) if entry.text.strip()
+                ],
+                "_run_id": run_id,
+                "_project_id": project_id,
+            }
+            phase_results_map = self._phase_results_to_deep_result_map(run.phase_results)
+            artifact_ids = self._collect_artifact_ids_from_phase_results(run.phase_results)
+            retry_input, defaults = build_retry_skill_input(
+                artifact_store=project.orchestrator.artifact_store,
+                skill_name=unit.skill_name,
+                project_input=project_input,
+                phase=unit.phase_key,
+                phase_results=phase_results_map,
+                artifact_ids=artifact_ids,
+            )
+            recorder = TaskMemoryRecorder(self._run_task_state_store(project_id, run_id))
+            retry_input.setdefault("retry_task_key", unit.task_key)
+            retry_input.setdefault("retry_mode", mode)
+
+            attempt_started = recorder.record_task_attempt_start(
+                phase_key=unit.phase_key,
+                task_key=unit.task_key,
+                display_name=unit.display_name or unit.task_key.rsplit(".", 1)[-1],
+                kind=kind,
+                mode=mode,
+                executor={
+                    "agent": unit.agent_name,
+                    "skill": unit.skill_name,
+                    "task_key": unit.task_key,
+                    "execution_scope": unit.execution_scope,
+                },
+            )
+            attempt = attempt_started.get("attempt", {})
+            attempt_no = int((attempt or {}).get("attempt_no", 0) or 0)
+
+            input_hints = self._task_input_hints_from_workflow(project, unit.phase_key, unit.task_key)
+            doc_refs = [ref.to_dict() for ref in self._resolve_doc_refs_for_task(project, input_hints, unit.task_key)]
+            recorder.record_task_attempt_context(
+                phase_key=unit.phase_key,
+                task_key=unit.task_key,
+                attempt_no=attempt_no,
+                context={
+                    "input_hints": input_hints,
+                    "input_keys": sorted(retry_input.keys()),
+                    "doc_refs": doc_refs,
+                    "notes": self._retry_notes_for_task(unit.task_key, unit.execution_scope),
+                },
+            )
+
+        agent = project.orchestrator.agents.get(unit.agent_name) if project is not None else None
+        if agent is None:
+            recorder.record_task_attempt_end(
+                phase_key=unit.phase_key,
+                task_key=unit.task_key,
+                attempt_no=attempt_no,
+                status="failed",
+                error=f"agent not found: {unit.agent_name}",
+            )
+            raise ValueError(f"agent not found: {unit.agent_name}")
+
+        parameters = {
+            "project_root": project.project_root or "",
+            "phase": unit.phase_key,
+            "phase_key": unit.phase_key,
+            "agent_name": unit.agent_name,
+            "project_name": project.config.project_name if getattr(project, "config", None) else "",
+            "input_defaults": defaults,
+            "task_memory_recorder": recorder,
+            "retry_task_key": unit.task_key,
+            "retry_mode": mode,
+            "execution_scope": unit.execution_scope,
+            "run_id": run_id,
+            "project_id": project_id,
+        }
+        if "_task_memory_recorder" not in retry_input:
+            retry_input["_task_memory_recorder"] = recorder
+        if "_run_id" not in retry_input:
+            retry_input["_run_id"] = run_id
+        if "_project_id" not in retry_input:
+            retry_input["_project_id"] = project_id
+
+        try:
+            artifact = agent.execute_skill(
+                skill_name=unit.skill_name,
+                input_data=retry_input,
+                project_name=project.config.project_name if getattr(project, "config", None) else "",
+                parameters=parameters,
+            )
+            outputs = self._extract_task_outputs(project, artifact)
+            recorder.record_task_attempt_output(
+                phase_key=unit.phase_key,
+                task_key=unit.task_key,
+                attempt_no=attempt_no,
+                outputs=outputs,
+            )
+            recorder.record_task_attempt_end(
+                phase_key=unit.phase_key,
+                task_key=unit.task_key,
+                attempt_no=attempt_no,
+                status="completed",
+                error="",
+            )
+        except Exception as exc:
+            recorder.record_task_attempt_end(
+                phase_key=unit.phase_key,
+                task_key=unit.task_key,
+                attempt_no=attempt_no,
+                status="failed",
+                error=str(exc),
+            )
+            raise
+
     def _execute_workflow_run(self, project_id: str, run_id: str, requirement: str) -> None:
+        task_store = self._run_task_state_store(project_id, run_id)
+        task_recorder = TaskMemoryRecorder(task_store)
         with self._lock:
             run = self._find_run(project_id, run_id)
             if run is None:
@@ -229,7 +568,13 @@ class WebProjectService:
         try:
             results = self.project_manager.run_project_workflow(
                 project_id,
-                {"raw_requirements": requirement, "user_memory": memory_items},
+                {
+                    "raw_requirements": requirement,
+                    "user_memory": memory_items,
+                    "_task_memory_recorder": task_recorder,
+                    "_run_id": run_id,
+                    "_project_id": project_id,
+                },
             )
             completed_status = "completed"
             error_message = ""
@@ -271,21 +616,770 @@ class WebProjectService:
                 return run
         return None
 
-    def _augment_live_phase_results(self, project_id: str, run_payload: dict[str, Any]) -> dict[str, Any]:
+    def _run_task_state_store(self, project_id: str, run_id: str) -> RunTaskStateStore:
+        project = self.project_manager.get_project(project_id)
+        if project is None or not project.project_root:
+            # Fallback path under projects root for robustness.
+            path = self.project_manager._projects_root / project_id / "runs" / f"{run_id}.task_state.json"
+        else:
+            path = Path(project.project_root) / "runs" / f"{run_id}.task_state.json"
+        return RunTaskStateStore(path, project_id=project_id, run_id=run_id)
+
+    def _phase_results_to_deep_result_map(self, phase_results: list[dict[str, Any]]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if not isinstance(phase_results, list):
+            return out
+        for row in phase_results:
+            if not isinstance(row, dict):
+                continue
+            phase = str(row.get("phase", "")).strip()
+            if not phase:
+                continue
+            status = str(row.get("status", "")).strip().lower()
+            tasks = row.get("tasks", {})
+            agent_name = ""
+            if isinstance(tasks, dict):
+                for key in tasks:
+                    if isinstance(key, str) and "." in key:
+                        agent_name = key.split(".", 1)[0]
+                        if agent_name:
+                            break
+            if not agent_name:
+                agent_name = {
+                    "requirements": "product_manager",
+                    "design": "architect",
+                    "implementation": "developer",
+                    "testing": "qa_engineer",
+                }.get(phase, "unknown_agent")
+            out[f"{phase}_{agent_name}"] = "completed" if status == "completed" else "failed"
+        return out
+
+    def _collect_artifact_ids_from_phase_results(self, phase_results: list[dict[str, Any]]) -> list[str]:
+        ids: list[str] = []
+        if not isinstance(phase_results, list):
+            return ids
+        for row in phase_results:
+            if not isinstance(row, dict):
+                continue
+            tasks = row.get("tasks", {})
+            if not isinstance(tasks, dict):
+                continue
+            for task in tasks.values():
+                if not isinstance(task, dict):
+                    continue
+                artifact_id = str(task.get("artifact_id", "")).strip()
+                if artifact_id:
+                    ids.append(artifact_id)
+        # preserve order, drop duplicates
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for item in ids:
+            if item in seen:
+                continue
+            seen.add(item)
+            ordered.append(item)
+        return ordered
+
+    def _build_task_execution_plan(
+        self,
+        project: Project,
+        run: WorkflowRun,
+        *,
+        phase_key: str,
+        task_key: str,
+        mode: str,
+    ) -> list[TaskExecUnit]:
+        nodes = self._build_workflow_nodes(project)
+        ordered_units: list[TaskExecUnit] = []
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            pkey = str(node.get("name", "")).strip()
+            if not pkey:
+                continue
+            raw_agent_tasks = node.get("agent_tasks", [])
+            if not isinstance(raw_agent_tasks, list):
+                continue
+            for group in raw_agent_tasks:
+                if not isinstance(group, dict):
+                    continue
+                tasks = group.get("tasks", [])
+                if not isinstance(tasks, list):
+                    continue
+                for task in tasks:
+                    if not isinstance(task, dict):
+                        continue
+                    tkey = str(task.get("key", "")).strip()
+                    if not tkey:
+                        continue
+                    mapping = self._map_task_key_to_execution(tkey)
+                    ordered_units.append(
+                        TaskExecUnit(
+                            phase_key=pkey,
+                            task_key=tkey,
+                            agent_name=mapping["agent_name"],
+                            skill_name=mapping["skill_name"],
+                            execution_scope=mapping["execution_scope"],
+                            display_name=str(task.get("name", "")) or tkey.rsplit(".", 1)[-1],
+                        )
+                    )
+
+        start_idx = next(
+            (
+                idx
+                for idx, unit in enumerate(ordered_units)
+                if unit.phase_key == phase_key and unit.task_key == task_key
+            ),
+            -1,
+        )
+        if start_idx < 0:
+            return []
+        if mode == "downstream":
+            return ordered_units[start_idx:]
+        return [ordered_units[start_idx]]
+
+    @staticmethod
+    def _map_task_key_to_execution(task_key: str) -> dict[str, str]:
+        agent_name = task_key.split(".", 1)[0] if "." in task_key else ""
+        skill_name = task_key.split(".", 2)[1] if task_key.count(".") >= 2 else task_key.rsplit(".", 1)[-1]
+        execution_scope = "full_skill"
+
+        if task_key.startswith("product_manager.deep_product_workflow.step1"):
+            skill_name = "deep_product_workflow"
+            execution_scope = "step1"
+        elif task_key.startswith("product_manager.deep_product_workflow.step2."):
+            skill_name = "deep_product_workflow"
+            execution_scope = "step2_loop"
+        elif task_key.startswith("product_manager.deep_product_workflow.step3."):
+            skill_name = "deep_product_workflow"
+            execution_scope = "step3_loop"
+        elif task_key.startswith("product_manager.deep_product_workflow"):
+            skill_name = "deep_product_workflow"
+            execution_scope = "full_skill"
+        elif task_key.startswith("architect.deep_architecture_workflow.step1."):
+            skill_name = "deep_architecture_workflow"
+            execution_scope = "step1_loop"
+        elif task_key.startswith("architect.deep_architecture_workflow.step2_3"):
+            skill_name = "deep_architecture_workflow"
+            execution_scope = "step2_3"
+        elif task_key.startswith("architect.deep_architecture_workflow.step2"):
+            skill_name = "deep_architecture_workflow"
+            execution_scope = "step2"
+        elif task_key.startswith("architect.deep_architecture_workflow.step3"):
+            skill_name = "deep_architecture_workflow"
+            execution_scope = "step3"
+        elif task_key.startswith("architect.deep_architecture_workflow.step4."):
+            skill_name = "deep_architecture_workflow"
+            execution_scope = "step4_loop"
+        elif task_key.startswith("architect.deep_architecture_workflow.step5"):
+            skill_name = "deep_architecture_workflow"
+            execution_scope = "step5"
+        elif task_key.startswith("architect.deep_architecture_workflow"):
+            skill_name = "deep_architecture_workflow"
+            execution_scope = "full_skill"
+        elif task_key.startswith("developer.deep_developer_workflow.step1"):
+            skill_name = "deep_developer_workflow"
+            execution_scope = "step1"
+        elif task_key.startswith("developer.deep_developer_workflow.step2."):
+            skill_name = "deep_developer_workflow"
+            execution_scope = "step2_loop"
+        elif task_key.startswith("developer.deep_developer_workflow"):
+            skill_name = "deep_developer_workflow"
+            execution_scope = "full_skill"
+        elif "." in task_key:
+            parts = task_key.split(".", 1)
+            agent_name = parts[0]
+            skill_name = parts[1]
+
+        return {
+            "agent_name": agent_name,
+            "skill_name": skill_name,
+            "execution_scope": execution_scope,
+        }
+
+    def _task_input_hints_from_workflow(self, project: Project, phase_key: str, task_key: str) -> list[str]:
+        nodes = self._build_workflow_nodes(project)
+        for node in nodes:
+            if not isinstance(node, dict) or str(node.get("name", "")) != phase_key:
+                continue
+            for group in node.get("agent_tasks", []) if isinstance(node.get("agent_tasks", []), list) else []:
+                if not isinstance(group, dict):
+                    continue
+                for task in group.get("tasks", []) if isinstance(group.get("tasks", []), list) else []:
+                    if not isinstance(task, dict):
+                        continue
+                    if str(task.get("key", "")) == task_key:
+                        hints = task.get("input_hints", [])
+                        return [str(x) for x in hints] if isinstance(hints, list) else []
+        mapping = self._map_task_key_to_execution(task_key)
+        return list(SKILL_INPUT_HINTS.get(mapping["skill_name"], []))
+
+    def _resolve_doc_refs_for_task(self, project: Project, input_hints: list[str], task_key: str) -> list[TaskDocRef]:
+        refs: list[TaskDocRef] = []
+        if not project.project_root:
+            return refs
+        root = Path(project.project_root)
+        docs_dir = root / "docs"
+        hint_map: dict[str, tuple[str, str | None]] = {
+            "system_design_doc": ("docs/system-design.md", None),
+            "system_requirements_doc": ("docs/system-requirements.md", None),
+            "system_architecture_doc": ("docs/system-architecture.md", None),
+            "source_dir": ("src", None),
+            "tests_dir": ("tests", None),
+        }
+        glob_map: dict[str, tuple[str, str]] = {
+            "subsystem_detail_design_docs": ("docs", "*-detail-design.md"),
+        }
+        seen: set[str] = set()
+        for hint in input_hints:
+            if hint in hint_map:
+                rel, _ = hint_map[hint]
+                path = root / rel
+                key = f"{hint}:{rel}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                refs.append(TaskDocRef(role=hint, path=rel, name=Path(rel).name, exists=path.exists()))
+            elif hint in glob_map:
+                base_rel, pattern = glob_map[hint]
+                base = root / base_rel
+                matches = sorted(base.glob(pattern)) if base.exists() else []
+                key = f"{hint}:{base_rel}:{pattern}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                refs.append(
+                    TaskDocRef(
+                        role=hint,
+                        path=base_rel,
+                        name=Path(base_rel).name,
+                        exists=bool(matches),
+                        glob=pattern,
+                    )
+                )
+        # Deep task-specific补充
+        if (
+            task_key.startswith("architect.deep_architecture_workflow")
+            and (docs_dir / "system-architecture.md").exists()
+        ):
+            key = "system_architecture_doc:docs/system-architecture.md"
+            if key not in seen:
+                refs.append(
+                    TaskDocRef(
+                        role="system_architecture_doc",
+                        path="docs/system-architecture.md",
+                        name="system-architecture.md",
+                        exists=True,
+                    )
+                )
+        return refs
+
+    @staticmethod
+    def _retry_notes_for_task(task_key: str, execution_scope: str) -> list[str]:
+        notes: list[str] = []
+        if ".review" in task_key and execution_scope.endswith("_loop"):
+            notes.append("review task maps to parent loop retry for consistency")
+        if execution_scope != "full_skill" and "deep_" in task_key:
+            notes.append(f"execution scope: {execution_scope}")
+        return notes
+
+    def _extract_task_outputs(self, project: Project, artifact: Artifact) -> dict[str, Any]:
+        content = artifact.content if isinstance(artifact.content, dict) else {}
+        generated_files: list[str] = []
+        for key in ("generated_files", "generated_docs", "generated_sources"):
+            value = content.get(key)
+            if isinstance(value, list):
+                generated_files.extend(str(x) for x in value if str(x).strip())
+        if "generated" in content and isinstance(content.get("generated"), dict):
+            generated = content.get("generated", {})
+            for key in ("source_files", "test_files"):
+                value = generated.get(key)
+                if isinstance(value, list):
+                    generated_files.extend(str(x) for x in value if str(x).strip())
+        artifact_ids: list[str] = [artifact.id]
+        ids_map = content.get("artifact_ids")
+        if isinstance(ids_map, dict):
+            artifact_ids.extend(str(v) for v in ids_map.values() if str(v).strip())
+        normalized_files: list[str] = []
+        root = Path(project.project_root).resolve() if project.project_root else None
+        seen: set[str] = set()
+        for item in generated_files:
+            text = str(item).strip()
+            if not text:
+                continue
+            try:
+                p = Path(text)
+                if root is not None:
+                    resolved = p.resolve() if p.is_absolute() else (root / p).resolve()
+                    try:
+                        text = str(resolved.relative_to(root))
+                    except ValueError:
+                        text = str(resolved)
+                else:
+                    text = str(p)
+            except Exception:
+                pass
+            if text in seen:
+                continue
+            seen.add(text)
+            normalized_files.append(text)
+        doc_outputs = [f for f in normalized_files if f.startswith("docs/")]
+        return {
+            "artifact_ids": artifact_ids,
+            "generated_files": normalized_files,
+            "doc_outputs": doc_outputs,
+        }
+
+    def _collect_runtime_task_events(
+        self,
+        run: WorkflowRun,
+        *,
+        phase_key: str,
+        task_key: str,
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for phase in run.phase_results:
+            if not isinstance(phase, dict):
+                continue
+            if str(phase.get("phase", "")) != phase_key:
+                continue
+            events.append(
+                {
+                    "id": f"runtime-phase:{phase_key}:{str(phase.get('status', ''))}",
+                    "ts": run.started_at.isoformat(),
+                    "source": "runtime",
+                    "level": "info",
+                    "message": f"阶段状态: {phase.get('status', 'unknown')}",
+                    "details": {
+                        "phase": phase_key,
+                        "task_count": len(phase.get("tasks", {}) or {}),
+                    },
+                }
+            )
+            tasks = phase.get("tasks", {})
+            if not isinstance(tasks, dict):
+                continue
+            direct = tasks.get(task_key)
+            if isinstance(direct, dict):
+                events.append(
+                    {
+                        "id": f"runtime-task:{phase_key}:{task_key}",
+                        "ts": run.started_at.isoformat(),
+                        "source": "runtime",
+                        "level": "info",
+                        "message": f"任务状态: {direct.get('status', 'unknown')}",
+                        "details": direct,
+                    }
+                )
+                return events
+
+            prefixes = self._runtime_task_aliases(phase_key, task_key)
+            for alias in prefixes:
+                item = tasks.get(alias)
+                if isinstance(item, dict):
+                    events.append(
+                        {
+                            "id": f"runtime-task:{phase_key}:{alias}",
+                            "ts": run.started_at.isoformat(),
+                            "source": "runtime",
+                            "level": "info",
+                            "message": f"运行时任务映射({alias})状态: {item.get('status', 'unknown')}",
+                            "details": item,
+                        }
+                    )
+                    break
+            break
+        return events
+
+    def _runtime_task_aliases(self, phase_key: str, task_key: str) -> list[str]:
+        aliases: list[str] = []
+        if task_key.startswith("product_manager.deep_product_workflow"):
+            aliases.extend(["product_manager.deep_product_workflow", "product_manager.requirements"])
+        elif task_key.startswith("architect.deep_architecture_workflow"):
+            aliases.extend(["architect.deep_architecture_workflow", "architect.design"])
+        elif task_key.startswith("developer.deep_developer_workflow"):
+            aliases.extend(["developer.deep_developer_workflow", "developer.implementation"])
+        elif task_key.startswith("qa_engineer."):
+            aliases.extend(["qa_engineer.testing", "qa_engineer.test_review"])
+        aliases.append(f"{task_key.split('.', 1)[0]}.{phase_key}" if "." in task_key else task_key)
+        return aliases
+
+    def _collect_trace_task_events(
+        self,
+        project: Project,
+        run: WorkflowRun,
+        *,
+        phase_key: str,
+        task_key: str,
+    ) -> list[dict[str, Any]]:
+        if not project.project_root:
+            return []
+        trace_dir = Path(project.project_root) / "trace"
+        if not trace_dir.exists():
+            return []
+
+        spec = self._task_log_match_spec(phase_key=phase_key, task_key=task_key)
+        started_at = run.started_at
+        events: list[dict[str, Any]] = []
+
+        for trace_file in sorted(trace_dir.glob("*.json")):
+            try:
+                payload = json.loads(trace_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+
+            called_at = self._parse_any_datetime(payload.get("called_at_iso")) or self._parse_trace_timestamp(
+                str(payload.get("timestamp", ""))
+            )
+            if called_at is not None and called_at < started_at:
+                continue
+
+            if not self._trace_matches_spec(payload, spec):
+                continue
+
+            event_ts = (
+                called_at.isoformat()
+                if called_at is not None
+                else str(payload.get("called_at_iso", "") or payload.get("timestamp", ""))
+            )
+            output_text = str(payload.get("output", ""))
+            purpose = str(payload.get("purpose", ""))
+            provider_meta = payload.get("provider_response_meta")
+            events.append(
+                {
+                    "id": f"trace:{str(payload.get('call_id', trace_file.stem))}",
+                    "ts": event_ts,
+                    "source": "trace",
+                    "level": "info",
+                    "message": purpose or f"LLM trace: {trace_file.name}",
+                    "details": {
+                        "trace_file": str(trace_file.relative_to(trace_dir.parent)),
+                        "agent": str(payload.get("agent", "")),
+                        "skill": str(payload.get("skill", "")),
+                        "model": str(payload.get("model", "")),
+                        "provider": str(payload.get("provider", "")),
+                        "purpose_meta": self._parse_purpose_meta(purpose),
+                        "provider_response_meta": provider_meta if isinstance(provider_meta, dict) else {},
+                        "output_preview": output_text[:1200],
+                    },
+                }
+            )
+        return events
+
+    def _collect_app_log_events(
+        self,
+        project: Project,
+        run: WorkflowRun,
+        *,
+        phase_key: str,
+        task_key: str,
+    ) -> list[dict[str, Any]]:
+        spec = self._task_log_match_spec(phase_key=phase_key, task_key=task_key)
+        log_path = Path(self.project_manager._global_config.logging.log_dir) / "aise.log"
+        if not log_path.exists():
+            return []
+
+        started_at = run.started_at
+        project_id = project.project_id
+        project_name = project.config.project_name if getattr(project, "config", None) else ""
+        events: list[dict[str, Any]] = []
+        line_re = re.compile(
+            r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \| (?P<level>[A-Z]+) \| (?P<logger>[^|]+) \| (?P<msg>.*)$"
+        )
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            return []
+
+        for idx, line in enumerate(lines, start=1):
+            m = line_re.match(line)
+            if not m:
+                continue
+            ts = self._parse_any_datetime(m.group("ts"))
+            if ts is not None and ts < started_at:
+                continue
+            msg = m.group("msg")
+            if project_id and f"project_id={project_id}" in msg:
+                pass
+            elif project_name and f"project={project_name}" in msg:
+                pass
+            elif not any(token and token in msg for token in spec["log_tokens"]):
+                continue
+
+            if spec["log_tokens"] and not any(token in msg for token in spec["log_tokens"] if token):
+                continue
+
+            events.append(
+                {
+                    "id": f"aise.log:{idx}",
+                    "ts": (ts.isoformat() if ts is not None else ""),
+                    "source": "aise.log",
+                    "level": m.group("level").lower(),
+                    "message": msg,
+                    "details": {"logger": m.group("logger").strip(), "line": idx},
+                }
+            )
+        return events
+
+    def _task_log_match_spec(self, *, phase_key: str, task_key: str) -> dict[str, Any]:
+        agent = task_key.split(".", 1)[0] if "." in task_key else ""
+        spec: dict[str, Any] = {
+            "agent": agent,
+            "skill": "",
+            "purpose_prefixes": [],
+            "purpose_contains": [],
+            "log_tokens": [phase_key, task_key],
+        }
+
+        if task_key.startswith("product_manager.deep_product_workflow"):
+            spec["agent"] = "product_manager"
+            spec["skill"] = "deep_product_workflow"
+            spec["log_tokens"].extend(["agent=product_manager", "deep_product_workflow"])
+            if task_key.startswith("product_manager.deep_product_workflow.step1"):
+                spec["purpose_prefixes"] = [
+                    "subagent:product_designer step:requirement_expansion.core",
+                    "subagent:product_designer step:requirement_expansion.context",
+                    "agent:product_manager role:product_manager skill:deep_product_workflow",
+                ]
+            elif task_key.startswith("product_manager.deep_product_workflow.step2.design"):
+                spec["purpose_prefixes"] = ["subagent:product_designer step:product_design"]
+            elif task_key.startswith("product_manager.deep_product_workflow.step2.review"):
+                spec["purpose_prefixes"] = ["subagent:product_reviewer step:product_review"]
+            elif task_key.startswith("product_manager.deep_product_workflow.step3.design"):
+                spec["purpose_prefixes"] = ["subagent:product_designer step:system_requirement_design"]
+            elif task_key.startswith("product_manager.deep_product_workflow.step3.review"):
+                spec["purpose_prefixes"] = ["subagent:product_reviewer step:system_requirement_review"]
+            elif task_key != "product_manager.deep_product_workflow":
+                spec["purpose_prefixes"] = [f"task_key:{task_key}"]
+        elif task_key.startswith("architect.deep_architecture_workflow.step1.design"):
+            spec["agent"] = "architect"
+            spec["skill"] = "deep_architecture_workflow"
+            spec["purpose_prefixes"] = ["subagent:architecture_designer step:architecture_design"]
+            spec["log_tokens"].extend(["subagent:architecture_designer", "architecture_design"])
+        elif task_key.startswith("architect.deep_architecture_workflow.step1.review"):
+            spec["agent"] = "architect"
+            spec["skill"] = "deep_architecture_workflow"
+            spec["purpose_prefixes"] = ["subagent:architecture_reviewer step:architecture_review"]
+            spec["log_tokens"].extend(["subagent:architecture_reviewer", "architecture_review"])
+        elif task_key.startswith("architect.deep_architecture_workflow.step4.design"):
+            spec["agent"] = "architect"
+            spec["skill"] = "deep_architecture_workflow"
+            spec["purpose_prefixes"] = ["subagent:subsystem_architect step:subsystem_detail_design"]
+            spec["log_tokens"].extend(["subagent:subsystem_architect", "subsystem_detail_design"])
+        elif task_key.startswith("architect.deep_architecture_workflow.step4.review"):
+            spec["agent"] = "architect"
+            spec["skill"] = "deep_architecture_workflow"
+            spec["purpose_prefixes"] = ["subagent:architecture_reviewer step:subsystem_detail_review"]
+            spec["log_tokens"].extend(["subagent:architecture_reviewer", "subsystem_detail_review"])
+        elif task_key.startswith("architect.deep_architecture_workflow.step2_3"):
+            spec["agent"] = "architect"
+            spec["skill"] = "deep_architecture_workflow"
+            spec["purpose_prefixes"] = [
+                "subagent:architecture_designer step:bootstrap_architecture_code",
+                "subagent:architecture_designer step:subsystem_task_split",
+            ]
+            spec["log_tokens"].extend(["bootstrap_architecture_code", "subsystem_task_split"])
+        elif task_key.startswith("architect.deep_architecture_workflow.step2"):
+            spec["agent"] = "architect"
+            spec["skill"] = "deep_architecture_workflow"
+            spec["purpose_prefixes"] = ["subagent:architecture_designer step:bootstrap_architecture_code"]
+        elif task_key.startswith("architect.deep_architecture_workflow.step3"):
+            spec["agent"] = "architect"
+            spec["skill"] = "deep_architecture_workflow"
+            spec["purpose_prefixes"] = ["subagent:architecture_designer step:subsystem_task_split"]
+        elif task_key.startswith("architect.deep_architecture_workflow.step5"):
+            spec["agent"] = "architect"
+            spec["skill"] = "deep_architecture_workflow"
+            spec["purpose_prefixes"] = ["subagent:subsystem_architect step:subsystem_code_init_and_api_definition"]
+        elif task_key.startswith("architect.deep_architecture_workflow"):
+            spec["agent"] = "architect"
+            spec["skill"] = "deep_architecture_workflow"
+            spec["log_tokens"].extend(["agent=architect", "deep_architecture_workflow"])
+            if task_key != "architect.deep_architecture_workflow":
+                spec["purpose_prefixes"] = [f"task_key:{task_key}"]
+        elif task_key.startswith("developer.deep_developer_workflow"):
+            spec["agent"] = "developer"
+            spec["skill"] = "deep_developer_workflow"
+            spec["log_tokens"].extend(["agent=developer", "deep_developer_workflow"])
+            if task_key.startswith("developer.deep_developer_workflow.step1"):
+                spec["purpose_prefixes"] = ["subagent:programmer step:subsystem_task_assignment"]
+            elif task_key.startswith("developer.deep_developer_workflow.step2.develop"):
+                spec["purpose_prefixes"] = [
+                    "subagent:programmer step:fn_code_generation",
+                    "subagent:programmer step:fn_test_generation",
+                    "agent:developer role:developer skill:deep_developer_workflow",
+                ]
+            elif task_key.startswith("developer.deep_developer_workflow.step2.review"):
+                spec["purpose_prefixes"] = ["subagent:code_reviewer step:fn_code_and_test_review"]
+            elif task_key.startswith("developer.deep_developer_workflow.step2.revision"):
+                spec["purpose_prefixes"] = ["subagent:code_reviewer step:revision_feedback_record"]
+            elif task_key.startswith("developer.deep_developer_workflow.step2.merge"):
+                spec["purpose_prefixes"] = ["subagent:programmer step:fn_merge_after_three_rounds"]
+            elif task_key != "developer.deep_developer_workflow":
+                spec["purpose_prefixes"] = [f"task_key:{task_key}"]
+        elif task_key.startswith("qa_engineer."):
+            spec["agent"] = "qa_engineer"
+            spec["log_tokens"].extend(["agent=qa_engineer", "qa_engineer"])
+
+        return spec
+
+    def _trace_matches_spec(self, payload: dict[str, Any], spec: dict[str, Any]) -> bool:
+        agent = str(payload.get("agent", ""))
+        skill = str(payload.get("skill", ""))
+        purpose = str(payload.get("purpose", ""))
+
+        expected_agent = str(spec.get("agent", "") or "")
+        if expected_agent and agent != expected_agent:
+            return False
+        expected_skill = str(spec.get("skill", "") or "")
+        if expected_skill and skill and skill != expected_skill:
+            return False
+
+        purpose_prefixes = [str(x) for x in spec.get("purpose_prefixes", []) if str(x)]
+        if purpose_prefixes:
+            return any(purpose.startswith(prefix) for prefix in purpose_prefixes)
+
+        purpose_contains = [str(x) for x in spec.get("purpose_contains", []) if str(x)]
+        if purpose_contains and not any(token in purpose for token in purpose_contains):
+            return False
+
+        if expected_skill and not skill:
+            return purpose.startswith(f"agent:{expected_agent}") or expected_skill in purpose
+
+        return True
+
+    def _parse_purpose_meta(self, purpose: str) -> dict[str, str]:
+        text = str(purpose or "").strip()
+        if not text:
+            return {}
+        meta: dict[str, str] = {}
+        for token in text.split():
+            if ":" not in token:
+                continue
+            key, value = token.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key or not value:
+                continue
+            if key in {
+                "subagent",
+                "step",
+                "agent",
+                "role",
+                "skill",
+                "project",
+                "round",
+                "subsystem",
+                "fn",
+                "module",
+                "owner",
+                "reviewer",
+                "reqs",
+                "features",
+            }:
+                meta[key] = value
+        return meta
+
+    def _parse_trace_timestamp(self, value: str) -> datetime | None:
+        raw = value.strip()
+        if not raw:
+            return None
+        for fmt in ("%Y%m%d-%H%M%S",):
+            try:
+                return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+        return None
+
+    def _parse_any_datetime(self, value: Any) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+                return dt.replace(tzinfo=local_tz).astimezone(timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            pass
+        try:
+            local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+            return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=local_tz).astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    def _augment_live_phase_results(
+        self,
+        project_id: str,
+        run_payload: dict[str, Any],
+        *,
+        run: WorkflowRun | None = None,
+        project: Project | None = None,
+    ) -> dict[str, Any]:
         status = str(run_payload.get("status", ""))
         if status not in {"pending", "running"}:
             return run_payload
 
-        project = self.project_manager.get_project(project_id)
+        if project is None:
+            project = self.project_manager.get_project(project_id)
         if project is None or not project.project_root:
             return run_payload
 
+        started_at = self._parse_any_datetime(run_payload.get("started_at")) or datetime.now(timezone.utc)
+
+        def _is_fresh_file(path: Path) -> bool:
+            if not path.exists() or not path.is_file():
+                return False
+            try:
+                modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            except Exception:
+                return False
+            return modified >= started_at
+
+        def _has_fresh_content(
+            dir_path: Path,
+            *,
+            suffixes: set[str] | None = None,
+            exclude_names: set[str] | None = None,
+        ) -> bool:
+            if not dir_path.exists() or not dir_path.is_dir():
+                return False
+            normalized_suffixes = {s.lower() for s in (suffixes or set()) if str(s).strip()}
+            normalized_excludes = {name.lower() for name in (exclude_names or set()) if str(name).strip()}
+            try:
+                for file_path in dir_path.rglob("*"):
+                    if not file_path.is_file():
+                        continue
+                    if normalized_excludes and file_path.name.lower() in normalized_excludes:
+                        continue
+                    if normalized_suffixes and file_path.suffix.lower() not in normalized_suffixes:
+                        continue
+                    modified = datetime.fromtimestamp(file_path.stat().st_mtime, tz=timezone.utc)
+                    if modified >= started_at:
+                        return True
+            except Exception:
+                return False
+            return False
+
         docs_dir = Path(project.project_root) / "docs"
-        requirements_ready = (docs_dir / "system-design.md").exists() and (docs_dir / "system-requirements.md").exists()
-        design_ready = (docs_dir / "system-architecture.md").exists()
+        requirements_ready = _is_fresh_file(docs_dir / "system-design.md") and _is_fresh_file(
+            docs_dir / "system-requirements.md"
+        )
+        design_ready = _is_fresh_file(docs_dir / "system-architecture.md")
         project_src = Path(project.project_root) / "src"
         project_tests = Path(project.project_root) / "tests"
-        implementation_ready = (project_src / "services").exists() and (project_tests / "services").exists()
+        implementation_ready = _has_fresh_content(
+            project_src / "services",
+            suffixes={".py"},
+            exclude_names={"__init__.py"},
+        ) and _has_fresh_content(
+            project_tests / "services",
+            suffixes={".py"},
+            exclude_names={"__init__.py", "revision.md"},
+        )
         if not (requirements_ready or design_ready or implementation_ready):
             return run_payload
 
@@ -337,7 +1431,169 @@ class WebProjectService:
             )
         if synthetic_rows:
             run_payload["phase_results"] = [*synthetic_rows, *phase_results]
+        if run is not None:
+            self._augment_live_task_states(project, run, run_payload)
         return run_payload
+
+    def _augment_live_task_states(self, project: Project, run: WorkflowRun, run_payload: dict[str, Any]) -> None:
+        try:
+            workflow_nodes = self._build_workflow_nodes(project)
+        except Exception:
+            return
+        if not isinstance(workflow_nodes, list) or not workflow_nodes:
+            return
+
+        phase_results = run_payload.get("phase_results", [])
+        phase_rows: dict[str, dict[str, Any]] = {}
+        if isinstance(phase_results, list):
+            for row in phase_results:
+                if not isinstance(row, dict):
+                    continue
+                phase_key = str(row.get("phase", "")).strip()
+                if phase_key:
+                    phase_rows[phase_key] = row
+
+        live_task_states: dict[str, dict[str, Any]] = {}
+
+        for node in workflow_nodes:
+            if not isinstance(node, dict):
+                continue
+            phase_key = str(node.get("name", "")).strip()
+            if not phase_key:
+                continue
+            phase_row = phase_rows.get(phase_key)
+            phase_status = str((phase_row or {}).get("status", "")).strip()
+            task_status_map = (phase_row or {}).get("tasks", {})
+            if not isinstance(task_status_map, dict):
+                task_status_map = {}
+
+            raw_agent_tasks = node.get("agent_tasks", [])
+            task_keys: list[str] = []
+            if isinstance(raw_agent_tasks, list):
+                for group in raw_agent_tasks:
+                    if not isinstance(group, dict):
+                        continue
+                    group_tasks = group.get("tasks", [])
+                    if not isinstance(group_tasks, list):
+                        continue
+                    for task in group_tasks:
+                        if not isinstance(task, dict):
+                            continue
+                        task_key = str(task.get("key", "")).strip()
+                        if task_key:
+                            task_keys.append(task_key)
+            if not task_keys:
+                fallback_task_keys = node.get("tasks", [])
+                if isinstance(fallback_task_keys, list):
+                    task_keys = [str(x).strip() for x in fallback_task_keys if str(x).strip()]
+
+            seen_task_keys: set[str] = set()
+            for task_key in task_keys:
+                if task_key in seen_task_keys:
+                    continue
+                seen_task_keys.add(task_key)
+
+                runtime_status, runtime_match_key = self._resolve_runtime_task_status_map(
+                    task_status_map,
+                    phase_key,
+                    task_key,
+                )
+                trace_events = self._collect_trace_task_events(project, run, phase_key=phase_key, task_key=task_key)
+                event_count = len(trace_events)
+                last_event = self._select_latest_event(trace_events)
+
+                inferred_status = self._infer_live_task_status(
+                    phase_status=phase_status,
+                    runtime_status=runtime_status,
+                    has_trace_events=bool(trace_events),
+                )
+                if not inferred_status:
+                    continue
+
+                payload: dict[str, Any] = {
+                    "status": inferred_status,
+                    "phase_status": phase_status,
+                    "event_count": event_count,
+                }
+                if runtime_match_key:
+                    payload["runtime_task_key"] = runtime_match_key
+                if runtime_status:
+                    payload["runtime_status"] = runtime_status
+                if last_event:
+                    payload["last_event"] = {
+                        "ts": str(last_event.get("ts", "")),
+                        "source": str(last_event.get("source", "")),
+                        "level": str(last_event.get("level", "")),
+                        "message": str(last_event.get("message", ""))[:240],
+                    }
+                    details = last_event.get("details")
+                    if isinstance(details, dict):
+                        meta = details.get("purpose_meta")
+                        if isinstance(meta, dict) and meta:
+                            compact_meta: dict[str, str] = {}
+                            for key in ("subagent", "step", "round", "subsystem", "fn", "module", "reviewer", "owner"):
+                                value = meta.get(key)
+                                if value:
+                                    compact_meta[key] = str(value)
+                            if compact_meta:
+                                payload["last_event"]["purpose_meta"] = compact_meta
+
+                live_task_states[f"{phase_key}::{task_key}"] = payload
+
+        if live_task_states:
+            run_payload["live_task_states"] = live_task_states
+
+    def _resolve_runtime_task_status_map(
+        self,
+        task_status_map: dict[str, Any],
+        phase_key: str,
+        task_key: str,
+    ) -> tuple[str, str]:
+        candidates: list[str] = [task_key, *self._runtime_task_aliases(phase_key, task_key)]
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = str(candidate or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            item = task_status_map.get(key)
+            if not isinstance(item, dict):
+                continue
+            value = str(item.get("status", "")).strip().lower()
+            if value:
+                return value, key
+        return "", ""
+
+    @staticmethod
+    def _select_latest_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not events:
+            return None
+        try:
+            return max(events, key=lambda item: (str(item.get("ts", "")), str(item.get("id", ""))))
+        except Exception:
+            return events[-1]
+
+    @staticmethod
+    def _infer_live_task_status(*, phase_status: str, runtime_status: str, has_trace_events: bool) -> str:
+        normalized_runtime = str(runtime_status or "").strip().lower()
+        if normalized_runtime in {"success", "completed", "done"}:
+            return "completed"
+        if normalized_runtime in {"failed", "error"}:
+            return "failed"
+        normalized_phase = str(phase_status or "").strip().lower()
+        if has_trace_events and normalized_phase in {"failed"}:
+            return "failed"
+        if has_trace_events and normalized_phase in {"completed"}:
+            return "completed"
+        if has_trace_events:
+            return "running"
+        if normalized_phase in {"completed"}:
+            return "completed"
+        if normalized_phase in {"failed"}:
+            return "pending"
+        if normalized_phase in {"running", "in_progress", "in_review"}:
+            return "pending"
+        return ""
 
     def delete_project(self, project_id: str) -> None:
         """Delete a project and its persisted directory."""
@@ -612,7 +1868,7 @@ class WebProjectService:
                 continue
             try:
                 config = ProjectConfig.from_json_file(config_path)
-                orchestrator = create_team(config)
+                orchestrator = create_team(config, project_root=str(project_dir))
                 project = Project(
                     project_id=project_id,
                     config=config,
@@ -769,7 +2025,17 @@ class WebProjectService:
         """Wrap project orchestrator with DeepOrchestrator for web workflows."""
         from ..langchain.deep_orchestrator import DeepOrchestrator
 
+        if project.project_root and getattr(project.orchestrator, "project_root", None) != project.project_root:
+            project.orchestrator.project_root = project.project_root  # type: ignore[assignment]
+
         if isinstance(project.orchestrator, DeepOrchestrator):
+            wrapped = getattr(project.orchestrator, "orchestrator", None)
+            if (
+                project.project_root
+                and wrapped is not None
+                and getattr(wrapped, "project_root", None) != project.project_root
+            ):
+                wrapped.project_root = project.project_root
             return
         project.orchestrator = DeepOrchestrator.from_orchestrator(  # type: ignore[assignment]
             project.orchestrator,
@@ -906,13 +2172,8 @@ class WebProjectService:
                             "input_hints": ["system_design_doc", "system_requirements_doc", "review_feedback"],
                         },
                         {
-                            "key": "architect.deep_architecture_workflow.step2",
-                            "name": "bootstrap_architecture_code",
-                            "input_hints": ["system_architecture_doc"],
-                        },
-                        {
-                            "key": "architect.deep_architecture_workflow.step3",
-                            "name": "subsystem_task_split",
+                            "key": "architect.deep_architecture_workflow.step2_3",
+                            "name": "bootstrap_and_subsystem_split",
                             "input_hints": ["system_architecture_doc", "system_requirements_doc"],
                         },
                     ],
@@ -1487,6 +2748,59 @@ def create_app() -> FastAPI:
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
         return task
+
+    @app.get("/api/projects/{project_id}/runs/{run_id}/task-logs")
+    async def api_get_task_logs(
+        request: Request,
+        project_id: str,
+        run_id: str,
+        phase_key: str,
+        task_key: str,
+        limit: int = 300,
+    ) -> dict[str, Any]:
+        require_login(request)
+        payload = service.get_task_logs(
+            project_id,
+            run_id,
+            phase_key=phase_key,
+            task_key=task_key,
+            limit=max(20, min(limit, 1000)),
+        )
+        if payload is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return payload
+
+    @app.get("/api/projects/{project_id}/runs/{run_id}/task-state")
+    async def api_get_task_state(
+        request: Request,
+        project_id: str,
+        run_id: str,
+        phase_key: str,
+        task_key: str,
+    ) -> dict[str, Any]:
+        require_login(request)
+        payload = service.get_task_state(project_id, run_id, phase_key=phase_key, task_key=task_key)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="Task state not found")
+        return payload
+
+    @app.post("/api/projects/{project_id}/runs/{run_id}/task-retries")
+    async def api_post_task_retry(request: Request, project_id: str, run_id: str) -> dict[str, Any]:
+        require_login(request)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        phase_key = str(payload.get("phase_key", "")).strip()
+        task_key = str(payload.get("task_key", "")).strip()
+        mode = str(payload.get("mode", "current")).strip().lower() or "current"
+        if not phase_key or not task_key:
+            raise HTTPException(status_code=400, detail="phase_key and task_key are required")
+        try:
+            return service.retry_task(project_id, run_id, phase_key=phase_key, task_key=task_key, mode=mode)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/config/global")
     async def api_get_global_config(request: Request) -> dict[str, Any]:

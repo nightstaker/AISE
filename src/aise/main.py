@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -398,6 +399,19 @@ def main() -> None:
     web_parser.add_argument("--port", type=int, default=8000, help="Port for web server")
     web_parser.add_argument("--reload", action="store_true", help="Enable auto reload")
 
+    retry_parser = subparsers.add_parser(
+        "task-retry",
+        help="Retry a single workflow task in a web-managed project run",
+    )
+    retry_parser.add_argument("--project-id", required=True, help="Project ID")
+    retry_parser.add_argument("--run-id", required=True, help="Run ID")
+    retry_parser.add_argument("--phase", required=True, help="Phase key")
+    retry_parser.add_argument("--task-key", required=True, help="Task key from run detail UI")
+    retry_parser.add_argument("--mode", choices=["current", "downstream"], default="current", help="Retry mode")
+    retry_parser.add_argument("--wait", action="store_true", help="Wait for completion")
+    retry_parser.add_argument("--poll-interval", type=float, default=2.0, help="Polling interval seconds")
+    retry_parser.add_argument("--show-task-state", action="store_true", help="Print task memory state after completion")
+
     # develop command — concurrent development sessions
     dev_parser = subparsers.add_parser(
         "develop",
@@ -531,6 +545,55 @@ def main() -> None:
 
     elif args.command == "web":
         start_web_app(host=args.host, port=args.port, reload=args.reload)
+
+    elif args.command == "task-retry":
+        from .web.app import WebProjectService
+
+        service = WebProjectService()
+        try:
+            result = service.retry_task(
+                args.project_id,
+                args.run_id,
+                phase_key=args.phase,
+                task_key=args.task_key,
+                mode=args.mode,
+            )
+        except RuntimeError as exc:
+            print(f"Retry rejected: {exc}")
+            sys.exit(2)
+        except Exception as exc:
+            print(f"Retry failed to start: {exc}")
+            sys.exit(1)
+
+        print(
+            f"Retry accepted: op_id={result.get('op_id')} project={args.project_id} "
+            f"run={args.run_id} phase={args.phase} task={args.task_key} mode={args.mode}"
+        )
+        if args.wait:
+            poll_interval = args.poll_interval if args.poll_interval > 0 else 2.0
+            while True:
+                run = service.get_run(args.project_id, args.run_id)
+                if not isinstance(run, dict):
+                    print("Run not found while polling")
+                    sys.exit(1)
+                active = run.get("active_operation")
+                if not isinstance(active, dict) or str(active.get("status", "")) != "running":
+                    status = str(run.get("status", "unknown"))
+                    print(f"Retry finished: run_status={status}")
+                    if run.get("error"):
+                        print(f"Error: {run.get('error')}")
+                    if args.show_task_state:
+                        task_state = service.get_task_state(
+                            args.project_id,
+                            args.run_id,
+                            phase_key=args.phase,
+                            task_key=args.task_key,
+                        )
+                        print(json.dumps(task_state or {"task_state": None}, ensure_ascii=False, indent=2))
+                    if status == "failed":
+                        sys.exit(1)
+                    break
+                time.sleep(poll_interval)
 
     elif args.command == "develop":
         import asyncio
