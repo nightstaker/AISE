@@ -611,9 +611,7 @@ class DeepDeveloperWorkflowSkill(Skill):
             raise RuntimeError("LLM subsystem file manifest produced no valid module files")
 
         fn_ids = [
-            str(item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"
-            for item in fn_items
-            if isinstance(item, dict)
+            str(item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN" for item in fn_items if isinstance(item, dict)
         ]
         fn_set = set(fn_ids)
         used_modules: set[str] = set()

@@ -836,8 +836,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                 f"Architecture overview:\n{str(llm_design.get('architecture_overview', ''))[:4000]}\n\n"
                 f"Layering:\n{self._compact_json(layering)}\n\n"
                 + (
-                    "Previous structure from last round (revise if needed):\n"
-                    f"{previous_structure_context}\n\n"
+                    f"Previous structure from last round (revise if needed):\n{previous_structure_context}\n\n"
                     if previous_structure_context
                     else ""
                 )
@@ -1373,7 +1372,9 @@ class DeepArchitectureWorkflowSkill(Skill):
             user_prompt=(
                 f"Subsystem: {subsystem.get('id', '')} {subsystem.get('name', '')}\n"
                 f"Round: {round_index}\n"
-                f"Issues:\n- " + "\n- ".join(issues or ["(none)"]) + "\n"
+                f"Issues:\n- "
+                + "\n- ".join(issues or ["(none)"])
+                + "\n"
                 + "\n"
                 + self._json_schema_echo_prompt(optional_keys=["summary", "suggestions"])
             ),
