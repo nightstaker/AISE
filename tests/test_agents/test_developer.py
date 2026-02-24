@@ -102,7 +102,8 @@ class TestDeveloperAgent:
         )
 
         assert artifact.content["workflow"] == "deep_developer_workflow"
-        assert (Path(project_root) / "src" / "services").exists()
+        assert (Path(project_root) / "src").exists()
+        assert not (Path(project_root) / "src" / "services").exists()
         assert (Path(project_root) / "tests" / "services").exists()
         assert (Path(project_root) / "tests" / "conftest.py").exists()
 
@@ -139,10 +140,11 @@ class TestDeveloperAgent:
             parameters={"project_root": str(project_root)},
         )
 
-        service_files = list((project_root / "src" / "services").glob("*/*.py"))
+        service_files = list((project_root / "src").glob("*/*.py"))
         test_files = list((project_root / "tests" / "services").glob("*/*.py"))
         assert service_files
         assert test_files
+        assert not (project_root / "src" / "services").exists()
         assert (project_root / "tests" / "conftest.py").exists()
 
     def test_deep_developer_workflow_uses_generic_subsystem_pipeline_for_cpp_requirement(self, tmp_path):
@@ -179,6 +181,7 @@ class TestDeveloperAgent:
             parameters={"project_root": str(project_root)},
         )
 
-        assert (project_root / "src" / "services").exists()
+        assert (project_root / "src").exists()
+        assert not (project_root / "src" / "services").exists()
         assert (project_root / "tests" / "services").exists()
         assert not (project_root / "CMakeLists.txt").exists()

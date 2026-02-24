@@ -206,6 +206,8 @@ class RunTaskStateStore:
             latest_ctx = latest.get("context", {}) if isinstance(latest, dict) else {}
             latest_out = latest.get("outputs", {}) if isinstance(latest, dict) else {}
             doc_refs = latest_ctx.get("doc_refs", []) if isinstance(latest_ctx, dict) else []
+            compact_ctx = latest_ctx if isinstance(latest_ctx, dict) else {}
+            compact_out = latest_out if isinstance(latest_out, dict) else {}
             out[key] = {
                 "phase_key": str(value.get("phase_key", "")),
                 "task_key": str(value.get("task_key", "")),
@@ -219,6 +221,16 @@ class RunTaskStateStore:
                 "generated_file_count": len(latest_out.get("generated_files", []))
                 if isinstance(latest_out, dict) and isinstance(latest_out.get("generated_files"), list)
                 else 0,
+                "latest_context": {
+                    "input_hints": compact_ctx.get("input_hints", []),
+                    "input_keys": compact_ctx.get("input_keys", []),
+                    "available_input_keys": compact_ctx.get("available_input_keys", []),
+                    "doc_refs": compact_ctx.get("doc_refs", []),
+                    "notes": compact_ctx.get("notes", []),
+                }
+                if compact_ctx
+                else {},
+                "latest_outputs": compact_out if compact_out else {},
             }
         return {
             "active_operation": payload.get("active_operation"),

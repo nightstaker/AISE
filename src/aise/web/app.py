@@ -924,11 +924,123 @@ class WebProjectService:
             seen.add(text)
             normalized_files.append(text)
         doc_outputs = [f for f in normalized_files if f.startswith("docs/")]
-        return {
+        result = {
             "artifact_ids": artifact_ids,
             "generated_files": normalized_files,
             "doc_outputs": doc_outputs,
         }
+        workflow = str(content.get("workflow", "")).strip()
+        if workflow:
+            result["workflow"] = workflow
+            result["workflow_summary"] = self._extract_workflow_output_summary(project, workflow, content)
+        return result
+
+    def _extract_workflow_output_summary(
+        self,
+        project: Project,
+        workflow: str,
+        content: dict[str, Any],
+    ) -> dict[str, Any]:
+        summary: dict[str, Any] = {"workflow": workflow}
+        if workflow == "deep_product_workflow":
+            step1 = content.get("step1", {}) if isinstance(content.get("step1"), dict) else {}
+            step2 = content.get("step2", {}) if isinstance(content.get("step2"), dict) else {}
+            step3 = content.get("step3", {}) if isinstance(content.get("step3"), dict) else {}
+            summary["rounds"] = {
+                "step1": int(step1.get("memory_items", 0) or 0),
+                "step2": int(step2.get("rounds", 0) or 0),
+                "step3": int(step3.get("rounds", 0) or 0),
+            }
+            return summary
+
+        if workflow == "deep_architecture_workflow":
+            steps = content.get("steps", {}) if isinstance(content.get("steps"), dict) else {}
+            step1 = steps.get("step1", {}) if isinstance(steps.get("step1"), dict) else {}
+            step4 = steps.get("step4", {}) if isinstance(steps.get("step4"), dict) else {}
+            step2_3 = steps.get("step2_3", {}) if isinstance(steps.get("step2_3"), dict) else {}
+            summary["rounds"] = {"step1": int(step1.get("rounds", 0) or 0)}
+            summary["subsystem_rounds_each"] = {}
+            try:
+                status_artifact = project.orchestrator.artifact_store.get_latest(ArtifactType.STATUS_TRACKING)
+                if status_artifact and isinstance(status_artifact.content, dict):
+                    step4_map = status_artifact.content.get("step4_rounds_each", {})
+                    if isinstance(step4_map, dict):
+                        summary["subsystem_rounds_each"] = {
+                            str(k): int(v or 0) for k, v in step4_map.items() if str(k).strip()
+                        }
+            except Exception:
+                summary["subsystem_rounds_each"] = {}
+            summary["subsystems"] = self._build_architecture_subsystem_cards(project, step2_3.get("assignments"))
+            summary["step4_subsystems"] = (
+                list(step4.get("subsystems", [])) if isinstance(step4.get("subsystems"), list) else []
+            )
+            return summary
+
+        if workflow == "deep_developer_workflow":
+            step1 = content.get("step1", {}) if isinstance(content.get("step1"), dict) else {}
+            step2 = content.get("step2", {}) if isinstance(content.get("step2"), dict) else {}
+            summary["rounds"] = {"step2": int(step2.get("rounds_per_subsystem", 0) or 0)}
+            summary["sr_group_count"] = int(step2.get("sr_group_count", 0) or 0)
+            summary["fn_count"] = int(step2.get("fn_count", 0) or 0)
+            summary["subsystems"] = self._build_developer_subsystem_cards(project, step1.get("assignments"))
+            return summary
+        return summary
+
+    def _build_architecture_subsystem_cards(self, project: Project, assignments_value: Any) -> list[dict[str, Any]]:
+        assignments = assignments_value if isinstance(assignments_value, dict) else {}
+        cards: list[dict[str, Any]] = []
+        if not assignments:
+            return cards
+        for subsystem_id, item in assignments.items():
+            if not isinstance(item, dict):
+                continue
+            cards.append(
+                {
+                    "subsystem_id": str(subsystem_id),
+                    "subsystem_name": str(item.get("subsystem", subsystem_id)),
+                    "assigned_sr_ids": (
+                        [str(x) for x in item.get("assigned_sr_ids", [])]
+                        if isinstance(item.get("assigned_sr_ids"), list)
+                        else []
+                    ),
+                    "designer": str(item.get("subsystem_architect", "")),
+                    "reviewer": str(item.get("architecture_reviewer", "")),
+                }
+            )
+        if cards:
+            return cards
+        return cards
+
+    def _build_developer_subsystem_cards(self, project: Project, assignments_value: Any) -> list[dict[str, Any]]:
+        assignments = assignments_value if isinstance(assignments_value, dict) else {}
+        cards: list[dict[str, Any]] = []
+        if not assignments:
+            return cards
+        sr_allocation: dict[str, list[str]] = {}
+        try:
+            arch_artifact = project.orchestrator.artifact_store.get_latest(ArtifactType.ARCHITECTURE_DESIGN)
+            if arch_artifact and isinstance(arch_artifact.content, dict):
+                alloc = arch_artifact.content.get("sr_allocation", {})
+                if isinstance(alloc, dict):
+                    for k, v in alloc.items():
+                        if isinstance(v, list):
+                            sr_allocation[str(k)] = [str(x) for x in v if str(x).strip()]
+        except Exception:
+            sr_allocation = {}
+
+        for subsystem_id, item in assignments.items():
+            if not isinstance(item, dict):
+                continue
+            cards.append(
+                {
+                    "subsystem_id": str(subsystem_id),
+                    "subsystem_name": str(item.get("subsystem", subsystem_id)),
+                    "assigned_sr_ids": list(sr_allocation.get(str(subsystem_id), [])),
+                    "programmer": str(item.get("programmer", "")),
+                    "reviewer": str(item.get("code_reviewer", "")),
+                }
+            )
+        return cards
 
     def _collect_runtime_task_events(
         self,
@@ -1216,7 +1328,10 @@ class WebProjectService:
             elif task_key.startswith("developer.deep_developer_workflow.step2.revision"):
                 spec["purpose_prefixes"] = ["subagent:code_reviewer step:revision_feedback_record"]
             elif task_key.startswith("developer.deep_developer_workflow.step2.merge"):
-                spec["purpose_prefixes"] = ["subagent:programmer step:fn_merge_after_three_rounds"]
+                spec["purpose_prefixes"] = [
+                    "subagent:programmer step:subsystem_batch_merge_after_review_rounds",
+                    "subagent:programmer step:fn_merge_after_three_rounds",
+                ]
             elif task_key != "developer.deep_developer_workflow":
                 spec["purpose_prefixes"] = [f"task_key:{task_key}"]
         elif task_key.startswith("qa_engineer."):
@@ -2222,12 +2337,12 @@ class WebProjectService:
                         },
                         {
                             "key": "developer.deep_developer_workflow.step2.develop",
-                            "name": "fn_test_first_development_loop",
-                            "input_hints": ["subsystem_detail_design_doc", "fn_info", "existing_code"],
+                            "name": "subsystem_batch_sr_group_parallel_development_rounds",
+                            "input_hints": ["subsystem_detail_design_doc", "sr_grouped_fn_info", "existing_code"],
                         },
                         {
                             "key": "developer.deep_developer_workflow.step2.merge",
-                            "name": "fn_merge_after_three_rounds",
+                            "name": "subsystem_batch_merge_after_review_rounds",
                             "input_hints": ["commit_info", "revision_feedback"],
                         },
                     ],
@@ -2237,8 +2352,8 @@ class WebProjectService:
                     "tasks": [
                         {
                             "key": "developer.deep_developer_workflow.step2.review",
-                            "name": "fn_code_and_test_review_loop",
-                            "input_hints": ["subsystem_detail_design_doc", "fn_info", "workspace_changes"],
+                            "name": "subsystem_batch_code_and_test_review_rounds",
+                            "input_hints": ["subsystem_detail_design_doc", "sr_grouped_fn_info", "workspace_changes"],
                         },
                         {
                             "key": "developer.deep_developer_workflow.step2.revision",
