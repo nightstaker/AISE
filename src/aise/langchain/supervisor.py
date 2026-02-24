@@ -101,6 +101,7 @@ def create_supervisor(
         phase = state.get("current_phase", "requirements")
         phase_results = state.get("phase_results", {})
         error = state.get("error")
+        error_retryable = state.get("error_retryable")
         iteration = state.get("iteration", 0)
 
         logger.info(
@@ -110,6 +111,20 @@ def create_supervisor(
             error,
             iteration,
         )
+
+        if error and error_retryable is False:
+            logger.warning(
+                "Supervisor: non-retryable agent error detected, terminating workflow to avoid phase re-execution: phase=%s error=%s",
+                phase,
+                error,
+            )
+            return {
+                "next_agent": "FINISH",
+                "current_phase": "complete",
+                "iteration": iteration + 1,
+                "error": error,
+                "error_retryable": False,
+            }
 
         # Safety valve: avoid infinite loops
         if iteration >= MAX_ITERATIONS:
@@ -181,6 +196,7 @@ def create_supervisor(
             "current_phase": new_phase,
             "iteration": iteration + 1,
             "error": None,  # Clear error after re-routing
+            "error_retryable": None,
         }
 
     return supervisor

@@ -109,7 +109,7 @@ def test_agent_to_phase_unknown_agent_returns_current() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_state(phase: str, phase_results: dict, error=None, iteration: int = 0) -> dict:
+def _make_state(phase: str, phase_results: dict, error=None, iteration: int = 0, error_retryable=None) -> dict:
     from langchain_core.messages import HumanMessage
 
     return {
@@ -121,6 +121,7 @@ def _make_state(phase: str, phase_results: dict, error=None, iteration: int = 0)
         "artifact_ids": [],
         "next_agent": "",
         "error": error,
+        "error_retryable": error_retryable,
         "iteration": iteration,
     }
 
@@ -202,3 +203,19 @@ def test_supervisor_error_falls_back_to_llm(model_config: ModelConfig) -> None:
     result = supervisor2(state)
 
     assert "next_agent" in result
+
+
+def test_supervisor_non_retryable_error_finishes_without_rerouting(model_config: ModelConfig) -> None:
+    supervisor = create_supervisor(model_config, available_agents=_SDLC_AGENTS)
+    state = _make_state(
+        "implementation",
+        {"requirements_product_manager": "completed", "design_architect": "completed"},
+        error="SR task group failed after 2 attempts: subsystem=syncreconnect sr_group=SR-004 round=2",
+        error_retryable=False,
+        iteration=4,
+    )
+    result = supervisor(state)
+
+    assert result["next_agent"] == "FINISH"
+    assert result["current_phase"] == "complete"
+    assert result["error"]

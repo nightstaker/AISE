@@ -205,6 +205,7 @@ class ArchitectureRequirementSkill(Skill):
             "{"
             '"architecture_requirements":[{"source_sr":"SR-0001","target_layer":"api|business|data|integration","component_type":"service|component","description":"string","estimated_complexity":"low|medium|high"}]'
             "}"
+            "。顶层键必须是 architecture_requirements；所有键名与枚举值必须按示例精确输出；不得翻译或改名；不得包裹在 data/result/output/payload 下。"
         )
         response = context.llm_client.complete(
             [

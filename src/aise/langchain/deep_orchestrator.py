@@ -191,7 +191,26 @@ class DeepOrchestrator:
         first_phase = str(first_step.get("phase", "requirements"))
         first_agent = str(first_step.get("agent", PHASE_AGENT_MAP["requirements"]))
 
-        enriched_input = {**project_input, "_workflow_plan": workflow_plan}
+        review_limits = None
+        developer_sr_task_retry_attempts = None
+        if self.config is not None:
+            review_limits = {
+                "min_rounds": int(getattr(self.config.workflow, "review_min_rounds", 2) or 2),
+                "max_rounds": int(getattr(self.config.workflow, "review_max_rounds", 3) or 3),
+            }
+            developer_sr_task_retry_attempts = int(
+                getattr(self.config.workflow, "developer_sr_task_retry_attempts", 2) or 2
+            )
+        enriched_input = {
+            **project_input,
+            "_workflow_plan": workflow_plan,
+            **({"_review_round_limits": review_limits} if isinstance(review_limits, dict) else {}),
+            **(
+                {"_developer_sr_task_retry_attempts": max(1, developer_sr_task_retry_attempts)}
+                if developer_sr_task_retry_attempts is not None
+                else {}
+            ),
+        }
 
         initial_state: AgentWorkflowState = {
             "messages": [HumanMessage(content=f"Start SDLC workflow for project: {name}")],
@@ -202,6 +221,7 @@ class DeepOrchestrator:
             "artifact_ids": [],
             "next_agent": first_agent,
             "error": None,
+            "error_retryable": None,
             "iteration": 0,
         }
 
@@ -216,7 +236,23 @@ class DeepOrchestrator:
 
             phase_results = final_state.get("phase_results", {})
             artifact_ids = final_state.get("artifact_ids", [])
+            final_error = str(final_state.get("error", "") or "").strip()
             last_messages = [m.content for m in final_state.get("messages", [])[-3:] if hasattr(m, "content")]
+
+            if final_error:
+                logger.error(
+                    "DeepOrchestrator workflow ended with terminal error: project=%s error=%s phases=%s",
+                    name,
+                    final_error,
+                    list(phase_results.keys()),
+                )
+                return {
+                    "status": "error",
+                    "error": final_error,
+                    "phase_results": phase_results,
+                    "artifact_ids": artifact_ids,
+                    "messages": last_messages,
+                }
 
             logger.info(
                 "DeepOrchestrator workflow completed: project=%s phases=%s artifacts=%d",

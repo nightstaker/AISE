@@ -37,6 +37,7 @@ class AgentWorkflowState(TypedDict):
 
     # Error propagation – cleared once the error is handled
     error: str | None
+    error_retryable: bool | None
 
     # Iteration counter to prevent infinite supervisor loops
     iteration: int

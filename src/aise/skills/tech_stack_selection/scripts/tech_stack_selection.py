@@ -94,6 +94,7 @@ class TechStackSelectionSkill(Skill):
             '"testing":{"unit":"string","integration":"string","e2e":"string","justification":"string"},'
             '"ci_cd":{"platform":"string","justification":"string"}'
             "}"
+            "。键名必须与上述完全一致；不得翻译或改名；不得包裹在 data/result/output/payload 下。"
         )
         user_prompt = f"架构风格: {arch_style}\n非功能需求:\n" + "\n".join(nfr_lines)
 

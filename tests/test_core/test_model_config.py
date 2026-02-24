@@ -176,6 +176,26 @@ class TestProjectConfigModelResolution:
         first_agent = data["agents"]["product_manager"]
         assert "model" not in first_agent
 
+    def test_workflow_review_round_bounds_round_trip(self):
+        config = ProjectConfig.from_dict(
+            {
+                "workflow": {
+                    "review_min_rounds": 1,
+                    "review_max_rounds": 2,
+                    "developer_sr_task_retry_attempts": 1,
+                    "max_review_iterations": 5,
+                    "fail_on_review_rejection": True,
+                }
+            }
+        )
+        assert config.workflow.review_min_rounds == 1
+        assert config.workflow.review_max_rounds == 2
+        assert config.workflow.developer_sr_task_retry_attempts == 1
+        data = config.to_dict()
+        assert data["workflow"]["review_min_rounds"] == 1
+        assert data["workflow"]["review_max_rounds"] == 2
+        assert data["workflow"]["developer_sr_task_retry_attempts"] == 1
+
     def test_models_support_name_api_model_and_local_flag(self):
         config = ProjectConfig.from_dict(
             {

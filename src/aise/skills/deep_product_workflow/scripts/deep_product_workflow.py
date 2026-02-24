@@ -42,6 +42,7 @@ class DeepProductWorkflowSkill(Skill):
         execution_scope = str(context.parameters.get("execution_scope") or "full_skill")
         output_dir = self._resolve_output_dir(input_data, context)
         output_dir.mkdir(parents=True, exist_ok=True)
+        review_min_rounds, review_max_rounds = self._resolve_review_round_bounds(input_data=input_data, context=context)
 
         attempts: dict[str, int] = {}
 
@@ -122,7 +123,12 @@ class DeepProductWorkflowSkill(Skill):
         _step_start("product_manager.deep_product_workflow.step2.design")
         _step_start("product_manager.deep_product_workflow.step2.review")
         try:
-            design_rounds = self._run_product_design_review_rounds(expanded=expanded, context=context, min_rounds=2)
+            design_rounds = self._run_product_design_review_rounds(
+                expanded=expanded,
+                context=context,
+                min_rounds=review_min_rounds,
+                max_rounds=review_max_rounds,
+            )
             _step_end(
                 "product_manager.deep_product_workflow.step2.design",
                 status="completed",
@@ -147,7 +153,8 @@ class DeepProductWorkflowSkill(Skill):
                 expanded=expanded,
                 latest_design=latest_design,
                 context=context,
-                min_rounds=2,
+                min_rounds=review_min_rounds,
+                max_rounds=review_max_rounds,
             )
             _step_end(
                 "product_manager.deep_product_workflow.step3.design",
@@ -356,6 +363,25 @@ class DeepProductWorkflowSkill(Skill):
             return output
         return []
 
+    def _resolve_review_round_bounds(self, *, input_data: dict[str, Any], context: SkillContext) -> tuple[int, int]:
+        limits = input_data.get("_review_round_limits")
+        if not isinstance(limits, dict):
+            limits = context.parameters.get("workflow_review_round_limits")
+        min_rounds = int((limits or {}).get("min_rounds", 2) or 2)
+        max_rounds = int((limits or {}).get("max_rounds", 3) or 3)
+        min_rounds = max(1, min_rounds)
+        max_rounds = max(1, max_rounds)
+        if min_rounds > max_rounds:
+            min_rounds, max_rounds = max_rounds, min_rounds
+        return min_rounds, max_rounds
+
+    def _clamp_review_rounds(self, *, min_rounds: int, max_rounds: int) -> int:
+        low = max(1, int(min_rounds or 1))
+        high = max(1, int(max_rounds or low))
+        if low > high:
+            low, high = high, low
+        return low
+
     def _designer_expand_requirements(
         self,
         *,
@@ -449,7 +475,7 @@ class DeepProductWorkflowSkill(Skill):
         last_partial: dict[str, Any] = {}
         last_error: Exception | None = None
         for attempt in range(1, max(1, max_attempts) + 1):
-            prompt = user_prompt
+            prompt = user_prompt.rstrip() + "\n\n" + self._json_schema_echo_prompt(required_keys=required_keys)
             if attempt > 1:
                 missing = [key for key in required_keys if key not in last_partial]
                 prompt += (
@@ -475,6 +501,7 @@ class DeepProductWorkflowSkill(Skill):
                 last_error = exc
                 continue
             if isinstance(payload, dict):
+                payload = self._coerce_segment_payload(payload, required_keys=required_keys)
                 last_partial = payload
             if self._segment_payload_ok(payload, required_keys):
                 return payload
@@ -488,6 +515,40 @@ class DeepProductWorkflowSkill(Skill):
         if last_error is not None:
             raise RuntimeError(message) from last_error
         raise RuntimeError(message)
+
+    def _json_schema_echo_prompt(self, *, required_keys: list[str]) -> str:
+        lines = ["JSON format guardrails:"]
+        if required_keys:
+            lines.append(f"- required_keys (exact top-level key names): {', '.join(required_keys)}")
+        lines.append("- Use the exact key literals above (no translation, no synonyms, no renamed keys).")
+        lines.append("- Match expected value shapes from the schema in the prompt (list/object/string/boolean).")
+        lines.append("- Keep enum literals exactly as requested in the prompt (for example approve/revise).")
+        lines.append("- Return exactly one final JSON object only (no markdown, no comments, no prose).")
+        return "\n".join(lines) + "\n"
+
+    def _coerce_segment_payload(self, payload: dict[str, Any], *, required_keys: list[str]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        if all(key in payload for key in required_keys):
+            return payload
+
+        wrapper_keys = ("data", "result", "output", "payload", "response", "json", "object")
+        for key in wrapper_keys:
+            nested = payload.get(key)
+            if isinstance(nested, dict):
+                if all(req in nested for req in required_keys):
+                    return nested
+                deeper = self._coerce_segment_payload(nested, required_keys=required_keys)
+                if all(req in deeper for req in required_keys):
+                    return deeper
+
+        nested_candidates = [item for item in payload.values() if isinstance(item, dict)]
+        if len(nested_candidates) == 1:
+            candidate = nested_candidates[0]
+            if all(req in candidate for req in required_keys):
+                return candidate
+
+        return payload
 
     def _segment_payload_ok(self, payload: dict[str, Any], required_keys: list[str]) -> bool:
         if not isinstance(payload, dict):
@@ -516,12 +577,14 @@ class DeepProductWorkflowSkill(Skill):
         expanded: dict[str, Any],
         context: SkillContext,
         min_rounds: int,
+        max_rounds: int,
     ) -> list[dict[str, Any]]:
         rounds: list[dict[str, Any]] = []
         previous_design: dict[str, Any] | None = None
         previous_review: dict[str, Any] | None = None
 
-        for round_index in range(1, max(2, min_rounds) + 1):
+        total_rounds = self._clamp_review_rounds(min_rounds=min_rounds, max_rounds=max_rounds)
+        for round_index in range(1, total_rounds + 1):
             design = self._designer_build_product_design(
                 expanded=expanded,
                 previous_design=previous_design,
@@ -547,12 +610,14 @@ class DeepProductWorkflowSkill(Skill):
         latest_design: dict[str, Any],
         context: SkillContext,
         min_rounds: int,
+        max_rounds: int,
     ) -> list[dict[str, Any]]:
         rounds: list[dict[str, Any]] = []
         previous_req: dict[str, Any] | None = None
         previous_review: dict[str, Any] | None = None
 
-        for round_index in range(1, max(2, min_rounds) + 1):
+        total_rounds = self._clamp_review_rounds(min_rounds=min_rounds, max_rounds=max_rounds)
+        for round_index in range(1, total_rounds + 1):
             req_doc = self._designer_build_system_requirements(
                 expanded=expanded,
                 design=latest_design,
@@ -1357,9 +1422,18 @@ class DeepProductWorkflowSkill(Skill):
     ) -> dict[str, Any]:
         if context.llm_client is None:
             raise RuntimeError("LLM client is required for deep_product_workflow")
+        json_contract = (
+            "\n\nOutput contract:\n"
+            "- Return exactly one JSON object only.\n"
+            "- Do not return markdown fences, comments, or explanatory prose.\n"
+            "- Do not wrap the object under extra keys such as data/result/output/payload unless explicitly requested.\n"
+            "- Use exact key names and nested key names specified in the prompt schema (no translation/synonyms).\n"
+            "- Use exact enum/keyword literals specified in the prompt (for example approve/revise, low/medium/high).\n"
+            "- Match the expected value types in the schema (string/list/object/boolean), do not stringify nested JSON.\n"
+        )
         response = context.llm_client.complete(
             [
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": system_prompt + json_contract},
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
@@ -1379,19 +1453,120 @@ class DeepProductWorkflowSkill(Skill):
     def _parse_json_response(self, text: str) -> dict[str, Any] | None:
         if not text:
             return None
+        candidates: list[str] = [text]
+        block = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
+        if block:
+            candidates.append(block.group(1))
+
+        extracted = self._extract_first_json_object(text)
+        if extracted:
+            candidates.append(extracted)
+
+        for candidate in candidates:
+            parsed = self._try_parse_json_object(candidate)
+            if parsed is not None:
+                return parsed
+
+            repaired = self._repair_common_json_issues(candidate)
+            if repaired != candidate:
+                parsed = self._try_parse_json_object(repaired)
+                if parsed is not None:
+                    return parsed
+
+            truncated = self._repair_truncated_top_level_object(repaired)
+            if truncated is not None:
+                parsed = self._try_parse_json_object(truncated)
+                if parsed is not None:
+                    return parsed
+        return None
+
+    def _try_parse_json_object(self, text: str) -> dict[str, Any] | None:
         try:
             parsed = json.loads(text)
             return parsed if isinstance(parsed, dict) else None
         except json.JSONDecodeError:
-            pass
-        match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
-        if not match:
             return None
-        try:
-            parsed = json.loads(match.group(1))
-            return parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError:
+
+    def _extract_first_json_object(self, text: str) -> str | None:
+        start = text.find("{")
+        if start < 0:
             return None
+
+        depth = 0
+        in_string = False
+        escape = False
+        for idx, ch in enumerate(text[start:], start=start):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                depth += 1
+                continue
+            if ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : idx + 1]
+        return None
+
+    def _repair_common_json_issues(self, text: str) -> str:
+        repaired = text.strip()
+        repaired = re.sub(r',"\s*\n\s*([A-Za-z_][A-Za-z0-9_]*)"', r',\n"\1"', repaired)
+        return repaired
+
+    def _repair_truncated_top_level_object(self, text: str) -> str | None:
+        source = text.strip()
+        if not source.startswith("{"):
+            return None
+        if source.endswith("}"):
+            return None
+
+        commas: list[int] = []
+        depth = 0
+        in_string = False
+        escape = False
+        for idx, ch in enumerate(source):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch in "{[":
+                depth += 1
+                continue
+            if ch in "}]":
+                depth = max(0, depth - 1)
+                continue
+            if ch == "," and depth == 1:
+                commas.append(idx)
+
+        for comma_idx in reversed(commas):
+            candidate = source[:comma_idx].rstrip()
+            if not candidate.startswith("{"):
+                continue
+            candidate = candidate + "\n}"
+            if self._try_parse_json_object(candidate) is not None:
+                return candidate
+
+        fallback = re.sub(r"[,\s]+$", "", source)
+        if fallback.startswith("{") and fallback != source:
+            fallback = fallback + "}"
+            if self._try_parse_json_object(fallback) is not None:
+                return fallback
+        return None
 
     def _split_lines(self, text: str) -> list[str]:
         return [line.strip("- ").strip() for line in text.splitlines() if line.strip()]

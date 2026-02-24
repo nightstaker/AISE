@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ pytest.importorskip("httpx")
 
 from fastapi.testclient import TestClient
 
+import aise.web.app as web_app_module
 from aise.web.app import WebProjectService, create_app
 
 
@@ -297,3 +299,174 @@ class TestWebTaskStatusInference:
         assert not project_dirs[0].exists()
         assert client.get(f"/api/projects/{project_id}").status_code == 404
         assert client.get("/api/projects").json()["projects"] == []
+
+
+class TestTaskRetryRecovery:
+    def test_retry_recovers_stale_running_operation(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        project_id = service.create_project("RetryRecovery", "local")
+
+        run_id = "run_stale_001"
+        with service._lock:
+            service._runs_by_project.setdefault(project_id, []).append(
+                web_app_module.WorkflowRun(
+                    run_id=run_id,
+                    requirement_text="Recover stale retry",
+                    started_at=datetime.now(timezone.utc),
+                    status="running",
+                )
+            )
+            service._save_state()
+
+        store = service._run_task_state_store(project_id, run_id)
+        store.save(
+            {
+                "active_operation": {
+                    "op_id": "retry_stale_dead",
+                    "type": "task_retry",
+                    "status": "running",
+                    "phase_key": "requirements",
+                    "task_key": "product_manager.deep_product_workflow.step1",
+                    "mode": "current",
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                },
+                "tasks": {
+                    "requirements::product_manager.deep_product_workflow.step1": {
+                        "phase_key": "requirements",
+                        "task_key": "product_manager.deep_product_workflow.step1",
+                        "display_name": "step1",
+                        "latest_status": "running",
+                        "latest_attempt_no": 1,
+                        "attempts": [
+                            {
+                                "attempt_no": 1,
+                                "kind": "retry",
+                                "mode": "current",
+                                "status": "running",
+                                "started_at": datetime.now(timezone.utc).isoformat(),
+                                "completed_at": None,
+                                "error": "",
+                                "executor": {},
+                                "context": {},
+                                "outputs": {},
+                            }
+                        ],
+                    }
+                },
+            }
+        )
+
+        monkeypatch.setattr(
+            service,
+            "_build_task_execution_plan",
+            lambda *args, **kwargs: [
+                web_app_module.TaskExecUnit(
+                    phase_key="requirements",
+                    task_key="product_manager.deep_product_workflow.step1",
+                    agent_name="product_manager",
+                    skill_name="deep_product_workflow",
+                    execution_scope="step1",
+                    display_name="step1",
+                )
+            ],
+        )
+
+        class _FakeThread:
+            def __init__(self, *args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+
+            def start(self):
+                return None
+
+        monkeypatch.setattr(web_app_module, "Thread", _FakeThread)
+
+        result = service.retry_task(
+            project_id,
+            run_id,
+            phase_key="requirements",
+            task_key="product_manager.deep_product_workflow.step1",
+            mode="current",
+        )
+
+        assert result["accepted"] is True
+        task_state = store.get_task("requirements", "product_manager.deep_product_workflow.step1")
+        assert task_state is not None
+        assert task_state["latest_status"] == "failed"
+        assert task_state["attempts"][0]["status"] == "failed"
+
+
+class TestWebRunTaskSummary:
+    def test_get_run_exposes_developer_step1_workflow_summary_subsystems(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        project_id = service.create_project("RunTaskSummary", "local")
+        run_id = "run_step1_summary_001"
+
+        with service._lock:
+            service._runs_by_project.setdefault(project_id, []).append(
+                web_app_module.WorkflowRun(
+                    run_id=run_id,
+                    requirement_text="Build subsystem cards",
+                    started_at=datetime.now(timezone.utc),
+                    status="running",
+                )
+            )
+            service._save_state()
+
+        store = service._run_task_state_store(project_id, run_id)
+        store.save(
+            {
+                "tasks": {
+                    "implementation::developer.deep_developer_workflow.step1": {
+                        "phase_key": "implementation",
+                        "task_key": "developer.deep_developer_workflow.step1",
+                        "display_name": "step1",
+                        "latest_status": "completed",
+                        "latest_attempt_no": 1,
+                        "attempts": [
+                            {
+                                "attempt_no": 1,
+                                "kind": "initial",
+                                "mode": "current",
+                                "status": "completed",
+                                "started_at": datetime.now(timezone.utc).isoformat(),
+                                "completed_at": datetime.now(timezone.utc).isoformat(),
+                                "error": "",
+                                "executor": {},
+                                "context": {},
+                                "outputs": {
+                                    "workflow_summary": {
+                                        "workflow": "deep_developer_workflow",
+                                        "subsystems": [
+                                            {
+                                                "subsystem_id": "SUB-001",
+                                                "subsystem_name": "User Service",
+                                                "subsystem_slug": "user_service",
+                                                "assigned_sr_ids": ["SR-001"],
+                                            }
+                                        ],
+                                        "rounds": {"step2": 3},
+                                    }
+                                },
+                            }
+                        ],
+                    }
+                }
+            }
+        )
+
+        payload = service.get_run(project_id, run_id)
+        assert payload is not None
+        summary = payload.get("task_state_summary", {})
+        assert isinstance(summary, dict)
+        key = "implementation::developer.deep_developer_workflow.step1"
+        assert key in summary
+        latest_outputs = summary[key].get("latest_outputs", {})
+        workflow_summary = latest_outputs.get("workflow_summary", {})
+        assert workflow_summary.get("workflow") == "deep_developer_workflow"
+        subsystems = workflow_summary.get("subsystems", [])
+        assert isinstance(subsystems, list)
+        assert len(subsystems) == 1
+        assert subsystems[0]["subsystem_id"] == "SUB-001"

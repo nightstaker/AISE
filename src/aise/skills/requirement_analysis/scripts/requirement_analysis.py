@@ -86,6 +86,8 @@ class RequirementAnalysisSkill(Skill):
             '"open_questions": ["string"],'
             '"search_evidence": [{"title":"string","url":"string","finding":"string"}]'
             "}"
+            "。要求：顶层键名必须与上述完全一致；不得翻译或改名；不得包裹在 data/result/output/payload 下；"
+            "priority 字段值只能使用 low|medium|high。"
         )
         user_prompt = f"原始需求如下，请分析并结构化：\n{raw}"
 
@@ -382,6 +384,9 @@ class RequirementAnalysisSkill(Skill):
             "你是资深产品经理。请基于以下需求，细化每个需求的说明。"
             "仅返回JSON对象，键是需求ID，值是对象，字段必须包含："
             "normal_scenario, exception_scenario, specification, performance。"
+            "键名必须完全一致，不得翻译或改名，不得包裹在 data/result/output/payload 下。"
+            "输出结构示例："
+            '{"FR-001":{"normal_scenario":"string","exception_scenario":"string","specification":"string","performance":"string"}}'
         )
         response = context.llm_client.complete(
             [
