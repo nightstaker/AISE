@@ -253,6 +253,24 @@ class TestWebPersistence:
         assert len(project_payload["requirements"]) == 1
         assert len(project_payload["runs"]) == 1
 
+
+class TestWebTaskStatusInference:
+    def test_runtime_running_status_is_not_downgraded_to_pending(self):
+        status = WebProjectService._infer_live_task_status(
+            phase_status="running",
+            runtime_status="running",
+            has_trace_events=False,
+        )
+        assert status == "running"
+
+    def test_runtime_in_progress_status_is_not_downgraded_to_pending(self):
+        status = WebProjectService._infer_live_task_status(
+            phase_status="running",
+            runtime_status="in_progress",
+            has_trace_events=False,
+        )
+        assert status == "running"
+
     def test_delete_project_removes_directory_and_state(self, monkeypatch, tmp_path):
         monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
         monkeypatch.chdir(tmp_path)

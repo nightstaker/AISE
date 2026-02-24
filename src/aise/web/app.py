@@ -1695,6 +1695,8 @@ class WebProjectService:
             return "completed"
         if normalized_runtime in {"failed", "error"}:
             return "failed"
+        if normalized_runtime in {"running", "in_progress", "in-review", "in_review", "started"}:
+            return "running"
         normalized_phase = str(phase_status or "").strip().lower()
         if has_trace_events and normalized_phase in {"failed"}:
             return "failed"

@@ -182,10 +182,13 @@ class DeepDeveloperWorkflowSkill(Skill):
         subsystem_cards = []
         for subsystem_id, assign_item in assignments.items():
             item = assign_item if isinstance(assign_item, dict) else {}
+            subsystem_slug = self._subsystem_slug_from_assignment(assign=item, subsystem_key=str(subsystem_id))
             subsystem_cards.append(
                 {
                     "subsystem_id": str(subsystem_id),
                     "subsystem_name": str(item.get("subsystem", subsystem_id)),
+                    "subsystem_slug": subsystem_slug,
+                    "subsystem_english_name": str(item.get("subsystem_english_name", "")).strip() or subsystem_slug,
                     "assigned_sr_ids": [str(x) for x in sr_allocation.get(str(subsystem_id), [])]
                     if isinstance(sr_allocation.get(str(subsystem_id), []), list)
                     else [],
@@ -369,8 +372,11 @@ class DeepDeveloperWorkflowSkill(Skill):
 
         for index, subsystem in enumerate(subsystems):
             subsystem_id = str(subsystem.get("id", f"subsystem_{index + 1}"))
+            subsystem_display = str(subsystem.get("name", subsystem_id))
+            subsystem_english = str(subsystem.get("english_name", "")).strip()
             assignments[subsystem_id] = {
-                "subsystem": str(subsystem.get("name", subsystem_id)),
+                "subsystem": subsystem_display,
+                "subsystem_english_name": subsystem_english,
                 "programmer": programmer_pool[index % len(programmer_pool)],
                 "code_reviewer": reviewer_pool[index % len(reviewer_pool)],
             }
@@ -460,6 +466,232 @@ class DeepDeveloperWorkflowSkill(Skill):
         token = self._slugify(str(value))
         return token[:80] if token else "na"
 
+    def _subsystem_slug_from_assignment(self, *, assign: dict[str, Any], subsystem_key: str) -> str:
+        english_name = str(assign.get("subsystem_english_name", "")).strip()
+        if english_name:
+            slug = self._slugify(english_name)
+            if slug and slug != "item":
+                return slug
+        display_name = str(assign.get("subsystem") or subsystem_key).strip()
+        slug = self._slugify(display_name)
+        if slug and slug != "item":
+            return slug
+        key_slug = self._slugify(str(subsystem_key))
+        if key_slug and key_slug != "item":
+            return key_slug
+        return "subsystem"
+
+    def _plan_subsystem_file_manifest(
+        self,
+        *,
+        context: SkillContext,
+        subsystem_key: str,
+        subsystem_slug: str,
+        assign: dict[str, Any],
+        fn_items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        fallback = self._build_fallback_subsystem_file_manifest(
+            subsystem_slug=subsystem_slug,
+            fn_items=fn_items,
+        )
+        if context.llm_client is None or not fn_items:
+            return fallback
+
+        fn_summary = [
+            {
+                "id": str(item.get("id", "")),
+                "name": str(item.get("name", "")),
+                "description": str(item.get("description", "")),
+                "spec": str(item.get("spec", ""))[:500],
+                "suggested_file_path": str(item.get("file_path", "")),
+                "layer": str(item.get("layer", "")),
+                "type": str(item.get("type", "")),
+            }
+            for item in fn_items
+            if isinstance(item, dict)
+        ]
+        try:
+            payload = self._run_llm_json_segment(
+                context=context,
+                purpose=(
+                    "subagent:programmer step:subsystem_file_manifest_planning "
+                    f"subsystem:{self._purpose_token(subsystem_slug)} fns:{len(fn_summary)}"
+                ),
+                system_prompt=(
+                    "You are a senior software engineer planning subsystem source files.\n"
+                    "Return JSON only with keys: module_files, fn_to_module_map.\n"
+                    "Rules:\n"
+                    "- module_files: list[str] of Python filenames under src/<subsystem>/ (e.g. order_command.py)\n"
+                    "- ASCII lowercase snake_case filenames only, suffix .py, no directories.\n"
+                    "- fn_to_module_map: object mapping each FN id to one filename from module_files.\n"
+                    "- Every FN id must be mapped exactly once.\n"
+                    "- Use one dedicated module per FN for now (do not map multiple FN ids to the same file).\n"
+                    "- Plan a stable file list first; later implementation rounds will only modify these files.\n"
+                    "- Prefer domain-meaningful names; avoid generic file names like module.py/service.py/handler.py.\n"
+                ),
+                user_prompt=(
+                    f"Subsystem key: {subsystem_key}\n"
+                    f"Subsystem display name: {str(assign.get('subsystem', subsystem_key))}\n"
+                    f"Subsystem english slug (fixed for directories/imports): {subsystem_slug}\n"
+                    f"FN count: {len(fn_summary)}\n"
+                    "Generate the complete source module file list first, then map each FN to one existing file.\n\n"
+                    f"FN items:\n{self._compact_json(fn_summary)}\n"
+                ),
+                required_keys=["module_files", "fn_to_module_map"],
+                module_name="subsystem_manifest",
+                subsystem_slug=subsystem_slug,
+            )
+            return self._normalize_subsystem_file_manifest_payload(
+                payload=payload,
+                subsystem_slug=subsystem_slug,
+                fn_items=fn_items,
+            )
+        except Exception:
+            return fallback
+
+    def _build_fallback_subsystem_file_manifest(
+        self,
+        *,
+        subsystem_slug: str,
+        fn_items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        used_module_names: set[str] = set()
+        fn_plans: list[dict[str, str]] = []
+        module_files: list[str] = []
+        for index, fn_item in enumerate(fn_items, start=1):
+            fn_id = str(fn_item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"
+            module_name = self._derive_semantic_module_name(
+                fn_id=fn_id,
+                fn_name=str(fn_item.get("name", "")),
+                fn_description=str(fn_item.get("description", "")),
+                suggested_file_path=str(fn_item.get("file_path", "")),
+                subsystem_slug=subsystem_slug,
+                layer=str(fn_item.get("layer", "")),
+                component_type=str(fn_item.get("type", "")),
+                index=index,
+                used_names=used_module_names,
+            )
+            module_file = f"{module_name}.py"
+            fn_plans.append({"fn_id": fn_id, "module_name": module_name, "module_file": module_file})
+            module_files.append(module_file)
+        return {"module_files": module_files, "fn_plans": fn_plans}
+
+    def _normalize_subsystem_file_manifest_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        subsystem_slug: str,
+        fn_items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise RuntimeError("Invalid subsystem file manifest payload")
+        raw_files = payload.get("module_files")
+        raw_map = payload.get("fn_to_module_map")
+        if not isinstance(raw_files, list) or not isinstance(raw_map, dict):
+            raise RuntimeError("Subsystem file manifest missing module_files/fn_to_module_map")
+
+        module_files: list[str] = []
+        seen_files: set[str] = set()
+        for item in raw_files:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            text = text.replace("\\", "/").split("/")[-1]
+            if not text.endswith(".py"):
+                text = f"{Path(text).stem}.py"
+            stem = self._slugify(Path(text).stem)
+            if not stem or stem == "item":
+                continue
+            normalized_file = f"{stem}.py"
+            if normalized_file in seen_files:
+                continue
+            seen_files.add(normalized_file)
+            module_files.append(normalized_file)
+        if not module_files:
+            raise RuntimeError("LLM subsystem file manifest produced no valid module files")
+
+        fn_ids = [
+            str(item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN" for item in fn_items if isinstance(item, dict)
+        ]
+        fn_set = set(fn_ids)
+        used_modules: set[str] = set()
+        fn_plans: list[dict[str, str]] = []
+        for fn_id in fn_ids:
+            raw_file = str(raw_map.get(fn_id, "")).strip()
+            if not raw_file:
+                raise RuntimeError(f"LLM subsystem file manifest missing fn_to_module_map entry for {fn_id}")
+            candidate = raw_file.replace("\\", "/").split("/")[-1]
+            if not candidate.endswith(".py"):
+                candidate = f"{Path(candidate).stem}.py"
+            candidate = f"{self._slugify(Path(candidate).stem)}.py"
+            if candidate not in seen_files:
+                raise RuntimeError(f"LLM subsystem file manifest mapped {fn_id} to unknown file {candidate}")
+            module_name = Path(candidate).stem
+            if module_name in used_modules:
+                raise RuntimeError("LLM subsystem file manifest must map one FN to one unique module file")
+            used_modules.add(module_name)
+            fn_plans.append({"fn_id": fn_id, "module_name": module_name, "module_file": candidate})
+
+        extra_unmapped_keys = [k for k in raw_map.keys() if str(k).strip() and str(k).strip() not in fn_set]
+        if extra_unmapped_keys:
+            # Ignore extras but keep deterministic order/shape.
+            pass
+
+        # Keep only files actually referenced by FN mappings to avoid later accidental file creation drift.
+        referenced_files = [str(item["module_file"]) for item in fn_plans]
+        return {"module_files": referenced_files, "fn_plans": fn_plans}
+
+    def _initialize_planned_subsystem_files(
+        self,
+        *,
+        src_subsystem_dir: Path,
+        tests_subsystem_dir: Path,
+        subsystem_slug: str,
+        file_plan: dict[str, Any],
+    ) -> None:
+        fn_plans = file_plan.get("fn_plans", [])
+        if not isinstance(fn_plans, list):
+            return
+        for item in fn_plans:
+            if not isinstance(item, dict):
+                continue
+            module_name = str(item.get("module_name", "")).strip()
+            if not module_name:
+                continue
+            code_path = src_subsystem_dir / f"{module_name}.py"
+            test_path = tests_subsystem_dir / f"test_{subsystem_slug}_{module_name}.py"
+            if not code_path.exists():
+                code_path.write_text(
+                    self._placeholder_source_content(subsystem_slug=subsystem_slug, module_name=module_name),
+                    encoding="utf-8",
+                )
+            if not test_path.exists():
+                test_path.write_text(
+                    self._placeholder_test_content(subsystem_slug=subsystem_slug, module_name=module_name),
+                    encoding="utf-8",
+                )
+
+    def _placeholder_source_content(self, *, subsystem_slug: str, module_name: str) -> str:
+        return (
+            "from __future__ import annotations\n\n"
+            f"def implement_{module_name}(input_data: dict | None = None) -> dict[str, object]:\n"
+            "    payload = input_data or {}\n"
+            "    return {\n"
+            "        'status': 'ok',\n"
+            "        'data': {'placeholder': True, 'input_keys': sorted(payload.keys())},\n"
+            "        'errors': [],\n"
+            f"        'meta': {{'subsystem': '{subsystem_slug}', 'operation': '{module_name}'}},\n"
+            "    }\n"
+        )
+
+    def _placeholder_test_content(self, *, subsystem_slug: str, module_name: str) -> str:
+        return (
+            f"from src.{subsystem_slug}.{module_name} import implement_{module_name}\n\n\n"
+            f"def test_{module_name}_placeholder() -> None:\n"
+            f"    result = implement_{module_name}()\n"
+            "    assert isinstance(result, dict)\n"
+        )
+
     def _fallback_test_content(
         self,
         *,
@@ -525,6 +757,10 @@ class DeepDeveloperWorkflowSkill(Skill):
         code_path = Path(plan["code_path"])
         test_path = Path(plan["test_path"])
         comments = list(plan.get("comments", []))
+        if not code_path.exists() or not test_path.exists():
+            raise RuntimeError(
+                f"Planned files must exist before FN development: code={code_path.exists()} test={test_path.exists()}"
+            )
 
         generated = self._generate_python_fn_with_llm(
             context=context,
@@ -590,7 +826,7 @@ class DeepDeveloperWorkflowSkill(Skill):
         assign: dict[str, Any],
         subsystem_rounds: int,
     ) -> dict[str, Any]:
-        subsystem_slug = self._slugify(str(assign.get("subsystem") or subsystem_key))
+        subsystem_slug = self._subsystem_slug_from_assignment(assign=assign, subsystem_key=subsystem_key)
         src_subsystem_dir = src_dir / subsystem_slug
         tests_subsystem_dir = tests_dir / "services" / subsystem_slug
         src_subsystem_dir.mkdir(parents=True, exist_ok=True)
@@ -609,7 +845,26 @@ class DeepDeveloperWorkflowSkill(Skill):
                 encoding="utf-8",
             )
 
-        used_module_names: set[str] = set()
+        subsystem_file_plan = self._plan_subsystem_file_manifest(
+            context=context,
+            subsystem_key=subsystem_key,
+            subsystem_slug=subsystem_slug,
+            assign=assign,
+            fn_items=fn_items,
+        )
+        self._initialize_planned_subsystem_files(
+            src_subsystem_dir=src_subsystem_dir,
+            tests_subsystem_dir=tests_subsystem_dir,
+            subsystem_slug=subsystem_slug,
+            file_plan=subsystem_file_plan,
+        )
+
+        fn_module_map = {
+            str(item.get("fn_id", "")): str(item.get("module_name", ""))
+            for item in subsystem_file_plan.get("fn_plans", [])
+            if isinstance(item, dict)
+        }
+        used_module_names: set[str] = set(str(x) for x in fn_module_map.values() if str(x))
         fn_plans: list[dict[str, Any]] = []
         for fn_index, fn_item in enumerate(fn_items, start=1):
             fn_id = str(fn_item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"
@@ -619,17 +874,35 @@ class DeepDeveloperWorkflowSkill(Skill):
             fn_file_path = str(fn_item.get("file_path", "")).strip()
             fn_layer = str(fn_item.get("layer", "")).strip()
             fn_type = str(fn_item.get("type", "")).strip()
-            fn_slug = self._derive_semantic_module_name(
-                fn_id=fn_id,
-                fn_name=fn_name,
-                fn_description=fn_description,
-                suggested_file_path=fn_file_path,
-                subsystem_slug=subsystem_slug,
-                layer=fn_layer,
-                component_type=fn_type,
-                index=fn_index,
-                used_names=used_module_names,
-            )
+            fn_slug = fn_module_map.get(fn_id, "")
+            if not fn_slug:
+                # Fallback only when file manifest generation failed validation for a specific FN.
+                fn_slug = self._derive_semantic_module_name(
+                    fn_id=fn_id,
+                    fn_name=fn_name,
+                    fn_description=fn_description,
+                    suggested_file_path=fn_file_path,
+                    subsystem_slug=subsystem_slug,
+                    layer=fn_layer,
+                    component_type=fn_type,
+                    index=fn_index,
+                    used_names=used_module_names,
+                )
+                fallback_code_path = src_subsystem_dir / f"{fn_slug}.py"
+                fallback_test_path = tests_subsystem_dir / f"test_{subsystem_slug}_{fn_slug}.py"
+                if not fallback_code_path.exists():
+                    fallback_code_path.write_text(
+                        self._placeholder_source_content(subsystem_slug=subsystem_slug, module_name=fn_slug),
+                        encoding="utf-8",
+                    )
+                if not fallback_test_path.exists():
+                    fallback_test_path.write_text(
+                        self._placeholder_test_content(
+                            subsystem_slug=subsystem_slug,
+                            module_name=fn_slug,
+                        ),
+                        encoding="utf-8",
+                    )
 
             code_path = src_subsystem_dir / f"{fn_slug}.py"
             test_path = tests_subsystem_dir / f"test_{subsystem_slug}_{fn_slug}.py"
@@ -1144,6 +1417,28 @@ class DeepDeveloperWorkflowSkill(Skill):
         except TypeError:
             return str(payload)
 
+    def _json_schema_echo_prompt(
+        self,
+        *,
+        required_keys: list[str] | None = None,
+        optional_keys: list[str] | None = None,
+    ) -> str:
+        required = [str(key).strip() for key in (required_keys or []) if str(key).strip()]
+        optional = [str(key).strip() for key in (optional_keys or []) if str(key).strip()]
+        lines = ["JSON format guardrails:"]
+        if required:
+            lines.append(f"- required_keys (schema echo): {', '.join(required)}")
+        if optional:
+            lines.append(f"- optional_keys (schema echo): {', '.join(optional)}")
+        lines.append(
+            "- First build a complete JSON skeleton with the listed key names as placeholders, "
+            "then fill every value before sending the final answer."
+        )
+        if required:
+            lines.append("- Do not omit any required key, even if a value must be empty string/list/object.")
+        lines.append("- Return exactly one final JSON object only (no markdown, no comments, no prose).")
+        return "\n".join(lines) + "\n"
+
     def _run_llm_json_segment(
         self,
         *,
@@ -1159,7 +1454,7 @@ class DeepDeveloperWorkflowSkill(Skill):
         last_partial: dict[str, Any] = {}
         last_error: Exception | None = None
         for attempt in range(1, max(1, max_attempts) + 1):
-            prompt = user_prompt
+            prompt = user_prompt.rstrip() + "\n\n" + self._json_schema_echo_prompt(required_keys=required_keys)
             if attempt > 1:
                 missing = [key for key in required_keys if key not in last_partial]
                 prompt += (
@@ -1173,7 +1468,9 @@ class DeepDeveloperWorkflowSkill(Skill):
                         "- Continue from the partial JSON below and return a FULL valid JSON object for this segment.\n"
                         f"Partial response:\n{self._compact_json(last_partial)}\n"
                     )
-                prompt += "- Return compact valid JSON object only.\n"
+                prompt += (
+                    "- Rebuild the full JSON skeleton first, then fill values and return compact valid JSON only.\n"
+                )
             try:
                 payload = self._run_llm_json(
                     context=context,
