@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,12 @@ class DeepDeveloperWorkflowSkill(Skill):
         all_test_files: list[str] = []
         review_records: list[dict[str, Any]] = []
         merged_fn_ids: list[str] = []
+        subsystem_rounds = max(2, min(3, int(input_data.get("subsystem_review_rounds", 3) or 3)))
+        subsystem_parallel_workers = max(
+            1,
+            int(input_data.get("subsystem_parallel_workers", input_data.get("fn_parallel_workers", 4)) or 4),
+        )
+        total_sr_groups = 0
 
         attempts: dict[str, int] = {}
 
@@ -108,148 +115,58 @@ class DeepDeveloperWorkflowSkill(Skill):
 
         # Step 1: task split and per-subsystem pairing.
         try:
+            subsystem_jobs: list[tuple[str, list[dict[str, Any]], dict[str, Any]]] = []
             for subsystem_key, fn_items in fn_by_subsystem.items():
                 assign = assignments.get(subsystem_key) or {
                     "programmer": "programmer_1",
                     "code_reviewer": "code_reviewer_1",
                     "subsystem": subsystem_key,
                 }
-                subsystem_slug = self._slugify(str(assign.get("subsystem") or subsystem_key))
-                src_subsystem_dir = src_dir / "services" / subsystem_slug
-                tests_subsystem_dir = tests_dir / "services" / subsystem_slug
-                src_subsystem_dir.mkdir(parents=True, exist_ok=True)
-                tests_subsystem_dir.mkdir(parents=True, exist_ok=True)
+                subsystem_jobs.append((str(subsystem_key), list(fn_items), dict(assign)))
 
-                src_revision = src_subsystem_dir / "revision.md"
-                tests_revision = tests_subsystem_dir / "revision.md"
-                if not src_revision.exists():
-                    src_revision.write_text(
-                        f"# {subsystem_slug} source revisions\n\nGenerated at {self._now_iso()}\n\n",
-                        encoding="utf-8",
-                    )
-                if not tests_revision.exists():
-                    tests_revision.write_text(
-                        f"# {subsystem_slug} test revisions\n\nGenerated at {self._now_iso()}\n\n",
-                        encoding="utf-8",
-                    )
-
-                used_module_names: set[str] = set()
-                # Step 2: Programmer loops FN by FN; each FN has >=3 paired review rounds.
-                for fn_index, fn_item in enumerate(fn_items, start=1):
-                    fn_id = str(fn_item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"
-                    fn_description = str(fn_item.get("description", "")).strip() or "Feature implementation"
-                    fn_spec = str(fn_item.get("spec", "")).strip() or "Conform to subsystem detail design"
-                    fn_slug = self._derive_semantic_module_name(
-                        fn_id=fn_id,
-                        fn_description=fn_description,
-                        index=fn_index,
-                        used_names=used_module_names,
-                    )
-
-                    code_path = src_subsystem_dir / f"{fn_slug}.py"
-                    test_path = tests_subsystem_dir / f"test_{subsystem_slug}_{fn_slug}.py"
-                    comments: list[str] = []
-
-                    for round_index in range(1, 4):
-                        generated = self._generate_python_fn_with_llm(
+            subsystem_results: dict[str, dict[str, Any]] = {}
+            if len(subsystem_jobs) > 1 and subsystem_parallel_workers > 1:
+                with ThreadPoolExecutor(
+                    max_workers=min(subsystem_parallel_workers, len(subsystem_jobs)),
+                    thread_name_prefix="dev-subsys",
+                ) as pool:
+                    future_map = {
+                        pool.submit(
+                            self._process_single_subsystem_batch_rounds,
                             context=context,
-                            subsystem_slug=subsystem_slug,
-                            module_name=fn_slug,
-                            fn_id=fn_id,
-                            fn_description=fn_description,
-                            fn_spec=fn_spec,
-                            round_index=round_index,
-                            reviewer_comments=comments,
-                        )
-                        raw_test_content = generated.get("test_content", "")
-                        raw_code_content = generated.get("code_content", "")
-                        test_content = (
-                            raw_test_content
-                            if self._is_valid_generated_test_content(
-                                test_content=raw_test_content,
-                                subsystem_slug=subsystem_slug,
-                                module_name=fn_slug,
-                            )
-                            else ""
-                        ) or self._fallback_test_content(
-                            subsystem_slug=subsystem_slug,
-                            module_name=fn_slug,
-                            fn_id=fn_id,
-                            fn_description=fn_description,
-                        )
-                        code_content = (
-                            raw_code_content
-                            if self._is_valid_generated_code_content(raw_code_content, module_name=fn_slug)
-                            else ""
-                        ) or self._fallback_code_content(
-                            subsystem_slug=subsystem_slug,
-                            module_name=fn_slug,
-                            fn_id=fn_id,
-                            fn_description=fn_description,
-                            fn_spec=fn_spec,
-                        )
-                        test_path.write_text(test_content, encoding="utf-8")
-                        code_path.write_text(code_content, encoding="utf-8")
+                            src_dir=src_dir,
+                            tests_dir=tests_dir,
+                            subsystem_key=subsystem_key,
+                            fn_items=fn_items,
+                            assign=assign,
+                            subsystem_rounds=subsystem_rounds,
+                        ): subsystem_key
+                        for subsystem_key, fn_items, assign in subsystem_jobs
+                    }
+                    for future in as_completed(future_map):
+                        subsystem_key = future_map[future]
+                        subsystem_results[subsystem_key] = future.result()
+            else:
+                for subsystem_key, fn_items, assign in subsystem_jobs:
+                    subsystem_results[subsystem_key] = self._process_single_subsystem_batch_rounds(
+                        context=context,
+                        src_dir=src_dir,
+                        tests_dir=tests_dir,
+                        subsystem_key=subsystem_key,
+                        fn_items=fn_items,
+                        assign=assign,
+                        subsystem_rounds=subsystem_rounds,
+                    )
 
-                        check_result = self._run_static_and_unit_checks(code_path, test_path)
-
-                        # Code Reviewer: inspect and feed revision comments.
-                        review = self._review_fn_change(
-                            subsystem=subsystem_slug,
-                            fn_id=fn_id,
-                            fn_description=fn_description,
-                            round_index=round_index,
-                            check_result=check_result,
-                            reviewer=str(assign.get("code_reviewer", "code_reviewer_1")),
-                        )
-                        comments = list(review.get("suggestions", []))
-
-                        self._append_revision(
-                            src_revision,
-                            fn_id=fn_id,
-                            role="code_reviewer",
-                            round_index=round_index,
-                            summary=str(review.get("summary", "")),
-                            details=list(review.get("suggestions", [])),
-                        )
-                        self._append_revision(
-                            src_revision,
-                            fn_id=fn_id,
-                            role="programmer",
-                            round_index=round_index,
-                            summary="Applied review feedback and updated implementation.",
-                            details=[f"Response: addressed reviewer suggestions in round {round_index}."],
-                        )
-                        self._append_revision(
-                            tests_revision,
-                            fn_id=fn_id,
-                            role="programmer",
-                            round_index=round_index,
-                            summary="Updated tests to align with latest implementation.",
-                            details=[
-                                f"Static check: {check_result['static_check']}",
-                                f"Unit tests: {check_result['unit_test']}",
-                            ],
-                        )
-
-                        review_records.append(
-                            {
-                                "subsystem": subsystem_slug,
-                                "fn_id": fn_id,
-                                "round": round_index,
-                                "programmer": assign.get("programmer", "programmer_1"),
-                                "reviewer": assign.get("code_reviewer", "code_reviewer_1"),
-                                "check_result": check_result,
-                                "review": review,
-                            }
-                        )
-
-                    merged_fn_ids.append(fn_id)
-                    all_source_files.append(str(code_path))
-                    all_test_files.append(str(test_path))
-
-                all_source_files.append(str(src_revision))
-                all_test_files.append(str(tests_revision))
+            for subsystem_key, _, _ in subsystem_jobs:
+                result = subsystem_results.get(subsystem_key, {})
+                total_sr_groups += int(result.get("sr_group_count", 0) or 0)
+                merged_fn_ids.extend([str(x) for x in result.get("merged_fn_ids", [])])
+                all_source_files.extend([str(x) for x in result.get("source_files", [])])
+                all_test_files.extend([str(x) for x in result.get("test_files", [])])
+                for item in result.get("review_records", []):
+                    if isinstance(item, dict):
+                        review_records.append(item)
         except Exception as exc:
             for key in (
                 "developer.deep_developer_workflow.step1",
@@ -261,10 +178,31 @@ class DeepDeveloperWorkflowSkill(Skill):
                 _end(key, status="failed", error=str(exc))
             raise
 
+        sr_allocation = architecture.get("sr_allocation", {}) if isinstance(architecture, dict) else {}
+        subsystem_cards = []
+        for subsystem_id, assign_item in assignments.items():
+            item = assign_item if isinstance(assign_item, dict) else {}
+            subsystem_cards.append(
+                {
+                    "subsystem_id": str(subsystem_id),
+                    "subsystem_name": str(item.get("subsystem", subsystem_id)),
+                    "assigned_sr_ids": [str(x) for x in sr_allocation.get(str(subsystem_id), [])]
+                    if isinstance(sr_allocation.get(str(subsystem_id), []), list)
+                    else [],
+                }
+            )
+
         _end(
             "developer.deep_developer_workflow.step1",
             status="completed",
-            outputs={"assignment_count": len(assignments)},
+            outputs={
+                "assignment_count": len(assignments),
+                "workflow_summary": {
+                    "workflow": "deep_developer_workflow",
+                    "subsystems": subsystem_cards,
+                    "rounds": {"step2": subsystem_rounds},
+                },
+            },
         )
         for key in (
             "developer.deep_developer_workflow.step2.develop",
@@ -272,7 +210,19 @@ class DeepDeveloperWorkflowSkill(Skill):
             "developer.deep_developer_workflow.step2.revision",
             "developer.deep_developer_workflow.step2.merge",
         ):
-            _end(key, status="completed")
+            _end(
+                key,
+                status="completed",
+                outputs={
+                    "workflow_summary": {
+                        "workflow": "deep_developer_workflow",
+                        "subsystems": subsystem_cards,
+                        "rounds": {"step2": subsystem_rounds},
+                        "sr_group_count": total_sr_groups,
+                        "fn_count": len(merged_fn_ids),
+                    }
+                },
+            )
 
         all_test_files.append(str(test_bootstrap))
         all_test_files.append(str(pytest_ini))
@@ -326,10 +276,15 @@ class DeepDeveloperWorkflowSkill(Skill):
                     "assignments": assignments,
                 },
                 "step2": {
-                    "name": "fn_loop_implementation",
+                    "name": "subsystem_batch_round_implementation",
                     "status": "completed",
                     "fn_count": len(merged_fn_ids),
-                    "rounds_per_fn": 3,
+                    "sr_group_count": total_sr_groups,
+                    "rounds_per_subsystem": subsystem_rounds,
+                    "execution_pattern": (
+                        "subsystems_parallel__within_subsystem_sr_groups_serial__"
+                        "review_and_revision_batched_per_subsystem_round"
+                    ),
                 },
                 "generated": {
                     "source_files": all_source_files,
@@ -364,8 +319,12 @@ class DeepDeveloperWorkflowSkill(Skill):
                 fn_map.setdefault(subsystem_id, []).append(
                     {
                         "id": str(item.get("id", "FN-UNKNOWN")),
+                        "name": str(item.get("name", "")),
                         "description": str(item.get("description", "")),
                         "spec": str(item.get("spec", "")),
+                        "file_path": str(item.get("file_path", "")),
+                        "layer": str(item.get("layer", "")),
+                        "type": str(item.get("type", "")),
                     }
                 )
             if fn_map:
@@ -382,8 +341,12 @@ class DeepDeveloperWorkflowSkill(Skill):
                 fn_map.setdefault(subsystem_id, []).append(
                     {
                         "id": f"FN-{sr_id}-{index:02d}",
+                        "name": "",
                         "description": f"Implement behavior for {sr_id} in {subsystem_id}",
                         "spec": ("Follow subsystem detail design, include validation and error handling."),
+                        "file_path": "",
+                        "layer": "",
+                        "type": "",
                     }
                 )
         return fn_map
@@ -450,7 +413,10 @@ class DeepDeveloperWorkflowSkill(Skill):
                 "Return JSON object only with key: code_content.\n"
                 "Rules:\n"
                 "- code_content must define implement_<module_name>(input_data: dict | None = None)\n"
-                "- function returns dict and includes keys: fn_id, description, status, result\n"
+                "- function returns a business-oriented dict with keys: status, data, errors, meta\n"
+                "- do not echo FN ids or prompt descriptions in runtime response payloads\n"
+                "- never include FN identifiers (e.g. FN-SR-001-01) in logs, exceptions, "
+                "comments, docstrings, constants, or strings\n"
                 "- include input validation, observable metrics/logging, and retry/error handling when reasonable\n"
                 "- no markdown fences"
             ),
@@ -468,18 +434,15 @@ class DeepDeveloperWorkflowSkill(Skill):
                 "You are a senior software engineer. Generate pytest tests in JSON.\n"
                 "Return JSON object only with key: test_content.\n"
                 "Rules:\n"
-                "- test_content must import from src.services.<subsystem>.<module> import implement_<module>\n"
+                "- test_content must import from src.<subsystem>.<module> import implement_<module>\n"
                 "- include at least 2 pytest test functions\n"
                 "- keep tests deterministic (avoid flaky randomness)\n"
+                "- do not assert FN ids or prompt descriptions in runtime results\n"
                 "- no markdown fences"
             ),
             user_prompt=(
                 base_prompt
-                + (
-                    "Exact import path: "
-                    f"from src.services.{subsystem_slug}.{module_name} "
-                    f"import implement_{module_name}\n"
-                )
+                + (f"Exact import path: from src.{subsystem_slug}.{module_name} import implement_{module_name}\n")
                 + "Implementation summary (optional context, may be partial):\n"
                 + code_content[:3000]
                 + ("\n...(truncated)\n" if len(code_content) > 3000 else "\n")
@@ -488,8 +451,6 @@ class DeepDeveloperWorkflowSkill(Skill):
             module_name=module_name,
             subsystem_slug=subsystem_slug,
         )
-        if not code_payload and not test_payload:
-            return {}
         return {
             "code_content": code_content,
             "test_content": str(test_payload.get("test_content", "")) if isinstance(test_payload, dict) else "",
@@ -507,17 +468,18 @@ class DeepDeveloperWorkflowSkill(Skill):
         fn_id: str,
         fn_description: str,
     ) -> str:
-        safe_fn_id = fn_id.replace("'", "\\'")
-        safe_desc = fn_description.replace("'", "\\'")
         return (
-            f"from src.services.{subsystem_slug}.{module_name} import implement_{module_name}\n\n\n"
-            f"def test_{module_name}_returns_dict() -> None:\n"
+            f"from src.{subsystem_slug}.{module_name} import implement_{module_name}\n\n\n"
+            f"def test_{module_name}_returns_standard_response_shape() -> None:\n"
             f"    result = implement_{module_name}({{'round': 1}})\n"
             "    assert isinstance(result, dict)\n"
-            f"    assert result.get('fn_id') == '{safe_fn_id}'\n\n"
-            f"def test_{module_name}_description() -> None:\n"
+            "    assert result.get('status') in {'ok', 'error'}\n"
+            "    assert 'data' in result\n"
+            "    assert 'errors' in result\n"
+            "    assert isinstance(result.get('meta'), dict)\n\n"
+            f"def test_{module_name}_meta_contains_operation() -> None:\n"
             f"    result = implement_{module_name}()\n"
-            f"    assert result.get('description') == '{safe_desc}'\n"
+            f"    assert result.get('meta', {{}}).get('operation') == '{module_name}'\n"
         )
 
     def _fallback_code_content(
@@ -529,23 +491,281 @@ class DeepDeveloperWorkflowSkill(Skill):
         fn_description: str,
         fn_spec: str,
     ) -> str:
-        safe_fn_id = fn_id.replace("'", "\\'")
-        safe_desc = fn_description.replace("'", "\\'")
         safe_spec = fn_spec.replace("'", "\\'")
         return (
             "from __future__ import annotations\n\n"
-            f'"""Implementation for {fn_id} in {subsystem_slug}."""\n\n'
+            f'"""Business operation implementation for subsystem {subsystem_slug}."""\n\n'
             f"def implement_{module_name}(input_data: dict | None = None) -> dict[str, object]:\n"
             "    payload = input_data or {}\n"
             "    result = {'processed': True, 'input_keys': sorted(payload.keys())}\n"
             "    return {\n"
-            f"        'fn_id': '{safe_fn_id}',\n"
-            f"        'description': '{safe_desc}',\n"
-            f"        'spec': '{safe_spec}',\n"
-            "        'status': 'implemented',\n"
-            "        'result': result,\n"
+            "        'status': 'ok',\n"
+            "        'data': result,\n"
+            "        'errors': [],\n"
+            "        'meta': {\n"
+            f"            'subsystem': '{subsystem_slug}',\n"
+            f"            'operation': '{module_name}',\n"
+            f"            'spec_hint': '{safe_spec}',\n"
+            "        },\n"
             "    }\n"
         )
+
+    def _develop_single_fn_round(
+        self,
+        *,
+        context: SkillContext,
+        subsystem_slug: str,
+        plan: dict[str, Any],
+        round_index: int,
+    ) -> dict[str, Any]:
+        fn_id = str(plan["fn_id"])
+        fn_description = str(plan["fn_description"])
+        fn_spec = str(plan["fn_spec"])
+        module_name = str(plan["module_name"])
+        code_path = Path(plan["code_path"])
+        test_path = Path(plan["test_path"])
+        comments = list(plan.get("comments", []))
+
+        generated = self._generate_python_fn_with_llm(
+            context=context,
+            subsystem_slug=subsystem_slug,
+            module_name=module_name,
+            fn_id=fn_id,
+            fn_description=fn_description,
+            fn_spec=fn_spec,
+            round_index=round_index,
+            reviewer_comments=comments,
+        )
+        raw_test_content = str(generated.get("test_content", ""))
+        raw_code_content = str(generated.get("code_content", ""))
+        if not self._is_valid_generated_test_content(
+            test_content=raw_test_content,
+            subsystem_slug=subsystem_slug,
+            module_name=module_name,
+        ):
+            raise RuntimeError(f"Invalid LLM-generated pytest content for {subsystem_slug}.{module_name} ({fn_id})")
+        if not self._is_valid_generated_code_content(raw_code_content, module_name=module_name):
+            raise RuntimeError(f"Invalid LLM-generated code content for {subsystem_slug}.{module_name} ({fn_id})")
+        test_content = raw_test_content
+        code_content = raw_code_content
+
+        # Strip design-time FN identifiers from generated source/tests before writing.
+        test_content = self._sanitize_generated_runtime_text(test_content)
+        code_content = self._sanitize_generated_runtime_text(code_content)
+
+        test_path.write_text(test_content, encoding="utf-8")
+        code_path.write_text(code_content, encoding="utf-8")
+        check_result = self._run_static_and_unit_checks(code_path, test_path)
+        return {"check_result": check_result}
+
+    def _develop_single_sr_group_round(
+        self,
+        *,
+        context: SkillContext,
+        subsystem_slug: str,
+        sr_key: str,
+        plans: list[dict[str, Any]],
+        round_index: int,
+    ) -> dict[str, Any]:
+        group_results: list[dict[str, Any]] = []
+        for plan in plans:
+            result = self._develop_single_fn_round(
+                context=context,
+                subsystem_slug=subsystem_slug,
+                plan=plan,
+                round_index=round_index,
+            )
+            plan["check_result"] = result.get("check_result", {})
+            group_results.append(result)
+        return {"sr_group": sr_key, "fn_count": len(plans), "results": group_results}
+
+    def _process_single_subsystem_batch_rounds(
+        self,
+        *,
+        context: SkillContext,
+        src_dir: Path,
+        tests_dir: Path,
+        subsystem_key: str,
+        fn_items: list[dict[str, Any]],
+        assign: dict[str, Any],
+        subsystem_rounds: int,
+    ) -> dict[str, Any]:
+        subsystem_slug = self._slugify(str(assign.get("subsystem") or subsystem_key))
+        src_subsystem_dir = src_dir / subsystem_slug
+        tests_subsystem_dir = tests_dir / "services" / subsystem_slug
+        src_subsystem_dir.mkdir(parents=True, exist_ok=True)
+        tests_subsystem_dir.mkdir(parents=True, exist_ok=True)
+
+        src_revision = src_subsystem_dir / "revision.md"
+        tests_revision = tests_subsystem_dir / "revision.md"
+        if not src_revision.exists():
+            src_revision.write_text(
+                f"# {subsystem_slug} source revisions\n\nGenerated at {self._now_iso()}\n\n",
+                encoding="utf-8",
+            )
+        if not tests_revision.exists():
+            tests_revision.write_text(
+                f"# {subsystem_slug} test revisions\n\nGenerated at {self._now_iso()}\n\n",
+                encoding="utf-8",
+            )
+
+        used_module_names: set[str] = set()
+        fn_plans: list[dict[str, Any]] = []
+        for fn_index, fn_item in enumerate(fn_items, start=1):
+            fn_id = str(fn_item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"
+            fn_description = str(fn_item.get("description", "")).strip() or "Feature implementation"
+            fn_spec = str(fn_item.get("spec", "")).strip() or "Conform to subsystem detail design"
+            fn_name = str(fn_item.get("name", "")).strip()
+            fn_file_path = str(fn_item.get("file_path", "")).strip()
+            fn_layer = str(fn_item.get("layer", "")).strip()
+            fn_type = str(fn_item.get("type", "")).strip()
+            fn_slug = self._derive_semantic_module_name(
+                fn_id=fn_id,
+                fn_name=fn_name,
+                fn_description=fn_description,
+                suggested_file_path=fn_file_path,
+                subsystem_slug=subsystem_slug,
+                layer=fn_layer,
+                component_type=fn_type,
+                index=fn_index,
+                used_names=used_module_names,
+            )
+
+            code_path = src_subsystem_dir / f"{fn_slug}.py"
+            test_path = tests_subsystem_dir / f"test_{subsystem_slug}_{fn_slug}.py"
+            fn_plans.append(
+                {
+                    "fn_id": fn_id,
+                    "fn_name": fn_name,
+                    "fn_description": fn_description,
+                    "fn_spec": fn_spec,
+                    "module_name": fn_slug,
+                    "code_path": code_path,
+                    "test_path": test_path,
+                    "comments": [],
+                    "check_result": {},
+                }
+            )
+
+        sr_groups = self._group_fn_plans_by_sr(fn_plans)
+        local_review_records: list[dict[str, Any]] = []
+        for round_index in range(1, subsystem_rounds + 1):
+            round_reviews: list[dict[str, Any]] = []
+            # Within one subsystem, SR groups execute serially to maximize file/code reuse continuity.
+            for sr_key, group_plans in sr_groups.items():
+                _ = self._develop_single_sr_group_round(
+                    context=context,
+                    subsystem_slug=subsystem_slug,
+                    sr_key=sr_key,
+                    plans=group_plans,
+                    round_index=round_index,
+                )
+
+            for plan in fn_plans:
+                fn_id = str(plan["fn_id"])
+                fn_description = str(plan["fn_description"])
+                check_result = dict(plan.get("check_result", {}))
+                review = self._review_fn_change(
+                    subsystem=subsystem_slug,
+                    fn_id=fn_id,
+                    fn_description=fn_description,
+                    round_index=round_index,
+                    check_result=check_result,
+                    reviewer=str(assign.get("code_reviewer", "code_reviewer_1")),
+                )
+                round_reviews.append(review)
+                plan["comments"] = list(review.get("suggestions", []))
+                plan["review"] = review
+                local_review_records.append(
+                    {
+                        "subsystem": subsystem_slug,
+                        "sr_group": self._sr_group_key_from_fn_id(fn_id),
+                        "fn_id": fn_id,
+                        "round": round_index,
+                        "programmer": assign.get("programmer", "programmer_1"),
+                        "reviewer": assign.get("code_reviewer", "code_reviewer_1"),
+                        "check_result": check_result,
+                        "review": review,
+                        "review_scope": "subsystem_round_batch",
+                    }
+                )
+
+            for plan in fn_plans:
+                fn_id = str(plan["fn_id"])
+                check_result = dict(plan.get("check_result", {}))
+                review = dict(plan.get("review", {}))
+                self._append_revision(
+                    src_revision,
+                    fn_id=fn_id,
+                    role="code_reviewer",
+                    round_index=round_index,
+                    summary=str(review.get("summary", "")),
+                    details=list(review.get("suggestions", [])),
+                )
+                self._append_revision(
+                    src_revision,
+                    fn_id=fn_id,
+                    role="programmer",
+                    round_index=round_index,
+                    summary="Applied review feedback and updated implementation.",
+                    details=[f"Response: addressed reviewer suggestions in round {round_index}."],
+                )
+                self._append_revision(
+                    tests_revision,
+                    fn_id=fn_id,
+                    role="programmer",
+                    round_index=round_index,
+                    summary="Updated tests to align with latest implementation.",
+                    details=[
+                        f"Static check: {check_result['static_check']}",
+                        f"Unit tests: {check_result['unit_test']}",
+                    ],
+                )
+
+            self._append_revision(
+                src_revision,
+                fn_id=f"SUBSYSTEM-BATCH-{subsystem_slug}",
+                role="code_reviewer",
+                round_index=round_index,
+                summary=f"Batch review completed for subsystem {subsystem_slug}.",
+                details=[
+                    f"SR task groups: {len(sr_groups)}",
+                    f"Reviewed FN count: {len(fn_plans)}",
+                    f"Approved in this round: {sum(1 for item in round_reviews if item.get('approved'))}",
+                    "Review sequencing: within-subsystem SR groups serial -> "
+                    "review-all -> revise-all; subsystems parallelized.",
+                ],
+            )
+
+        source_files = [str(plan["code_path"]) for plan in fn_plans] + [str(src_revision)]
+        test_files = [str(plan["test_path"]) for plan in fn_plans] + [str(tests_revision)]
+        return {
+            "subsystem_key": subsystem_key,
+            "subsystem_slug": subsystem_slug,
+            "sr_group_count": len(sr_groups),
+            "merged_fn_ids": [str(plan["fn_id"]) for plan in fn_plans],
+            "source_files": source_files,
+            "test_files": test_files,
+            "review_records": local_review_records,
+        }
+
+    def _group_fn_plans_by_sr(self, fn_plans: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for plan in fn_plans:
+            fn_id = str(plan.get("fn_id", "FN-UNKNOWN"))
+            sr_key = self._sr_group_key_from_fn_id(fn_id)
+            grouped.setdefault(sr_key, []).append(plan)
+        return grouped
+
+    def _sr_group_key_from_fn_id(self, fn_id: str) -> str:
+        text = str(fn_id or "").strip().upper()
+        match = re.search(r"FN-(SR-\d+)-\d+", text)
+        if match:
+            return match.group(1)
+        match = re.search(r"(SR-\d+)", text)
+        if match:
+            return match.group(1)
+        return text or "SR-UNKNOWN"
 
     def _run_static_and_unit_checks(self, code_path: Path, test_path: Path) -> dict[str, str]:
         code_text = code_path.read_text(encoding="utf-8")
@@ -558,7 +778,11 @@ class DeepDeveloperWorkflowSkill(Skill):
         if not code_content.strip():
             return False
         expected_signature = f"def implement_{module_name}("
-        return expected_signature in code_content
+        if expected_signature not in code_content:
+            return False
+        if re.search(r"\[?FN-[A-Z0-9-]+\]?", code_content):
+            return False
+        return True
 
     def _is_valid_generated_test_content(
         self,
@@ -571,10 +795,19 @@ class DeepDeveloperWorkflowSkill(Skill):
             return False
         if "from your_module import" in test_content:
             return False
-        expected_import = f"from src.services.{subsystem_slug}.{module_name} import implement_{module_name}"
+        expected_import = f"from src.{subsystem_slug}.{module_name} import implement_{module_name}"
         if expected_import not in test_content:
             return False
+        if re.search(r"\[?FN-[A-Z0-9-]+\]?", test_content):
+            return False
         return f"implement_{module_name}" in test_content and "def test_" in test_content
+
+    def _sanitize_generated_runtime_text(self, text: str) -> str:
+        if not text:
+            return text
+        cleaned = re.sub(r"\[?FN-[A-Z0-9-]+\]?", "operation", text)
+        cleaned = re.sub(r"\bfn_id\b", "operation_id", cleaned)
+        return cleaned
 
     def _review_fn_change(
         self,
@@ -690,11 +923,25 @@ class DeepDeveloperWorkflowSkill(Skill):
         self,
         *,
         fn_id: str,
+        fn_name: str,
         fn_description: str,
+        suggested_file_path: str,
+        subsystem_slug: str,
+        layer: str,
+        component_type: str,
         index: int,
         used_names: set[str],
     ) -> str:
         candidates: list[str] = []
+
+        file_stem = Path(suggested_file_path).stem if suggested_file_path else ""
+        normalized_file_stem = self._normalize_module_candidate(file_stem, subsystem_slug=subsystem_slug)
+        if normalized_file_stem:
+            candidates.append(normalized_file_stem)
+
+        normalized_fn_name = self._normalize_module_candidate(fn_name, subsystem_slug=subsystem_slug)
+        if normalized_fn_name:
+            candidates.append(normalized_fn_name)
 
         generic_words = {
             "implement",
@@ -712,20 +959,50 @@ class DeepDeveloperWorkflowSkill(Skill):
             "the",
             "and",
             "with",
+            "user",
+            "system",
+            "logic",
+            "item",
         }
+        semantic_desc_name = self._semantic_module_name_from_description(
+            fn_description=fn_description,
+            role_suffix=self._role_suffix(layer=layer, component_type=component_type, fn_name=fn_name),
+        )
+        if semantic_desc_name:
+            candidates.append(semantic_desc_name)
         words = [self._slugify(word) for word in fn_description.split() if word.strip()]
         words = [word for word in words if word and word not in generic_words and not word.startswith("fn_")]
         if words:
-            candidates.append("_".join(words[:2]))
+            core = "_".join(words[:3])
+            role_suffix = self._role_suffix(layer=layer, component_type=component_type, fn_name=fn_name)
+            candidates.append(f"{core}_{role_suffix}" if role_suffix and not core.endswith(role_suffix) else core)
+
+        fn_token = self._slugify(fn_id)
+        if fn_token.startswith("fn_"):
+            fn_token = fn_token[3:]
 
         for raw in candidates:
-            base = self._slugify(raw) or "feature_logic"
+            base = self._slugify(raw)
+            base = self._normalize_module_candidate(base, subsystem_slug=subsystem_slug) or ""
+            if not base:
+                continue
             if len(base) > 42:
-                base = "_".join(base.split("_")[:4])[:42].strip("_") or "feature_logic"
+                base = "_".join(base.split("_")[:4])[:42].strip("_")
+            if not base:
+                continue
             if base not in used_names:
                 used_names.add(base)
                 return base
-        fallback = f"feature_logic_{index:02d}"
+            if fn_token:
+                candidate_with_suffix = f"{base}_{fn_token}"
+                candidate_with_suffix = candidate_with_suffix[:48].strip("_")
+                if candidate_with_suffix and candidate_with_suffix not in used_names:
+                    used_names.add(candidate_with_suffix)
+                    return candidate_with_suffix
+
+        role_suffix = self._role_suffix(layer=layer, component_type=component_type, fn_name=fn_name) or "service"
+        fallback = f"{fn_token}_{role_suffix}" if fn_token else f"requirement_{index:02d}_{role_suffix}"
+        fallback = fallback[:48].strip("_") or f"requirement_{index:02d}_{role_suffix}"
         used_names.add(fallback)
         return fallback
 
@@ -733,7 +1010,7 @@ class DeepDeveloperWorkflowSkill(Skill):
         chars: list[str] = []
         last_dash = False
         for ch in value.lower().strip():
-            if ch.isalnum():
+            if ch.isascii() and ch.isalnum():
                 chars.append(ch)
                 last_dash = False
             else:
@@ -746,6 +1023,120 @@ class DeepDeveloperWorkflowSkill(Skill):
         if slug[0].isdigit():
             slug = f"fn_{slug}"
         return slug
+
+    def _normalize_module_candidate(self, raw: str, *, subsystem_slug: str) -> str:
+        if not str(raw or "").strip():
+            return ""
+        candidate = self._slugify(raw)
+        if not candidate:
+            return ""
+
+        candidate = re.sub(rf"^{re.escape(subsystem_slug)}_", "", candidate)
+        candidate = re.sub(r"_of$", "", candidate)
+        candidate = re.sub(r"^implement_", "", candidate)
+        candidate = re.sub(r"^fn_[a-z0-9_]+_", "", candidate)
+        candidate = re.sub(r"_{2,}", "_", candidate).strip("_")
+
+        low_signal = {
+            "feature",
+            "logic",
+            "module",
+            "handler",
+            "function",
+            "service_of",
+            "item",
+            "service",
+            "app_service",
+            "domain_service",
+            "gateway_service",
+            "repository_service",
+        }
+        if candidate in low_signal:
+            return ""
+
+        tokens = [t for t in candidate.split("_") if t]
+        if not tokens:
+            return ""
+
+        # Compress verbose template-like names to meaningful suffixes.
+        signal_order = [
+            "api",
+            "app",
+            "domain",
+            "gateway",
+            "repository",
+            "repo",
+            "service",
+            "schema",
+            "validator",
+            "execute",
+            "health",
+        ]
+        signal = [t for t in tokens if t in signal_order]
+        non_generic = [t for t in tokens if t not in {"fn", "sr", "service", "logic", "of"}]
+        semantic_keep_tokens = {
+            "telemetry",
+            "interaction",
+            "validation",
+            "transition",
+            "state",
+            "request",
+            "response",
+            "workflow",
+            "domain",
+        }
+        should_compress = not any(t in semantic_keep_tokens for t in tokens)
+        if signal and non_generic and should_compress:
+            compact = [t for t in non_generic if t in {"health", "execute", "request", "response"}]
+            if not compact:
+                compact = [signal[0]]
+            merged_tokens: list[str] = []
+            for token in (compact + signal[-1:])[:3]:
+                if not merged_tokens or merged_tokens[-1] != token:
+                    merged_tokens.append(token)
+            candidate = "_".join(merged_tokens).strip("_")
+
+        return candidate[:48].strip("_")
+
+    def _role_suffix(self, *, layer: str, component_type: str, fn_name: str) -> str:
+        text = " ".join([layer, component_type, fn_name]).lower()
+        if "api" in text:
+            return "api"
+        if "domain" in text or "business" in text:
+            return "domain"
+        if "gateway" in text or "integration" in text:
+            return "gateway"
+        if "repo" in text or "data" in text:
+            return "repository"
+        if "schema" in text:
+            return "schema"
+        return "service"
+
+    def _semantic_module_name_from_description(self, *, fn_description: str, role_suffix: str) -> str:
+        text = str(fn_description or "")
+        lower = text.lower()
+
+        # Capability/aspect hints
+        if any(token in lower for token in ("telemetry", "observability", "metrics", "verifiable outcomes")) or any(
+            token in text for token in ("遥测", "可观测", "指标")
+        ):
+            aspect = "telemetry"
+        elif any(token in lower for token in ("state transition", "service logic", "workflow")) or any(
+            token in text for token in ("状态迁移", "服务逻辑", "工作流")
+        ):
+            aspect = "state_transition"
+        elif any(token in lower for token in ("user-facing behavior", "interaction")) or any(
+            token in text for token in ("用户交互", "用户行为", "交互")
+        ):
+            aspect = "interaction"
+        elif any(token in lower for token in ("validation", "error handling")) or any(
+            token in text for token in ("校验", "错误处理")
+        ):
+            aspect = "validation"
+        else:
+            aspect = "operation"
+
+        return f"{aspect}_{role_suffix or 'service'}" if aspect != "operation" else ""
 
     def _compact_json(self, payload: Any) -> str:
         try:
@@ -766,6 +1157,7 @@ class DeepDeveloperWorkflowSkill(Skill):
         max_attempts: int = 3,
     ) -> dict[str, Any]:
         last_partial: dict[str, Any] = {}
+        last_error: Exception | None = None
         for attempt in range(1, max(1, max_attempts) + 1):
             prompt = user_prompt
             if attempt > 1:
@@ -789,7 +1181,8 @@ class DeepDeveloperWorkflowSkill(Skill):
                     system_prompt=system_prompt,
                     user_prompt=prompt,
                 )
-            except Exception:
+            except Exception as exc:
+                last_error = exc
                 continue
             if isinstance(payload, dict):
                 last_partial = payload
@@ -800,7 +1193,16 @@ class DeepDeveloperWorkflowSkill(Skill):
                 subsystem_slug=subsystem_slug,
             ):
                 return payload
-        return last_partial
+        missing = [key for key in required_keys if key not in last_partial]
+        message = (
+            f"LLM segment failed for {purpose}: invalid/incomplete JSON after {max(1, max_attempts)} attempts; "
+            f"missing keys={missing or '(schema/content invalid)'}"
+        )
+        if last_partial:
+            message += f"; partial={self._compact_json(last_partial)[:500]}"
+        if last_error is not None:
+            raise RuntimeError(message) from last_error
+        raise RuntimeError(message)
 
     def _segment_payload_ok(
         self,
@@ -825,7 +1227,7 @@ class DeepDeveloperWorkflowSkill(Skill):
             tests = str(payload.get("test_content", "")).strip()
             if len(tests) < 80 or self._looks_truncated_text(tests):
                 return False
-            expected_import = f"from src.services.{subsystem_slug}.{module_name} import implement_{module_name}"
+            expected_import = f"from src.{subsystem_slug}.{module_name} import implement_{module_name}"
             if expected_import not in tests:
                 return False
             if tests.count("def test_") < 2:

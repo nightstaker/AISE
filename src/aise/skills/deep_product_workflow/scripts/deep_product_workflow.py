@@ -67,14 +67,16 @@ class DeepProductWorkflowSkill(Skill):
             attempt_no = int((attempt or {}).get("attempt_no", 0) or 0)
             attempts[task_key] = attempt_no
             if hasattr(recorder, "record_task_attempt_context") and attempt_no:
+                step_ctx = self._step_task_memory_context(
+                    task_key=task_key,
+                    output_dir=output_dir,
+                    available_input_keys=sorted(input_data.keys()),
+                )
                 recorder.record_task_attempt_context(
                     phase_key=phase_key,
                     task_key=task_key,
                     attempt_no=attempt_no,
-                    context={
-                        "input_keys": sorted(input_data.keys()),
-                        "notes": list(notes or []),
-                    },
+                    context={**step_ctx, "notes": list(notes or [])},
                 )
 
         def _step_end(task_key: str, *, status: str, error: str = "", outputs: dict[str, Any] | None = None) -> None:
@@ -284,6 +286,44 @@ class DeepProductWorkflowSkill(Skill):
             metadata={"project_name": project_name},
         )
 
+    def _step_task_memory_context(
+        self,
+        *,
+        task_key: str,
+        output_dir: Path,
+        available_input_keys: list[str],
+    ) -> dict[str, Any]:
+        hint_map: dict[str, list[str]] = {
+            "product_manager.deep_product_workflow.step1": ["raw_requirements", "user_memory"],
+            "product_manager.deep_product_workflow.step2.design": ["expanded_understanding", "review_feedback"],
+            "product_manager.deep_product_workflow.step2.review": ["expanded_understanding", "system_design_doc"],
+            "product_manager.deep_product_workflow.step3.design": ["system_design_doc", "review_feedback"],
+            "product_manager.deep_product_workflow.step3.review": ["system_design_doc", "system_requirements_doc"],
+        }
+        input_hints = list(hint_map.get(task_key, []))
+        docs = {
+            "system_design_doc": output_dir / "system-design.md",
+            "system_requirements_doc": output_dir / "system-requirements.md",
+        }
+        doc_refs: list[dict[str, Any]] = []
+        for hint in input_hints:
+            if hint in docs:
+                p = docs[hint]
+                doc_refs.append(
+                    {
+                        "role": hint,
+                        "path": f"docs/{p.name}",
+                        "name": p.name,
+                        "exists": p.exists(),
+                    }
+                )
+        return {
+            "input_hints": input_hints,
+            "input_keys": input_hints,
+            "available_input_keys": available_input_keys,
+            "doc_refs": doc_refs,
+        }
+
     def _resolve_output_dir(self, input_data: dict[str, Any], context: SkillContext) -> Path:
         project_root = context.parameters.get("project_root")
         root_path = Path(project_root).resolve() if isinstance(project_root, str) and project_root.strip() else None
@@ -377,13 +417,6 @@ class DeepProductWorkflowSkill(Skill):
         users = ["End users", "Operations team"]
         scenarios = ["Primary usage flow", "Error handling and recovery"]
         constraints = ["Cross-platform support", "Scalable architecture"]
-        has_ai = any(key in raw_requirements.lower() for key in ("ai", "bot", "智能"))
-        has_multi = any(key in raw_requirements.lower() for key in ("multiplayer", "多人", "联机", "协作"))
-        if has_multi:
-            users.append("Session host")
-            scenarios.append("Collaboration flow with participant synchronization")
-        if has_ai:
-            scenarios.append("AI-assisted flow with explainable decisions")
         constraints.extend(
             [
                 "Core state transitions should be reproducible and testable",
@@ -414,6 +447,7 @@ class DeepProductWorkflowSkill(Skill):
         max_attempts: int = 3,
     ) -> dict[str, Any]:
         last_partial: dict[str, Any] = {}
+        last_error: Exception | None = None
         for attempt in range(1, max(1, max_attempts) + 1):
             prompt = user_prompt
             if attempt > 1:
@@ -423,6 +457,9 @@ class DeepProductWorkflowSkill(Skill):
                     "- Previous response was incomplete/truncated or missing required keys.\n"
                     f"- Required keys: {', '.join(required_keys)}\n"
                     f"- Missing keys: {', '.join(missing) if missing else '(schema invalid)'}\n"
+                    "- Use the exact required top-level key names (no synonyms, no translated keys).\n"
+                    "- Do NOT wrap the object under extra keys like data/result/output/payload.\n"
+                    "- Return one JSON object only.\n"
                 )
                 if last_partial:
                     prompt += f"Partial response:\n{self._compact_json(last_partial)}\n"
@@ -434,13 +471,23 @@ class DeepProductWorkflowSkill(Skill):
                     system_prompt=system_prompt,
                     user_prompt=prompt,
                 )
-            except Exception:
+            except Exception as exc:
+                last_error = exc
                 continue
             if isinstance(payload, dict):
                 last_partial = payload
             if self._segment_payload_ok(payload, required_keys):
                 return payload
-        return last_partial
+        missing = [key for key in required_keys if key not in last_partial]
+        message = (
+            f"LLM segment failed for {purpose}: invalid/incomplete JSON after {max(1, max_attempts)} attempts; "
+            f"missing keys={missing or '(schema/content invalid)'}"
+        )
+        if last_partial:
+            message += f"; partial={self._compact_json(last_partial)[:500]}"
+        if last_error is not None:
+            raise RuntimeError(message) from last_error
+        raise RuntimeError(message)
 
     def _segment_payload_ok(self, payload: dict[str, Any], required_keys: list[str]) -> bool:
         if not isinstance(payload, dict):
@@ -534,6 +581,44 @@ class DeepProductWorkflowSkill(Skill):
         round_index: int,
         context: SkillContext,
     ) -> dict[str, Any]:
+        review_issues = [str(x) for x in (previous_review or {}).get("issues", [])[:8]]
+        payload = self._run_llm_json_segment(
+            context=context,
+            purpose=f"subagent:product_designer step:product_design round:{round_index}",
+            system_prompt=(
+                "You are Product Designer.\n"
+                "Generate product/system feature design JSON.\n"
+                "Return JSON only with keys: overview, overall_solution, system_features, designer_response.\n"
+                "system_features items require keys: id, name, goal, functions, constraints, priority.\n"
+            ),
+            user_prompt=(
+                f"Round: {round_index}\n"
+                f"Expanded understanding:\n{self._compact_json(expanded)}\n\n"
+                f"Previous design (optional):\n{self._compact_json(previous_design or {})}\n\n"
+                f"Reviewer issues (optional):\n{self._compact_json(review_issues)}\n"
+            ),
+            required_keys=["overview", "overall_solution", "system_features", "designer_response"],
+        )
+        llm_features = self._normalize_llm_system_features(payload.get("system_features"), expanded=expanded)
+        if not llm_features:
+            raise RuntimeError(f"LLM product design returned empty/invalid system_features in round {round_index}")
+
+        return {
+            "round": round_index,
+            "overview": str(payload.get("overview", "")).strip(),
+            "overall_solution": self._as_str_list(payload.get("overall_solution")),
+            "system_features": self._deduplicate_system_features(llm_features),
+            "designer_response": self._as_str_list(payload.get("designer_response")),
+        }
+
+    def _designer_build_product_design_fallback(
+        self,
+        *,
+        expanded: dict[str, Any],
+        previous_design: dict[str, Any] | None,
+        previous_review: dict[str, Any] | None,
+        round_index: int,
+    ) -> dict[str, Any]:
         features = previous_design.get("system_features", []) if previous_design else []
         if not features:
             features = []
@@ -557,6 +642,8 @@ class DeepProductWorkflowSkill(Skill):
                 for issue in issue_texts[:2]:
                     if issue not in feature["constraints"]:
                         feature["constraints"].append(issue)
+
+        features = self._deduplicate_system_features(features)
 
         overview = " ".join(
             [
@@ -583,6 +670,45 @@ class DeepProductWorkflowSkill(Skill):
         design: dict[str, Any],
         round_index: int,
         context: SkillContext,
+    ) -> dict[str, Any]:
+        payload = self._run_llm_json_segment(
+            context=context,
+            purpose=f"subagent:product_reviewer step:product_review round:{round_index}",
+            system_prompt=(
+                "You are Product Reviewer.\n"
+                "Review product design and return JSON only with keys: approved, "
+                "summary, issues, suggestions, decision.\n"
+                "decision must be approve or revise.\n"
+            ),
+            user_prompt=(
+                f"Round: {round_index}\n"
+                f"Expanded understanding:\n{self._compact_json(expanded)}\n\n"
+                f"Product design:\n{self._compact_json(design)}\n"
+            ),
+            required_keys=["approved", "summary", "issues", "suggestions", "decision"],
+        )
+        decision = str(payload.get("decision", "")).strip().lower()
+        if decision not in {"approve", "revise"}:
+            raise RuntimeError(
+                f"LLM product review returned invalid decision={payload.get('decision')!r} in round {round_index}"
+            )
+        approved = bool(payload.get("approved", False))
+        return {
+            "reviewer": "product_reviewer",
+            "approved": approved,
+            "summary": str(payload.get("summary", "")).strip(),
+            "issues": self._as_str_list(payload.get("issues")),
+            "suggestions": self._as_str_list(payload.get("suggestions")),
+            "decision": decision,
+            "expanded_context_used": bool(expanded.get("intent_summary")),
+        }
+
+    def _reviewer_review_product_design_fallback(
+        self,
+        *,
+        expanded: dict[str, Any],
+        design: dict[str, Any],
+        round_index: int,
     ) -> dict[str, Any]:
         features = design.get("system_features", [])
         issues: list[str] = []
@@ -614,6 +740,58 @@ class DeepProductWorkflowSkill(Skill):
             "expanded_context_used": bool(expanded.get("intent_summary")),
         }
 
+    def _normalize_llm_system_features(self, value: Any, *, expanded: dict[str, Any]) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        default_constraints = self._as_str_list(expanded.get("constraints"))
+        for idx, item in enumerate(value, start=1):
+            if not isinstance(item, dict):
+                continue
+            goal = str(item.get("goal", "")).strip() or str(item.get("name", "")).strip()
+            name = str(item.get("name", "")).strip() or self._to_title(goal, fallback=f"Feature {idx}")
+            functions = self._as_str_list(item.get("functions"))
+            constraints = self._as_str_list(item.get("constraints")) or list(default_constraints)
+            if not goal or not functions:
+                continue
+            normalized.append(
+                {
+                    "id": str(item.get("id", f"SF-{idx:03d}")).strip() or f"SF-{idx:03d}",
+                    "name": name,
+                    "goal": goal,
+                    "functions": functions,
+                    "constraints": constraints,
+                    "priority": str(item.get("priority", "medium")).strip() or "medium",
+                }
+            )
+        return normalized
+
+    def _deduplicate_system_features(self, features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen_goals: set[str] = set()
+        for feature in features:
+            goal_key = self._normalize_requirement_text(feature.get("goal", "") or feature.get("name", ""))
+            if goal_key and goal_key in seen_goals:
+                continue
+            if goal_key:
+                seen_goals.add(goal_key)
+            item = dict(feature)
+            functions = []
+            seen_fn: set[str] = set()
+            for fn in item.get("functions", []) if isinstance(item.get("functions", []), list) else []:
+                fn_key = self._normalize_requirement_text(fn)
+                if fn_key and fn_key in seen_fn:
+                    continue
+                if fn_key:
+                    seen_fn.add(fn_key)
+                functions.append(fn)
+            item["functions"] = functions
+            deduped.append(item)
+
+        for idx, feature in enumerate(deduped, start=1):
+            feature["id"] = f"SF-{idx:03d}"
+        return deduped
+
     def _designer_build_system_requirements(
         self,
         *,
@@ -624,44 +802,57 @@ class DeepProductWorkflowSkill(Skill):
         round_index: int,
         context: SkillContext,
     ) -> dict[str, Any]:
-        srs = previous_requirements.get("requirements", []) if previous_requirements else []
+        review_issues = [str(x) for x in (previous_review or {}).get("issues", [])[:10]]
+        payload = self._run_llm_json_segment(
+            context=context,
+            purpose=f"subagent:product_designer step:system_requirement_design round:{round_index}",
+            system_prompt=(
+                "You are Product Designer.\n"
+                "Generate system requirements (SR) from system features (SF).\n"
+                "Return ONE JSON object only.\n"
+                "Top-level keys MUST be exactly: design_goals, design_approach, requirements, designer_response.\n"
+                "Do not rename keys. Do not translate key names. Do not nest under data/result/output.\n"
+                "requirements must be a list of objects with keys:\n"
+                "source_sfs, title, requirement_overview, scenario, users, interaction_process, expected_result,\n"
+                "spec_targets, constraints, use_case_diagram, use_case_description, "
+                "type, category, priority, verification_method.\n"
+                "Rules:\n"
+                "- Keep SR entries implementation-oriented and independently verifiable.\n"
+                "- Preserve traceability with non-empty source_sfs mapped to provided SF ids.\n"
+                "- Do not rely on project-specific templates; infer from provided inputs only.\n"
+                "- If a list has no items, return [] (not null, not omitted).\n"
+                "- Ensure all four top-level keys are present even on draft output.\n"
+                "Minimal top-level JSON skeleton:\n"
+                "{"
+                '"design_goals":[],'
+                '"design_approach":[],'
+                '"requirements":[],'
+                '"designer_response":[]'
+                "}\n"
+            ),
+            user_prompt=(
+                f"Round: {round_index}\n"
+                "IMPORTANT OUTPUT CONTRACT:\n"
+                "- Top-level keys must be exactly: design_goals, design_approach, requirements, designer_response\n"
+                "- No markdown fences\n"
+                "- No explanatory prose outside JSON\n\n"
+                f"Expanded understanding:\n{self._compact_json(expanded)}\n\n"
+                f"System design (SFs):\n{self._compact_json(design)}\n\n"
+                f"Previous SR design (optional):\n{self._compact_json(previous_requirements or {})}\n\n"
+                f"Reviewer issues (optional):\n{self._compact_json(review_issues)}\n"
+            ),
+            required_keys=["design_goals", "design_approach", "requirements", "designer_response"],
+        )
+        srs = self._normalize_llm_system_requirements(payload.get("requirements"), design=design)
         if not srs:
-            srs = []
-            sr_index = 1
-            for sf_idx, sf in enumerate(design.get("system_features", []), start=1):
-                sf_srs = self._decompose_sf_to_system_requirements(
-                    sf=sf,
-                    sf_index=sf_idx,
-                    users=expanded.get("users", ["End users"]),
-                    start_index=sr_index,
-                )
-                srs.extend(sf_srs)
-                sr_index += len(sf_srs)
-
-        if previous_review and previous_review.get("issues"):
-            comment_note = " | ".join(str(i) for i in previous_review.get("issues", [])[:2])
-            for sr in srs:
-                sr.setdefault("use_case_description", "")
-                if comment_note and comment_note not in sr["use_case_description"]:
-                    sr["use_case_description"] = (
-                        sr["use_case_description"] + " Reviewer focus: " + comment_note
-                    ).strip()
-
+            raise RuntimeError(f"LLM system requirement design returned no valid SR entries in round {round_index}")
+        srs = self._deduplicate_and_renumber_system_requirements(srs)
         return {
             "round": round_index,
-            "design_goals": [
-                "Translate SF into complete SR with implementation-oriented details.",
-                "Maintain strict traceability between SF and SR.",
-                "Decompose each SF into multiple independent, verifiable SR entries.",
-            ],
-            "design_approach": [
-                "Feature to requirement decomposition",
-                "Function-level SR splitting under each SF",
-                "Scenario-driven interaction design",
-                "Measurable constraints and verification targets",
-            ],
+            "design_goals": self._as_str_list(payload.get("design_goals")),
+            "design_approach": self._as_str_list(payload.get("design_approach")),
             "requirements": srs,
-            "designer_response": self._build_designer_response(previous_review),
+            "designer_response": self._as_str_list(payload.get("designer_response")),
         }
 
     def _reviewer_review_system_requirements(
@@ -672,72 +863,116 @@ class DeepProductWorkflowSkill(Skill):
         round_index: int,
         context: SkillContext,
     ) -> dict[str, Any]:
-        requirements = system_requirements.get("requirements", [])
-        issues: list[str] = []
-        if not requirements:
-            issues.append("No SR entries generated.")
-        sf_ids = [str(sf.get("id", "")).strip() for sf in design.get("system_features", []) if isinstance(sf, dict)]
-        sf_counts: dict[str, int] = {sf_id: 0 for sf_id in sf_ids if sf_id}
-        seen_titles: set[str] = set()
-        for sr in requirements:
-            required_fields = [
-                "requirement_overview",
-                "scenario",
-                "users",
-                "interaction_process",
-                "expected_result",
-                "spec_targets",
-                "constraints",
-                "use_case_diagram",
-                "use_case_description",
-            ]
-            for field in required_fields:
-                value = sr.get(field)
-                if value is None or (isinstance(value, (str, list)) and len(value) == 0):
-                    issues.append(f"{sr.get('id', 'SR-UNKNOWN')} missing {field}.")
-            source_sfs = sr.get("source_sfs", [])
-            if not isinstance(source_sfs, list) or not source_sfs:
-                issues.append(f"{sr.get('id', 'SR-UNKNOWN')} missing source_sfs mapping.")
-            else:
-                if len(source_sfs) != 1:
-                    issues.append(
-                        f"{sr.get('id', 'SR-UNKNOWN')} should map to exactly one "
-                        "primary SF for independent verification."
-                    )
-                for sf_id in source_sfs:
-                    sf_key = str(sf_id).strip()
-                    if sf_key:
-                        sf_counts[sf_key] = sf_counts.get(sf_key, 0) + 1
-            if len(sr.get("spec_targets", [])) < 2:
-                issues.append(f"{sr.get('id', 'SR-UNKNOWN')} should include at least 2 measurable spec targets.")
-            if not str(sr.get("verification_method", "")).strip():
-                issues.append(f"{sr.get('id', 'SR-UNKNOWN')} missing verification_method.")
-            title_key = str(sr.get("title", "")).strip().lower()
-            if title_key:
-                if title_key in seen_titles:
-                    issues.append(f"{sr.get('id', 'SR-UNKNOWN')} has duplicated title '{sr.get('title', '')}'.")
-                seen_titles.add(title_key)
-        for sf_id in sf_ids:
-            if sf_counts.get(sf_id, 0) < 2:
-                issues.append(f"{sf_id} should decompose into at least 2 independent SR entries.")
-
-        approved = round_index >= 2 and not issues
-        if round_index == 1 and not issues:
-            issues.append("Round 1 baseline completed; run one refinement pass before approval.")
-            approved = False
-
+        payload = self._run_llm_json_segment(
+            context=context,
+            purpose=f"subagent:product_reviewer step:system_requirement_review round:{round_index}",
+            system_prompt=(
+                "You are Product Reviewer.\n"
+                "Review the SR design and return ONE JSON object only.\n"
+                "Top-level keys MUST be exactly: approved, summary, issues, suggestions, decision.\n"
+                "Do not rename keys. Do not translate key names. Do not wrap under data/result/output.\n"
+                "decision must be approve or revise.\n"
+                "Evaluate completeness, traceability, verifiability, ambiguity, "
+                "duplication risk, and implementation clarity.\n"
+                "If there are no issues/suggestions, return empty arrays for those keys.\n"
+                "Minimal top-level JSON skeleton:\n"
+                "{"
+                '"approved":false,'
+                '"summary":"",'
+                '"issues":[],'
+                '"suggestions":[],'
+                '"decision":"revise"'
+                "}\n"
+            ),
+            user_prompt=(
+                f"Round: {round_index}\n"
+                "IMPORTANT OUTPUT CONTRACT:\n"
+                "- Top-level keys must be exactly: approved, summary, issues, suggestions, decision\n"
+                '- decision must be "approve" or "revise"\n'
+                "- No markdown fences\n"
+                "- No explanatory prose outside JSON\n\n"
+                f"System design:\n{self._compact_json(design)}\n\n"
+                f"System requirements document:\n{self._compact_json(system_requirements)}\n"
+            ),
+            required_keys=["approved", "summary", "issues", "suggestions", "decision"],
+        )
+        decision = str(payload.get("decision", "")).strip().lower()
+        if decision not in {"approve", "revise"}:
+            raise RuntimeError(
+                "LLM system requirement review returned invalid "
+                f"decision={payload.get('decision')!r} in round {round_index}"
+            )
         return {
             "reviewer": "product_reviewer",
-            "approved": approved,
-            "summary": "Approved" if approved else "Needs revision",
-            "issues": issues,
-            "suggestions": [
-                "Ensure every SR includes complete scenario, interaction, and use case details.",
-                "Keep revision response aligned with reviewer concerns.",
-            ],
-            "decision": "approve" if approved else "revise",
+            "approved": bool(payload.get("approved", False)),
+            "summary": str(payload.get("summary", "")).strip(),
+            "issues": self._as_str_list(payload.get("issues")),
+            "suggestions": self._as_str_list(payload.get("suggestions")),
+            "decision": decision,
             "reviewed_sf_count": len(design.get("system_features", [])),
         }
+
+    def _normalize_llm_system_requirements(
+        self,
+        value: Any,
+        *,
+        design: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        valid_sf_ids = {
+            str(sf.get("id", "")).strip()
+            for sf in design.get("system_features", [])
+            if isinstance(sf, dict) and str(sf.get("id", "")).strip()
+        }
+        normalized: list[dict[str, Any]] = []
+        for idx, item in enumerate(value, start=1):
+            if not isinstance(item, dict):
+                continue
+            source_sfs = (
+                [str(x).strip() for x in item.get("source_sfs", [])] if isinstance(item.get("source_sfs"), list) else []
+            )
+            source_sfs = [sf for sf in source_sfs if sf]
+            if valid_sf_ids:
+                source_sfs = [sf for sf in source_sfs if sf in valid_sf_ids]
+            title = str(item.get("title", "")).strip()
+            overview = str(item.get("requirement_overview", "")).strip()
+            scenario = str(item.get("scenario", "")).strip()
+            expected_result = str(item.get("expected_result", "")).strip()
+            use_case_diagram = str(item.get("use_case_diagram", "")).strip()
+            use_case_description = str(item.get("use_case_description", "")).strip()
+            verification_method = str(item.get("verification_method", "")).strip()
+            users = self._as_str_list(item.get("users"))
+            interaction_process = self._as_str_list(item.get("interaction_process"))
+            spec_targets = self._as_str_list(item.get("spec_targets"))
+            constraints = self._as_str_list(item.get("constraints"))
+            if not source_sfs or not title or not overview or not scenario:
+                continue
+            if not expected_result or not use_case_diagram or not use_case_description or not verification_method:
+                continue
+            if not users or not interaction_process or not spec_targets:
+                continue
+            normalized.append(
+                {
+                    "id": str(item.get("id", f"SR-{idx:03d}")).strip() or f"SR-{idx:03d}",
+                    "source_sfs": source_sfs,
+                    "title": title,
+                    "requirement_overview": overview,
+                    "scenario": scenario,
+                    "users": users,
+                    "interaction_process": interaction_process,
+                    "expected_result": expected_result,
+                    "spec_targets": spec_targets,
+                    "constraints": constraints,
+                    "use_case_diagram": use_case_diagram,
+                    "use_case_description": use_case_description,
+                    "type": str(item.get("type", "functional")).strip() or "functional",
+                    "category": str(item.get("category", "Product Capability")).strip() or "Product Capability",
+                    "priority": str(item.get("priority", "medium")).strip() or "medium",
+                    "verification_method": verification_method,
+                }
+            )
+        return normalized
 
     def _decompose_sf_to_system_requirements(
         self,
@@ -755,36 +990,52 @@ class DeepProductWorkflowSkill(Skill):
         priority = str(sf.get("priority", "medium"))
 
         slices: list[tuple[str, str, str]] = []
+        used_aspects: set[str] = set()
         for fn in functions[:4]:
             cleaned = str(fn).strip()
             if not cleaned:
                 continue
+            aspect = self._classify_sr_slice_aspect(cleaned)
+            if aspect in used_aspects:
+                continue
             title = self._short_requirement_title_from_function(sf_name, cleaned)
             slices.append((title, cleaned, "integration_test"))
+            used_aspects.add(aspect)
 
         # Guarantee multiple SRs per SF even when upstream functions are sparse.
-        if len(slices) < 2:
-            slices.append(
+        fallback_slices = [
+            (
+                "validation",
+                f"{sf_name} input validation and error handling",
                 (
-                    f"{sf_name} input validation and error handling",
-                    (
-                        "System validates inputs, rejects invalid requests, and "
-                        f"returns deterministic error handling for {sf_goal}."
-                    ),
-                    "negative_integration_test",
-                )
-            )
-        if len(slices) < 2:
-            slices.append(
+                    "System validates inputs, rejects invalid requests, and "
+                    f"returns deterministic error handling for {sf_goal}."
+                ),
+                "negative_integration_test",
+            ),
+            (
+                "service_logic",
+                f"{sf_name} service logic and state transition",
+                f"System executes service logic and deterministic state transitions for {sf_goal}.",
+                "integration_test",
+            ),
+            (
+                "observability",
+                f"{sf_name} observability and measurable outcomes",
                 (
-                    f"{sf_name} observability and measurable outcomes",
-                    (
-                        "System emits auditable state transitions and metrics for "
-                        f"{sf_goal} to support verification and operations."
-                    ),
-                    "integration_test",
-                )
-            )
+                    "System emits auditable state transitions and metrics for "
+                    f"{sf_goal} to support verification and operations."
+                ),
+                "integration_test",
+            ),
+        ]
+        for aspect, title, focus, verification in fallback_slices:
+            if len(slices) >= 3:
+                break
+            if aspect in used_aspects:
+                continue
+            slices.append((title, focus, verification))
+            used_aspects.add(aspect)
 
         requirements: list[dict[str, Any]] = []
         for offset, (title, focus_text, verification_method) in enumerate(slices, start=0):
@@ -818,6 +1069,53 @@ class DeepProductWorkflowSkill(Skill):
             )
         return requirements
 
+    def _classify_sr_slice_aspect(self, text: str) -> str:
+        lower = str(text).lower()
+        if any(token in lower for token in ("user-facing", "interaction", "ui/ux", "user behavior")):
+            return "interaction"
+        if any(token in lower for token in ("service logic", "state transition", "workflow", "business logic")):
+            return "service_logic"
+        if any(token in lower for token in ("telemetry", "observability", "verifiable outcomes", "metrics")):
+            return "observability"
+        if any(token in lower for token in ("validation", "error handling", "invalid")):
+            return "validation"
+        return self._normalize_requirement_text(text)[:48] or "generic"
+
+    def _normalize_requirement_text(self, text: str) -> str:
+        normalized = re.sub(r"\s+", " ", str(text).strip().lower())
+        normalized = re.sub(r"sr-\d+", "sr", normalized)
+        normalized = normalized.replace(":", " ")
+        normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff ]+", " ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        return normalized
+
+    def _deduplicate_and_renumber_system_requirements(self, requirements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen_keys: set[tuple[str, str, str]] = set()
+        for sr in requirements:
+            source_list = sr.get("source_sfs", [])
+            source_key = str(source_list[0]) if isinstance(source_list, list) and source_list else "UNMAPPED"
+            title_key = self._normalize_requirement_text(sr.get("title", ""))
+            overview_key = self._normalize_requirement_text(sr.get("requirement_overview", ""))
+            dedup_key = (source_key, title_key, overview_key)
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+            deduped.append(dict(sr))
+
+        for idx, sr in enumerate(deduped, start=1):
+            sr_id = f"SR-{idx:03d}"
+            sr["id"] = sr_id
+            sr["use_case_diagram"] = f"UseCase({sr_id}) -> Actor(User/System) -> System({sr.get('title', '')})"
+            source_sfs = sr.get("source_sfs", [])
+            sf_id = str(source_sfs[0]) if isinstance(source_sfs, list) and source_sfs else "SF-UNKNOWN"
+            focus_text = str(sr.get("requirement_overview", "")).strip()
+            sr["use_case_description"] = (
+                f"{sr_id} is an independently verifiable system requirement decomposed from {sf_id} "
+                f"covering one concrete behavior slice: {focus_text}"
+            )
+        return deduped
+
     def _short_requirement_title_from_function(self, sf_name: str, function_text: str) -> str:
         text = str(function_text).strip()
         lower = text.lower()
@@ -837,17 +1135,11 @@ class DeepProductWorkflowSkill(Skill):
         return base
 
     def _build_sr_spec_targets(self, *, sf_goal: str, focus_text: str) -> list[str]:
-        text = f"{sf_goal} {focus_text}".lower()
         targets = [
             "Functional correctness >= 95% pass rate in integration test suite for this SR",
             "Deterministic expected result and error code coverage for defined scenario paths",
+            "P95 processing/response time <= target threshold defined by architecture and performance budget",
         ]
-        if any(token in text for token in ("多人", "multiplayer", "sync", "同步", "realtime", "real-time")):
-            targets.append("P95 state synchronization/update latency <= 100ms under target load")
-        elif any(token in text for token in ("ai", "bot", "智能")):
-            targets.append("P95 decision response time <= 300ms with observable decision trace")
-        else:
-            targets.append("P95 request/response processing time <= 300ms for this scenario")
         return targets[:3]
 
     def _to_system_design_artifact_content(self, project_name: str, design: dict[str, Any]) -> dict[str, Any]:
@@ -1135,24 +1427,35 @@ class DeepProductWorkflowSkill(Skill):
         return points[:12]
 
     def _goal_to_functions(self, goal: str) -> list[str]:
-        result = [
-            f"Define user-facing behavior for: {goal}",
-            f"Implement service logic and state transition for: {goal}",
-            f"Expose verifiable outcomes and telemetry for: {goal}",
+        text = str(goal).strip()
+        result: list[str] = []
+
+        def add(item: str) -> None:
+            normalized = self._normalize_requirement_text(item)
+            if not normalized:
+                return
+            if any(self._normalize_requirement_text(x) == normalized for x in result):
+                return
+            result.append(item)
+
+        generic_fallbacks = [
+            f"Define user-facing behavior for: {text}",
+            f"Implement service logic and state transition for: {text}",
+            f"Expose verifiable outcomes and telemetry for: {text}",
         ]
-        return result
+        for item in generic_fallbacks:
+            if len(result) >= 3:
+                break
+            add(item)
+        return result[:3]
 
     def _goal_to_interactions(self, goal: str) -> list[str]:
         interactions = [
-            "User selects mode/configuration and starts session",
-            "System validates input and initializes runtime state",
-            "System processes game/service loop and updates score/state",
-            "System returns latest state and final settlement",
+            "Actor submits request or triggers action",
+            "System validates input, permissions, and required preconditions",
+            "System executes business logic and updates relevant state",
+            "System returns result and observable status for downstream verification",
         ]
-        if "多人" in goal or "multiplayer" in goal.lower():
-            interactions.insert(2, "System synchronizes shared state between players")
-        if "人机" in goal or "ai" in goal.lower():
-            interactions.insert(2, "System computes AI decision and merges with player action")
         return interactions
 
     def _as_str_list(self, value: Any) -> list[str]:

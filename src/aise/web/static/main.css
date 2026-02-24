@@ -550,6 +550,75 @@ td {
   max-height: 180px;
 }
 
+.task-log-trace-block {
+  margin-top: 6px;
+  display: grid;
+  gap: 6px;
+}
+
+.task-log-toggle {
+  justify-self: start;
+  border: 1px solid #c8d8ef;
+  background: #f5f9ff;
+  color: #194f8f;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.task-log-toggle:hover {
+  background: #ebf4ff;
+  border-color: #9ec2ef;
+}
+
+.task-log-markdown {
+  background: #f7faff;
+  border: 1px solid #d8e2f1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #24364f;
+  line-height: 1.45;
+  font-size: 12px;
+  overflow: auto;
+  max-height: 260px;
+}
+
+.task-log-markdown h1,
+.task-log-markdown h2,
+.task-log-markdown h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.task-log-markdown p {
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.task-log-markdown ul {
+  margin: 0 0 6px 18px;
+  padding: 0;
+}
+
+.task-log-markdown li {
+  margin: 0 0 4px;
+}
+
+.task-log-markdown pre {
+  margin: 0 0 6px;
+  padding: 8px;
+  background: #f1f5fb;
+  border: 1px solid #d5deec;
+  border-radius: 6px;
+  overflow: auto;
+}
+
+.task-log-markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .task-detail-json {
   background: #f2f6fc;
   border: 1px solid var(--line);
@@ -927,6 +996,193 @@ td {
   border-color: rgba(90, 170, 64, 0.18);
 }
 
+.flow-composite-list {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.flow-composite-card {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #cfdced;
+  background: #fff;
+  border-radius: 12px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+button.flow-composite-card {
+  cursor: pointer;
+}
+
+button.flow-composite-card:hover,
+.flow-composite-head:hover {
+  border-color: #9ec2ef;
+  background: #f7fbff;
+}
+
+.flow-composite-card.active {
+  border-color: #0e7adf;
+  background: #ecf5ff;
+  box-shadow: 0 0 0 3px rgba(14, 122, 223, 0.08);
+}
+
+.flow-composite-card.completed {
+  border-color: #99d08a;
+  background: #f2fbef;
+}
+
+.flow-composite-card.running {
+  border-color: #8abcf0;
+  background: #f1f8ff;
+}
+
+.flow-composite-card.failed {
+  border-color: #f0b3ad;
+  background: #fff5f4;
+}
+
+.flow-composite-card-top,
+.flow-composite-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.flow-composite-head {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.flow-composite-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #24354e;
+}
+
+.flow-composite-meta {
+  font-size: 11px;
+  color: #5f6f87;
+  word-break: break-word;
+}
+
+.flow-dual-status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.flow-dual-pill {
+  font-size: 10px;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 999px;
+  border: 1px solid #d6e0ef;
+  background: #f5f8fe;
+  color: #55657f;
+  white-space: nowrap;
+}
+
+.flow-dual-pill.completed {
+  border-color: #99d08a;
+  background: #eef8e8;
+  color: #2f6f21;
+}
+
+.flow-dual-pill.running {
+  border-color: #8abcf0;
+  background: #edf5ff;
+  color: #0e5cad;
+}
+
+.flow-dual-pill.failed {
+  border-color: #f0b3ad;
+  background: #fff1f0;
+  color: #a32218;
+}
+
+.flow-dual-pill.design {
+  border-style: solid;
+}
+
+.flow-dual-pill.review {
+  border-style: dashed;
+}
+
+.flow-dual-pill.is-action {
+  cursor: pointer;
+}
+
+.flow-dual-pill.is-action:hover {
+  box-shadow: inset 0 0 0 1px rgba(14, 122, 223, 0.18);
+}
+
+.flow-dual-pill.is-action:focus {
+  outline: 2px solid rgba(14, 122, 223, 0.35);
+  outline-offset: 1px;
+}
+
+.flow-subsystem-card-list {
+  display: grid;
+  gap: 8px;
+}
+
+.flow-subsystem-card {
+  border: 1px solid rgba(148, 168, 196, 0.35);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.flow-subsystem-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.flow-subsystem-title-wrap {
+  display: grid;
+  gap: 2px;
+}
+
+.flow-subsystem-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #27364f;
+}
+
+.flow-subsystem-id {
+  font-size: 10px;
+  color: #6b7a91;
+}
+
+.flow-subsystem-meta {
+  font-size: 11px;
+  color: #586881;
+  word-break: break-word;
+}
+
+.flow-subsystem-progress {
+  font-size: 11px;
+  color: #2f4566;
+  background: rgba(14, 122, 223, 0.05);
+  border: 1px dashed rgba(14, 122, 223, 0.18);
+  border-radius: 8px;
+  padding: 5px 7px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
 .task-live-summary > p {
   margin: 8px 0 6px;
   font-weight: 700;
@@ -958,8 +1214,31 @@ td {
   border-top: 1px solid #e6edf5;
 }
 
+.task-memory-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
 .task-memory-panel h3 {
-  margin: 0 0 8px;
+  margin: 0;
+}
+
+.task-memory-toggle {
+  border: 1px solid #c8d8ef;
+  background: #f5f9ff;
+  color: #194f8f;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.task-memory-toggle:hover {
+  background: #ebf4ff;
+  border-color: #9ec2ef;
 }
 
 .flow-agent-task {

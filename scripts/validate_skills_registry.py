@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib
-import inspect
 import re
 import sys
 from dataclasses import dataclass
@@ -167,7 +166,11 @@ def validate_records(records: list[SkillRecord]) -> list[str]:
         seen_classes.add(rec.class_name)
 
         skill_dir = ROOT / "src" / "aise" / "skills" / rec.directory_name
-        required_paths = [skill_dir / "__init__.py", skill_dir / "skill.md", skill_dir / "scripts" / f"{rec.directory_name}.py"]
+        required_paths = [
+            skill_dir / "__init__.py",
+            skill_dir / "skill.md",
+            skill_dir / "scripts" / f"{rec.directory_name}.py",
+        ]
         for path in required_paths:
             if not path.exists():
                 errors.append(f"Missing required skill path for {rec.runtime_skill_name}: {path.relative_to(ROOT)}")
@@ -175,7 +178,9 @@ def validate_records(records: list[SkillRecord]) -> list[str]:
         expected_runtime = DIR_TO_RUNTIME_NAME_EXCEPTIONS.get(rec.directory_name, rec.directory_name)
         if rec.runtime_skill_name != expected_runtime:
             errors.append(
-                f"Directory/runtime mismatch for {rec.directory_name}: runtime={rec.runtime_skill_name}, expected={expected_runtime}"
+                "Directory/runtime mismatch for "
+                f"{rec.directory_name}: runtime={rec.runtime_skill_name}, "
+                f"expected={expected_runtime}"
             )
 
         if not rec.registered_agents:
