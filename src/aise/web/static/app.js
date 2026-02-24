@@ -963,6 +963,13 @@ function setupRunReact() {
       const hasLiveRunning = liveStatus === "running";
       if (hasLiveRunning) return "running";
 
+      const statusSource = String(task.statusSource || "");
+      // If the task is explicitly running (task_state/live_state/runtime), preserve running for design/build roles.
+      // Only keep the delayed-review visualization rule for review roles.
+      if (role !== "review" && statusSource && statusSource !== "phase_fallback") {
+        return "running";
+      }
+
       // Deep loop tasks may be pre-marked running via task_state as soon as the parent loop starts.
       // For paired cards, only show review running after there is actual review live progress.
       if (role === "review") {
@@ -998,12 +1005,30 @@ function setupRunReact() {
       return meta && meta.subsystem ? String(meta.subsystem) : "";
     }
 
-    function subsystemCardState(baseTask, subsystemId) {
+    function normalizeSubsystemMatchKey(value) {
+      return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    }
+
+    function subsystemCardState(baseTask, subsystemRef) {
       if (!baseTask) return "pending";
       const baseStatus = String(baseTask.status || "pending");
       const liveSubsystem = inferLiveSubsystem(baseTask);
       if (baseStatus === "running") {
-        if (liveSubsystem && liveSubsystem === String(subsystemId || "")) return "running";
+        const liveKey = normalizeSubsystemMatchKey(liveSubsystem);
+        const candidates = [];
+        if (subsystemRef && typeof subsystemRef === "object") {
+          candidates.push(subsystemRef.subsystemSlug, subsystemRef.subsystemId, subsystemRef.subsystemName);
+        } else {
+          candidates.push(subsystemRef);
+        }
+        const matched = liveKey
+          ? candidates.some((item) => normalizeSubsystemMatchKey(item) === liveKey)
+          : false;
+        if (matched) return "running";
         return "pending";
       }
       return baseStatus;
@@ -1113,9 +1138,18 @@ function setupRunReact() {
               return {
                 subsystemId,
                 subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
+                subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
                 srIds: Array.isArray(sub && sub.assigned_sr_ids) ? sub.assigned_sr_ids.map((x) => String(x)) : [],
-                designStatus: subsystemCardState(subDesign, subsystemId),
-                reviewStatus: subsystemCardState(subReview, subsystemId),
+                designStatus: subsystemCardState(subDesign, {
+                  subsystemId,
+                  subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
+                  subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
+                }),
+                reviewStatus: subsystemCardState(subReview, {
+                  subsystemId,
+                  subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
+                  subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
+                }),
                 designRoundTotal: Number(subRoundsEach[subsystemId] || 0),
                 reviewRoundTotal: Number(subRoundsEach[subsystemId] || 0),
                 designRoundCurrent:
@@ -1170,9 +1204,18 @@ function setupRunReact() {
               return {
                 subsystemId,
                 subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
+                subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
                 srIds: Array.isArray(sub && sub.assigned_sr_ids) ? sub.assigned_sr_ids.map((x) => String(x)) : [],
-                designStatus: subsystemCardState(devTask, subsystemId),
-                reviewStatus: subsystemCardState(reviewTask, subsystemId),
+                designStatus: subsystemCardState(devTask, {
+                  subsystemId,
+                  subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
+                  subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
+                }),
+                reviewStatus: subsystemCardState(reviewTask, {
+                  subsystemId,
+                  subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
+                  subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
+                }),
                 designRoundTotal: readRoundCount(devTask || reviewTask, "step2"),
                 reviewRoundTotal: readRoundCount(devTask || reviewTask, "step2"),
                 designRoundCurrent:
@@ -2060,20 +2103,13 @@ function setupRunReact() {
                       )
                     : h("p", { className: "muted" }, "暂无执行步骤/LLM调用日志，等待任务启动或 trace 写入。")
                 ),
-                h(
-                  "pre",
-                  { className: "task-detail-json" },
-                  JSON.stringify(
-                    selectedTaskDetail.runtimeResult || {
-                      message: "暂无运行时详细结果",
-                      phase: selectedTaskDetail.phaseKey,
-                      task: selectedTaskDetail.key,
-                      hint: "该任务可能由阶段级汇总结果驱动，等待阶段提交后可见。",
-                    },
-                    null,
-                    2
-                  )
-                )
+                selectedTaskDetail.runtimeResult
+                  ? h(
+                      "pre",
+                      { className: "task-detail-json" },
+                      JSON.stringify(selectedTaskDetail.runtimeResult, null, 2)
+                    )
+                  : null
               )
             : h("p", { className: "muted" }, "点击上方任意任务以查看详细信息。")
         )

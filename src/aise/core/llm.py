@@ -592,16 +592,84 @@ class LLMClient:
         event_type = getattr(event, "type", None)
         if isinstance(event, dict):
             event_type = event.get("type", event_type)
+        event_type = str(event_type or "")
 
-        if event_type in {"response.output_text.delta", "response.content_part.added"}:
-            delta = getattr(event, "delta", None)
-            if delta is None and isinstance(event, dict):
-                delta = event.get("delta")
+        def _field(obj: Any, name: str, default: Any = None) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(name, default)
+            return getattr(obj, name, default)
+
+        def _text_from_candidate(value: Any) -> str:
+            if isinstance(value, str):
+                return value
+            if isinstance(value, dict):
+                # Common shapes: {"text": "..."} / {"delta": "..."} / nested content part
+                for key in ("text", "delta"):
+                    part = value.get(key)
+                    if isinstance(part, str):
+                        return part
+                nested_part = value.get("part")
+                if nested_part is not None:
+                    text = _text_from_candidate(nested_part)
+                    if text:
+                        return text
+            # SDK object path
+            text = getattr(value, "text", None)
+            if isinstance(text, str):
+                return text
+            delta = getattr(value, "delta", None)
             if isinstance(delta, str):
                 return delta
-            if isinstance(delta, dict):
-                text = delta.get("text")
-                if isinstance(text, str):
+            part = getattr(value, "part", None)
+            if part is not None:
+                return _text_from_candidate(part)
+            return ""
+
+        # Explicit terminal/non-text events (ignore to avoid duplicate output).
+        if event_type in {
+            "response.created",
+            "response.in_progress",
+            "response.completed",
+            "response.failed",
+            "response.incomplete",
+            "response.output_item.done",
+            "response.content_part.done",
+            "response.output_text.done",
+            "response.refusal.done",
+            "response.function_call_arguments.done",
+        }:
+            return ""
+
+        # Canonical text streaming delta event.
+        if event_type == "response.output_text.delta":
+            return _text_from_candidate(_field(event, "delta"))
+
+        # Content part events may contain text directly in part/content_part/delta.
+        if event_type in {
+            "response.content_part.added",
+            "response.content_part.delta",
+            "response.output_item.added",
+            "response.output_item.delta",
+        }:
+            for key in ("part", "content_part", "delta", "item"):
+                text = _text_from_candidate(_field(event, key))
+                if text:
+                    return text
+            return ""
+
+        # Reasoning/refusal text deltas can appear as string deltas in some SDK/provider variants.
+        if event_type in {
+            "response.refusal.delta",
+            "response.reasoning.delta",
+            "response.reasoning_summary_text.delta",
+        }:
+            return _text_from_candidate(_field(event, "delta"))
+
+        # Generic fallback for future/unknown text-bearing events.
+        if event_type.endswith(".delta") or event_type.endswith(".added"):
+            for key in ("delta", "part", "content_part", "item", "text"):
+                text = _text_from_candidate(_field(event, key))
+                if text:
                     return text
         return ""
 
@@ -685,7 +753,7 @@ class LLMClient:
 
     _UNEXPECTED_KWARG_RE = re.compile(r"unexpected keyword argument '([^']+)'")
     _DEFAULT_TIMEOUT_SECONDS = 45.0
-    _DEFAULT_STREAM_EVENT_TIMEOUT_SECONDS = 120.0
+    _DEFAULT_STREAM_EVENT_TIMEOUT_SECONDS = 600.0
 
     def _resolve_timeout_seconds(self) -> float:
         raw = os.environ.get("AISE_LLM_TIMEOUT_SECONDS", "").strip()

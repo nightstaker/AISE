@@ -293,6 +293,7 @@ class DeepOrchestrator:
 
         model = self.config.default_model if self.config else ModelConfig()
         llm = self._build_llm(model)
+        planner_required_keys = ["workflow"]
         planner_prompt = (
             "You plan SDLC workflow routing for a multi-agent team.\n"
             "Return STRICT JSON only, with schema:\n"
@@ -308,7 +309,12 @@ class DeepOrchestrator:
             prompt = (
                 f"Available agents: {available_agents}\n"
                 f"Project input keys: {sorted(project_input.keys())}\n"
-                f"Requirements summary: {str(project_input.get('raw_requirements', ''))[:1000]}"
+                f"Requirements summary: {str(project_input.get('raw_requirements', ''))[:1000]}\n"
+                f"required_keys (schema echo): {', '.join(planner_required_keys)}\n"
+                "JSON format guardrails:\n"
+                "- First build the JSON skeleton with the required key and 4 phase items, then fill agent values.\n"
+                "- Keep key names exactly as shown in the schema.\n"
+                "- Return one final JSON object only (no markdown, no prose).\n"
             )
             result = planner.invoke(
                 {

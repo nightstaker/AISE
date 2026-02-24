@@ -150,6 +150,9 @@ class DeepArchitectureWorkflowSkill(Skill):
                             {
                                 "subsystem_id": str(sid),
                                 "subsystem_name": str(item.get("subsystem", sid)),
+                                "subsystem_slug": str(item.get("subsystem_english_name", "")).strip()
+                                or self._slugify(str(item.get("subsystem", sid))),
+                                "subsystem_english_name": str(item.get("subsystem_english_name", "")).strip(),
                                 "assigned_sr_ids": [str(x) for x in item.get("assigned_sr_ids", [])]
                                 if isinstance(item.get("assigned_sr_ids"), list)
                                 else [],
@@ -189,7 +192,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                     min_rounds=2,
                 )
                 detail = rounds[-1]["detail_design"]
-                file_name = f"{self._slugify(str(subsystem.get('name', subsystem_id)))}-detail-design.md"
+                file_name = f"{self._subsystem_slug(subsystem, fallback=subsystem_id)}-detail-design.md"
                 rendered_doc = self._render_subsystem_detail_doc(
                     project_name=project_name,
                     subsystem=subsystem,
@@ -240,6 +243,13 @@ class DeepArchitectureWorkflowSkill(Skill):
                             {
                                 "subsystem_id": str(sid),
                                 "subsystem_name": str((assignments.get(sid, {}) or {}).get("subsystem", sid)),
+                                "subsystem_slug": str(
+                                    (assignments.get(sid, {}) or {}).get("subsystem_english_name", "")
+                                ).strip()
+                                or self._slugify(str((assignments.get(sid, {}) or {}).get("subsystem", sid))),
+                                "subsystem_english_name": str(
+                                    (assignments.get(sid, {}) or {}).get("subsystem_english_name", "")
+                                ).strip(),
                                 "assigned_sr_ids": [
                                     str(x) for x in (assignments.get(sid, {}) or {}).get("assigned_sr_ids", [])
                                 ]
@@ -263,6 +273,13 @@ class DeepArchitectureWorkflowSkill(Skill):
                             {
                                 "subsystem_id": str(sid),
                                 "subsystem_name": str((assignments.get(sid, {}) or {}).get("subsystem", sid)),
+                                "subsystem_slug": str(
+                                    (assignments.get(sid, {}) or {}).get("subsystem_english_name", "")
+                                ).strip()
+                                or self._slugify(str((assignments.get(sid, {}) or {}).get("subsystem", sid))),
+                                "subsystem_english_name": str(
+                                    (assignments.get(sid, {}) or {}).get("subsystem_english_name", "")
+                                ).strip(),
                                 "assigned_sr_ids": [
                                     str(x) for x in (assignments.get(sid, {}) or {}).get("assigned_sr_ids", [])
                                 ]
@@ -695,8 +712,8 @@ class DeepArchitectureWorkflowSkill(Skill):
     ) -> dict[str, Any]:
         requirements = self._normalize_requirements(system_requirements.get("requirements", []))
         subsystems = previous_design.get("subsystems", []) if previous_design else []
-        if not subsystems:
-            subsystems = self._build_subsystems(requirements)
+        if not isinstance(subsystems, list):
+            subsystems = []
 
         if previous_review and previous_review.get("issues"):
             feedback = " | ".join(str(issue) for issue in previous_review.get("issues", [])[:3])
@@ -712,6 +729,7 @@ class DeepArchitectureWorkflowSkill(Skill):
             {
                 "id": subsystem.get("id", ""),
                 "name": subsystem.get("name", ""),
+                "english_name": subsystem.get("english_name", ""),
                 "apis": [api.get("path", "") for api in subsystem.get("apis", [])[:3]],
             }
             for subsystem in subsystems[:8]
@@ -781,22 +799,14 @@ class DeepArchitectureWorkflowSkill(Skill):
             llm_design.get("layering"),
             fallback=["System Layer", "Subsystem Layer", "Component/Service Layer"],
         )
-        # LLM-generated structure (subsystems/components/SR allocation) with explicit trace.
-        seed_subsystems = self._build_subsystems_from_architecture_context(
-            requirements=requirements,
-            architecture_overview=str(llm_design.get("architecture_overview", "")).strip(),
-            layering=layering,
-            product_design=product_design,
-        )
-        seed_allocation = self._allocate_srs_to_subsystems(requirements, seed_subsystems)
-        seed_components = self._build_components(seed_subsystems, seed_allocation)
-        seed_structure_context = self._compact_json(
-            {
-                "subsystems": seed_subsystems,
-                "sr_allocation": seed_allocation,
-                "components": seed_components,
+        previous_structure_context = ""
+        if isinstance(previous_design, dict):
+            previous_structure = {
+                "subsystems": previous_design.get("subsystems", []),
+                "components": previous_design.get("components", []),
+                "sr_allocation": previous_design.get("sr_allocation", {}),
             }
-        )
+            previous_structure_context = self._compact_json(previous_structure)
         structure_payload = self._run_llm_json_segment(
             context=context,
             purpose=f"subagent:architecture_designer step:architecture_design.structure{architecture_scope}",
@@ -804,14 +814,20 @@ class DeepArchitectureWorkflowSkill(Skill):
                 "You are an architecture designer. Return JSON only with keys: subsystems, components, sr_allocation.\n"
                 "Rules:\n"
                 "- Design domain-meaningful subsystems (not generic 'service layer' or 'data layer').\n"
-                "- subsystems: list[object] with keys: name, description, constraints, apis.\n"
+                "- subsystems: list[object] with keys: name, english_name, description, constraints, apis.\n"
+                "- name may be Chinese or bilingual for documentation display.\n"
+                "- english_name is REQUIRED and must be 1-3 English words (ASCII letters/numbers only), "
+                "used for directories/module names.\n"
                 "- each subsystem.apis item has keys: method, path, description.\n"
                 "- components: list[object] with keys: name, type, subsystem_id_or_name, responsibilities.\n"
+                "- Use subsystem_id, subsystem name, or subsystem english_name when referencing subsystem_id_or_name.\n"
                 "- sr_allocation: object mapping subsystem ids/names to SR id lists.\n"
                 "- An SR may be allocated to multiple related subsystems when "
                 "cross-subsystem collaboration is required.\n"
                 "- Every SR must be allocated to at least one subsystem.\n"
                 "- Components must have concrete responsibilities tied to domain behavior.\n"
+                "- Infer APIs/components from requirements and architecture context; do NOT use fixed templates "
+                "like health+execute for every subsystem.\n"
             ),
             user_prompt=(
                 f"Round: {round_index}\n"
@@ -819,15 +835,19 @@ class DeepArchitectureWorkflowSkill(Skill):
                 f"Product design:\n{self._compact_json(product_design)}\n\n"
                 f"Architecture overview:\n{str(llm_design.get('architecture_overview', ''))[:4000]}\n\n"
                 f"Layering:\n{self._compact_json(layering)}\n\n"
-                "Seed structure (for reference only; improve/replace with domain-specific design):\n"
-                f"{seed_structure_context}\n"
+                + (
+                    "Previous structure from last round (revise if needed):\n"
+                    f"{previous_structure_context}\n\n"
+                    if previous_structure_context
+                    else ""
+                )
+                + "Generate a fresh domain-specific subsystem/component/API/SR-allocation structure.\n"
             ),
             required_keys=["subsystems", "components", "sr_allocation"],
         )
         subsystems = self._normalize_llm_architecture_subsystems(
             structure_payload.get("subsystems"),
             requirements=requirements,
-            seed_subsystems=seed_subsystems,
         )
         sr_allocation = self._normalize_llm_architecture_sr_allocation(
             structure_payload.get("sr_allocation"),
@@ -873,7 +893,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         last_partial: dict[str, Any] = {}
         last_error: Exception | None = None
         for attempt in range(1, max(1, max_attempts) + 1):
-            prompt = user_prompt
+            prompt = user_prompt.rstrip() + "\n\n" + self._json_schema_echo_prompt(required_keys=required_keys)
             if attempt > 1:
                 missing = [key for key in required_keys if key not in last_partial]
                 prompt += (
@@ -888,7 +908,9 @@ class DeepArchitectureWorkflowSkill(Skill):
                         "for this segment (not just prose).\n"
                         f"Partial response:\n{self._compact_json(last_partial)}\n"
                     )
-                prompt += "- Return a compact valid JSON object only.\n"
+                prompt += (
+                    "- Rebuild the full JSON skeleton first, then fill values and return compact valid JSON only.\n"
+                )
             try:
                 payload = self._run_llm_json(
                     context=context,
@@ -1041,7 +1063,11 @@ class DeepArchitectureWorkflowSkill(Skill):
                 "You are an architecture reviewer. Return JSON only with optional keys: "
                 "summary (str), suggestions (list[str])."
             ),
-            user_prompt=(f"Round: {round_index}\nCurrent issues:\n- " + "\n- ".join(issues or ["(none)"]) + "\n"),
+            user_prompt=(
+                (f"Round: {round_index}\nCurrent issues:\n- " + "\n- ".join(issues or ["(none)"]) + "\n")
+                + "\n"
+                + self._json_schema_echo_prompt(optional_keys=["summary", "suggestions"])
+            ),
         )
 
         return {
@@ -1072,7 +1098,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         src_dir.mkdir(parents=True, exist_ok=True)
         app_file = src_dir / "main.py"
         subsystem_modules = [
-            self._slugify(str(subsystem.get("name", subsystem.get("id", "service"))))
+            self._subsystem_slug(subsystem, fallback=str(subsystem.get("id", "service")))
             for subsystem in architecture_design.get("subsystems", [])
         ]
         include_contract_lines = []
@@ -1129,10 +1155,13 @@ class DeepArchitectureWorkflowSkill(Skill):
         subsystems = architecture_design.get("subsystems", [])
         for index, subsystem in enumerate(subsystems):
             subsystem_id = str(subsystem.get("id", f"SUBSYS-{index + 1:02d}"))
+            subsystem_display = str(subsystem.get("name", subsystem_id))
+            subsystem_slug = self._subsystem_slug(subsystem, fallback=subsystem_id)
             assignments[subsystem_id] = {
                 "subsystem_architect": architect_pool[index % len(architect_pool)],
                 "architecture_reviewer": reviewer_pool[index % len(reviewer_pool)],
-                "subsystem": subsystem.get("name", subsystem_id),
+                "subsystem": subsystem_display,
+                "subsystem_english_name": str(subsystem.get("english_name", "")).strip() or subsystem_slug,
                 "assigned_sr_ids": architecture_design.get(
                     "sr_allocation",
                     {},
@@ -1201,7 +1230,10 @@ class DeepArchitectureWorkflowSkill(Skill):
 
         components = previous_design.get("components", []) if previous_design else []
         if not components:
-            components = self._build_subsystem_components(subsystem)
+            components = self._select_architecture_components_for_subsystem(
+                architecture_design=architecture_design,
+                subsystem=subsystem,
+            )
 
         fn_items = self._build_fn_items(sr_items, components)
         if previous_review and previous_review.get("issues"):
@@ -1226,6 +1258,10 @@ class DeepArchitectureWorkflowSkill(Skill):
                 f"Subsystem: {subsystem.get('id', '')} {subsystem.get('name', '')}\n"
                 f"Round: {round_index}\n"
                 f"Assigned SR IDs: {', '.join(sr_ids)}\n"
+                "\n"
+                + self._json_schema_echo_prompt(
+                    optional_keys=["logic_architecture_goals", "design_strategy", "technology_choices"]
+                )
             ),
         )
 
@@ -1262,6 +1298,38 @@ class DeepArchitectureWorkflowSkill(Skill):
             "designer_response": self._build_designer_response(previous_review),
             "architecture_reference": architecture_design.get("architecture_overview", ""),
         }
+
+    def _select_architecture_components_for_subsystem(
+        self,
+        *,
+        architecture_design: dict[str, Any],
+        subsystem: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        subsystem_id = str(subsystem.get("id", "")).strip()
+        selected: list[dict[str, Any]] = []
+        for item in architecture_design.get("components", []) if isinstance(architecture_design, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("subsystem_id", "")).strip() != subsystem_id:
+                continue
+            selected.append(
+                {
+                    "id": str(item.get("id", "")),
+                    "name": str(item.get("name", "")),
+                    "type": str(item.get("type", "service")),
+                    "responsibility": (
+                        str((item.get("responsibilities") or [""])[0])
+                        if isinstance(item.get("responsibilities"), list)
+                        else str(item.get("responsibility", ""))
+                    ),
+                    "responsibilities": (
+                        [str(x) for x in item.get("responsibilities", [])]
+                        if isinstance(item.get("responsibilities"), list)
+                        else []
+                    ),
+                }
+            )
+        return selected
 
     def _review_subsystem_detail(
         self,
@@ -1306,6 +1374,8 @@ class DeepArchitectureWorkflowSkill(Skill):
                 f"Subsystem: {subsystem.get('id', '')} {subsystem.get('name', '')}\n"
                 f"Round: {round_index}\n"
                 f"Issues:\n- " + "\n- ".join(issues or ["(none)"]) + "\n"
+                + "\n"
+                + self._json_schema_echo_prompt(optional_keys=["summary", "suggestions"])
             ),
         )
 
@@ -1339,7 +1409,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         files: list[str] = []
         for subsystem in architecture_design.get("subsystems", []):
             subsystem_id = str(subsystem.get("id", ""))
-            module_name = self._slugify(str(subsystem.get("name", subsystem_id)))
+            module_name = self._subsystem_slug(subsystem, fallback=subsystem_id)
             subsystem_dir = src_dir / module_name
             subsystem_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1637,267 +1707,15 @@ class DeepArchitectureWorkflowSkill(Skill):
             "count": len(functions),
         }
 
-    def _build_subsystems(
-        self,
-        requirements: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        keyword_candidates = self._extract_requirement_keywords(requirements)
-        requirement_count = max(1, len(requirements))
-        subsystem_count = min(4, max(1, (requirement_count + 1) // 2))
-        if not keyword_candidates:
-            keyword_candidates = ["capability"]
-
-        subsystems: list[dict[str, Any]] = []
-        for index in range(subsystem_count):
-            subsystem_id = f"SUBSYS-{index + 1:03d}"
-            keyword = keyword_candidates[index % len(keyword_candidates)]
-            name = self._slugify(f"{keyword}_capability")
-            subsystems.append(
-                {
-                    "id": subsystem_id,
-                    "name": name,
-                    "description": f"Capability group {index + 1} for requirement fulfillment and service delivery.",
-                    "constraints": [],
-                    "apis": [
-                        {
-                            "method": "GET",
-                            "path": f"/api/v1/{name}/health",
-                            "description": f"Health endpoint for {name}",
-                        },
-                        {
-                            "method": "POST",
-                            "path": f"/api/v1/{name}/execute",
-                            "description": f"Primary command endpoint for {name}",
-                        },
-                    ],
-                }
-            )
-        return subsystems
-
-    def _build_subsystems_from_architecture_context(
-        self,
-        *,
-        requirements: list[dict[str, Any]],
-        architecture_overview: str,
-        layering: list[str],
-        product_design: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        labels = self._extract_subsystem_labels_from_architecture_context(
-            architecture_overview=architecture_overview,
-            layering=layering,
-        )
-        if not labels:
-            labels = self._extract_feature_based_subsystem_labels(product_design or {}, requirements)
-        if not labels:
-            return self._build_subsystems(requirements)
-
-        # Prefer 3-6 concrete subsystems; avoid producing all infrastructure layers as "subsystems".
-        labels = [label for label in labels if label]
-        preferred_labels: list[str] = []
-        infra_tokens = ("data", "persistence", "storage", "network", "security", "observability", "compliance")
-        generic_tokens = ("backend microservices", "business services", "service layer")
-        for label in labels:
-            lower = label.lower()
-            if any(tok in lower for tok in infra_tokens):
-                continue
-            if any(tok in lower for tok in generic_tokens):
-                continue
-            preferred_labels.append(label)
-        pool = preferred_labels or labels
-        pool = [
-            item
-            for _, item in sorted(
-                enumerate(pool),
-                key=lambda row: (-self._subsystem_label_priority(row[1]), row[0]),
-            )
-        ]
-        target_count = max(3, (len(requirements) + 1) // 2)
-        if len(pool) >= 4 and target_count < 4:
-            target_count = 4
-        target_count = min(6, target_count)
-        selected = pool[: max(1, target_count)]
-        if len(selected) < 2:
-            selected = labels[: min(4, max(2, len(labels)))]
-
-        subsystems: list[dict[str, Any]] = []
-        for index, label in enumerate(selected, start=1):
-            subsystem_id = f"SUBSYS-{index:03d}"
-            slug = self._slugify(label)
-            api_base = self._subsystem_api_base_from_label(label)
-            description = self._subsystem_description_from_label(label)
-            subsystems.append(
-                {
-                    "id": subsystem_id,
-                    "name": slug,
-                    "description": description,
-                    "constraints": [],
-                    "apis": [
-                        {
-                            "method": "GET",
-                            "path": f"/api/v1/{api_base}/health",
-                            "description": f"Health endpoint for {label}",
-                        },
-                        {
-                            "method": "POST",
-                            "path": f"/api/v1/{api_base}/execute",
-                            "description": f"Primary command endpoint for {label}",
-                        },
-                    ],
-                }
-            )
-        return subsystems
-
-    def _subsystem_label_priority(self, label: str) -> int:
-        text = str(label).strip().lower()
-        score = 0
-        if "service" in text:
-            score += 20
-        if "domain" in text or "business" in text:
-            score += 15
-        if "tier" in text or "layer" in text:
-            score -= 10
-        return score
-
-    def _extract_subsystem_labels_from_architecture_context(
-        self,
-        *,
-        architecture_overview: str,
-        layering: list[str],
-    ) -> list[str]:
-        labels: list[str] = []
-
-        # Parse explicit numbered tier names from the overview.
-        for match in re.finditer(r"\(\d+\)\s*([A-Za-z][A-Za-z0-9 &/_-]{2,80}?)\s*Tier\s*:", architecture_overview):
-            raw = match.group(1).strip()
-            label = re.sub(r"\s+", " ", raw)
-            if label:
-                labels.append(label)
-
-        # Parse "X Layer: ..." and "X Layer - ..." style lines from layering bullets.
-        for item in layering:
-            text = str(item).strip()
-            if not text:
-                continue
-            m = re.match(r"([A-Za-z][A-Za-z0-9 &/_-]{2,80}?)\s+Layer\b", text)
-            if m:
-                labels.append(m.group(1).strip())
-
-        # Deduplicate while preserving order.
-        seen: set[str] = set()
-        out: list[str] = []
-        for raw in labels:
-            normalized = re.sub(r"\s+", " ", str(raw).strip())
-            if not normalized:
-                continue
-            lowered = normalized.lower()
-            if lowered in seen:
-                continue
-            seen.add(lowered)
-            out.append(normalized)
-        return out
-
-    def _extract_feature_based_subsystem_labels(
-        self,
-        product_design: dict[str, Any],
-        requirements: list[dict[str, Any]],
-    ) -> list[str]:
-        labels: list[str] = []
-        for feature in product_design.get("system_features", []) if isinstance(product_design, dict) else []:
-            if not isinstance(feature, dict):
-                continue
-            title = str(feature.get("title", "")).strip()
-            if title:
-                labels.append(title)
-        if not labels:
-            labels.extend(self._extract_requirement_keywords(requirements))
-        return labels
-
-    def _subsystem_api_base_from_label(self, label: str) -> str:
-        slug = self._slugify(label)
-        return slug or "subsystem"
-
     def _subsystem_description_from_label(self, label: str) -> str:
         text = str(label).strip()
         return f"Subsystem boundary for {text}, aligned to the architecture layering and service responsibilities."
-
-    def _allocate_srs_to_subsystems(
-        self,
-        requirements: list[dict[str, Any]],
-        subsystems: list[dict[str, Any]],
-    ) -> dict[str, list[str]]:
-        allocation: dict[str, list[str]] = {str(item.get("id", "")): [] for item in subsystems}
-        if not subsystems:
-            return allocation
-        if len(requirements) == 1 and len(subsystems) > 1:
-            only_sr = str(requirements[0].get("id", "")).strip()
-            if only_sr:
-                for subsystem in subsystems:
-                    allocation.setdefault(str(subsystem.get("id", "")), []).append(only_sr)
-            return allocation
-
-        for index, requirement in enumerate(requirements):
-            sr_id = str(requirement.get("id", "")).strip()
-            if not sr_id:
-                continue
-            subsystem = subsystems[index % len(subsystems)]
-            key = str(subsystem.get("id", ""))
-            allocation.setdefault(key, []).append(sr_id)
-        return allocation
-
-    def _build_components(
-        self,
-        subsystems: list[dict[str, Any]],
-        sr_allocation: dict[str, list[str]],
-    ) -> list[dict[str, Any]]:
-        components: list[dict[str, Any]] = []
-        for subsystem in subsystems:
-            subsystem_id = str(subsystem.get("id", ""))
-            module = self._slugify(str(subsystem.get("name", subsystem_id)))
-            components.extend(
-                [
-                    {
-                        "id": f"COMP-{subsystem_id}-API",
-                        "name": f"{module}-api",
-                        "type": "service",
-                        "subsystem_id": subsystem_id,
-                        "responsibilities": [
-                            "Expose HTTP APIs",
-                            "Input validation",
-                        ],
-                        "sr_ids": sr_allocation.get(subsystem_id, []),
-                    },
-                    {
-                        "id": f"COMP-{subsystem_id}-DOMAIN",
-                        "name": f"{module}-domain",
-                        "type": "service",
-                        "subsystem_id": subsystem_id,
-                        "responsibilities": [
-                            "Business orchestration",
-                            "Policy and rule evaluation",
-                        ],
-                        "sr_ids": sr_allocation.get(subsystem_id, []),
-                    },
-                    {
-                        "id": f"COMP-{subsystem_id}-REPO",
-                        "name": f"{module}-repository",
-                        "type": "repository",
-                        "subsystem_id": subsystem_id,
-                        "responsibilities": [
-                            "Persistence abstraction",
-                            "Data access and query",
-                        ],
-                        "sr_ids": sr_allocation.get(subsystem_id, []),
-                    },
-                ]
-            )
-        return components
 
     def _normalize_llm_architecture_subsystems(
         self,
         value: Any,
         *,
         requirements: list[dict[str, Any]],
-        seed_subsystems: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         if not isinstance(value, list):
             raise RuntimeError("LLM architecture structure missing valid subsystems list")
@@ -1907,7 +1725,8 @@ class DeepArchitectureWorkflowSkill(Skill):
             if not isinstance(item, dict):
                 continue
             raw_name = str(item.get("name", item.get("subsystem", ""))).strip()
-            slug = self._slugify(raw_name)
+            english_name = self._normalize_subsystem_english_name(item.get("english_name"), fallback_name=raw_name)
+            slug = self._slugify(english_name)
             if not slug or slug in seen_names:
                 continue
             seen_names.add(slug)
@@ -1918,10 +1737,12 @@ class DeepArchitectureWorkflowSkill(Skill):
             if len(description) < 20:
                 description = self._subsystem_description_from_label(raw_name or slug)
             constraints = self._as_str_list(item.get("constraints"), fallback=[])
+            display_name = raw_name or english_name
             normalized.append(
                 {
                     "id": f"SUBSYS-{len(normalized) + 1:03d}",
-                    "name": slug,
+                    "name": display_name,
+                    "english_name": english_name,
                     "description": description,
                     "constraints": constraints,
                     "apis": apis,
@@ -1936,6 +1757,39 @@ class DeepArchitectureWorkflowSkill(Skill):
             for idx, subsystem in enumerate(normalized, start=1):
                 subsystem["id"] = f"SUBSYS-{idx:03d}"
         return normalized
+
+    def _normalize_subsystem_english_name(self, value: Any, *, fallback_name: str = "") -> str:
+        raw = str(value or "").strip()
+        candidate = raw or str(fallback_name or "").strip()
+        if not candidate:
+            raise RuntimeError("LLM subsystem missing english_name")
+
+        # Accept spaces / hyphens / underscores, normalize to 1-3 ASCII words.
+        words = [w for w in re.split(r"[\s_-]+", candidate) if w]
+        cleaned_words: list[str] = []
+        for word in words:
+            cleaned = "".join(ch for ch in word.lower() if ch.isascii() and ch.isalnum())
+            if cleaned:
+                cleaned_words.append(cleaned)
+        if not cleaned_words:
+            raise RuntimeError(f"Invalid subsystem english_name: {candidate!r}")
+        if len(cleaned_words) > 3:
+            cleaned_words = cleaned_words[:3]
+        return " ".join(cleaned_words)
+
+    def _subsystem_slug(self, subsystem: dict[str, Any], *, fallback: str = "subsystem") -> str:
+        if isinstance(subsystem, dict):
+            english_name = str(subsystem.get("english_name", "")).strip()
+            if english_name:
+                slug = self._slugify(english_name)
+                if slug:
+                    return slug
+            name = str(subsystem.get("name", "")).strip()
+            if name:
+                slug = self._slugify(name)
+                if slug:
+                    return slug
+        return self._slugify(fallback)
 
     def _normalize_llm_subsystem_apis(self, value: Any, *, subsystem_name: str) -> list[dict[str, str]]:
         apis: list[dict[str, str]] = []
@@ -1978,7 +1832,16 @@ class DeepArchitectureWorkflowSkill(Skill):
         required_ids = [str(item.get("id", "")).strip() for item in requirements if str(item.get("id", "")).strip()]
         required_set = set(required_ids)
         subsystem_ids = {str(s.get("id", "")) for s in subsystems}
-        subsystem_names = {str(s.get("name", "")).lower(): str(s.get("id", "")) for s in subsystems}
+        subsystem_names: dict[str, str] = {}
+        for s in subsystems:
+            sid = str(s.get("id", ""))
+            for key in (
+                str(s.get("name", "")).strip(),
+                str(s.get("english_name", "")).strip(),
+                self._subsystem_slug(s, fallback=sid),
+            ):
+                if key:
+                    subsystem_names[key.lower()] = sid
         allocation: dict[str, list[str]] = {str(s.get("id", "")): [] for s in subsystems}
 
         seen_any: set[str] = set()
@@ -2012,7 +1875,16 @@ class DeepArchitectureWorkflowSkill(Skill):
         if not isinstance(value, list):
             raise RuntimeError("LLM architecture structure missing valid components list")
         subsystem_ids = {str(s.get("id", "")) for s in subsystems}
-        subsystem_names = {str(s.get("name", "")).lower(): str(s.get("id", "")) for s in subsystems}
+        subsystem_names: dict[str, str] = {}
+        for s in subsystems:
+            sid = str(s.get("id", ""))
+            for key in (
+                str(s.get("name", "")).strip(),
+                str(s.get("english_name", "")).strip(),
+                self._subsystem_slug(s, fallback=sid),
+            ):
+                if key:
+                    subsystem_names[key.lower()] = sid
         per_subsystem_count: dict[str, int] = {sid: 0 for sid in subsystem_ids}
         components: list[dict[str, Any]] = []
 
@@ -2058,31 +1930,6 @@ class DeepArchitectureWorkflowSkill(Skill):
                 + ", ".join(sorted(missing_subsystems))
             )
         return components
-
-    def _build_subsystem_components(self, subsystem: dict[str, Any]) -> list[dict[str, Any]]:
-        subsystem_id = str(subsystem.get("id", "SUBSYS"))
-        module = self._slugify(str(subsystem.get("name", subsystem_id)))
-        responsibilities = self._infer_subsystem_component_responsibilities(module)
-        return [
-            {
-                "id": f"{subsystem_id}-C1",
-                "name": f"{module}-app-service",
-                "type": "service",
-                "responsibility": responsibilities[0],
-            },
-            {
-                "id": f"{subsystem_id}-C2",
-                "name": f"{module}-domain-service",
-                "type": "service",
-                "responsibility": responsibilities[1],
-            },
-            {
-                "id": f"{subsystem_id}-C3",
-                "name": f"{module}-gateway",
-                "type": "adapter",
-                "responsibility": responsibilities[2],
-            },
-        ]
 
     def _build_fn_items(
         self,
@@ -2417,61 +2264,6 @@ class DeepArchitectureWorkflowSkill(Skill):
         token = self._slugify(text)
         return token[:80] if token else "na"
 
-    def _infer_subsystem_component_responsibilities(self, module: str) -> list[str]:
-        return [
-            f"Coordinate {module} requests and workflow routing",
-            f"Apply {module} domain logic and validation rules",
-            f"Integrate persistence and external dependencies for {module}",
-        ]
-
-    def _extract_requirement_keywords(
-        self,
-        requirements: list[dict[str, Any]],
-    ) -> list[str]:
-        stopwords = {
-            "the",
-            "and",
-            "for",
-            "with",
-            "from",
-            "that",
-            "this",
-            "system",
-            "feature",
-            "requirement",
-            "user",
-            "users",
-            "support",
-            "supports",
-            "build",
-            "create",
-            "开发",
-            "系统",
-            "支持",
-            "用户",
-            "需求",
-        }
-        text_chunks: list[str] = []
-        for item in requirements:
-            if not isinstance(item, dict):
-                continue
-            text_chunks.append(str(item.get("title", "")))
-            text_chunks.append(str(item.get("requirement_overview", "")))
-        merged = " ".join(text_chunks).lower()
-        tokens = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{1,6}", merged)
-        words = [self._slugify(token) for token in tokens]
-        keywords: list[str] = []
-        for word in words:
-            if not word or word in stopwords or word.isdigit():
-                continue
-            if word.startswith("sr_") or word.startswith("sf_"):
-                continue
-            if word not in keywords:
-                keywords.append(word)
-            if len(keywords) >= 8:
-                break
-        return keywords
-
     def _build_current_architecture_context(
         self,
         previous_design: dict[str, Any] | None,
@@ -2592,6 +2384,30 @@ class DeepArchitectureWorkflowSkill(Skill):
             return fallback
         items = [str(item).strip() for item in value if str(item).strip()]
         return items or fallback
+
+    def _json_schema_echo_prompt(
+        self,
+        *,
+        required_keys: list[str] | None = None,
+        optional_keys: list[str] | None = None,
+    ) -> str:
+        required = [str(key).strip() for key in (required_keys or []) if str(key).strip()]
+        optional = [str(key).strip() for key in (optional_keys or []) if str(key).strip()]
+        lines = ["JSON format guardrails:"]
+        if required:
+            lines.append(f"- required_keys (schema echo): {', '.join(required)}")
+        if optional:
+            lines.append(f"- optional_keys (schema echo): {', '.join(optional)}")
+        lines.append(
+            "- First build a complete JSON skeleton with the listed key names as placeholders, "
+            "then fill values before sending the final answer."
+        )
+        if required:
+            lines.append("- Include every required key even if a value is empty string/list/object.")
+        if optional:
+            lines.append("- If you include optional keys, use the exact key names and keep unknown keys out.")
+        lines.append("- Return exactly one final JSON object only (no markdown, no comments, no prose).")
+        return "\n".join(lines) + "\n"
 
     def _run_llm_json(
         self,
