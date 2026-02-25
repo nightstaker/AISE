@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 
+from ..agents.prompts import load_agent_prompt_section, resolve_agent_prompt_md_path
 from ..config import ModelConfig
 from ..core.artifact import ArtifactStore, ArtifactType
 from ..core.skill import SkillContext
@@ -19,81 +20,6 @@ from .tool_adapter import create_agent_tools
 
 logger = get_logger(__name__)
 
-
-# System prompt templates per agent role.
-# Each prompt explains the agent's responsibilities so the LLM can reason
-# about which skills to call and in what order.
-AGENT_SYSTEM_PROMPTS: dict[str, str] = {
-    "product_manager": (
-        "You are an expert Product Manager in an AI software development team.\n\n"
-        "Responsibilities:\n"
-        "- Run a deep paired workflow with Product Designer and Product Reviewer subagents\n"
-        "- Expand raw requirements with user memory into clarified intent\n"
-        "- Produce and review system-design.md with SF list for at least two rounds\n"
-        "- Produce and review system-requirements.md with SR list for at least two rounds\n"
-        "- Preserve revision history and traceability in generated docs\n\n"
-        "Use your available tools to execute each task systematically. "
-        "Call every skill that is relevant to the current phase."
-    ),
-    "architect": (
-        "You are an expert Software Architect in an AI software development team.\n\n"
-        "Responsibilities:\n"
-        "- Run a deep architecture workflow with Architecture Designer / Reviewer / Subsystem Architect subagents\n"
-        "- Produce and review system-architecture.md for at least two rounds\n"
-        "- Allocate all SR items into subsystems and define API contracts\n"
-        "- Generate subsystem detail design docs with SR->FN decomposition for at least two rounds each\n"
-        "- Initialize project source tree and subsystem API code skeletons\n\n"
-        "Use your available tools to execute each task systematically. "
-        "Call every skill that is relevant to the current phase."
-    ),
-    "developer": (
-        "You are an expert Software Developer in an AI software development team.\n\n"
-        "Responsibilities:\n"
-        "- Run deep implementation workflow with Programmer and Code Reviewer subagents\n"
-        "- Split implementation by subsystem and assign multi-instance pairs\n"
-        "- Implement each FN with test-first iterations and review-driven refinement\n"
-        "- Ensure static checks and unit tests pass before merge-ready output\n"
-        "- Preserve revision history in subsystem directories for traceability\n\n"
-        "Use your available tools to execute each task systematically. "
-        "Call every skill that is relevant to the current phase."
-    ),
-    "qa_engineer": (
-        "You are an expert QA Engineer in an AI software development team.\n\n"
-        "Responsibilities:\n"
-        "- Design comprehensive test plans covering all system features\n"
-        "- Create detailed, executable test cases\n"
-        "- Implement test automation using appropriate frameworks\n"
-        "- Review and validate test coverage across all requirements\n\n"
-        "Use your available tools to execute each task systematically. "
-        "Call every skill that is relevant to the current phase."
-    ),
-    "project_manager": (
-        "You are an expert Project Manager in an AI software development team.\n\n"
-        "Responsibilities:\n"
-        "- Track project progress and report status across all phases\n"
-        "- Monitor team health and workload distribution\n"
-        "- Distribute requirements to development team members\n"
-        "- Generate clear, actionable status reports\n\n"
-        "Use your available tools to execute each task systematically."
-    ),
-    "rd_director": (
-        "You are the Research & Development Director overseeing the entire team.\n\n"
-        "Responsibilities:\n"
-        "- Monitor overall project quality and technical health\n"
-        "- Make high-level technical and process decisions\n"
-        "- Coordinate between product, architecture, and engineering teams\n"
-        "- Ensure quality standards and delivery targets are met\n\n"
-        "Use your available tools to execute each task systematically."
-    ),
-    "reviewer": (
-        "You are a Senior Reviewer in an AI software development team.\n\n"
-        "Responsibilities:\n"
-        "- Review code, architecture, and product decisions\n"
-        "- Provide constructive, actionable feedback\n"
-        "- Approve or reject work products based on quality criteria\n\n"
-        "Use your available tools to execute each task systematically."
-    ),
-}
 
 _DEFAULT_SYSTEM_PROMPT = (
     "You are an AI agent in a software development team. Use your available tools to complete the requested task."
@@ -199,7 +125,7 @@ def make_agent_node(
     cfg = model_config or agent.model_config
     llm = _build_llm(cfg)
 
-    system_prompt = AGENT_SYSTEM_PROMPTS.get(agent.name, _DEFAULT_SYSTEM_PROMPT)
+    system_prompt = _load_agent_system_prompt(agent.name)
     runtime_agent = create_runtime_agent(llm, tools, system_prompt)
 
     _agent_name = agent.name
@@ -345,6 +271,21 @@ def _suggest_skills_for_phase(
         return selected
     remainder = [skill for skill in skill_names if skill not in selected]
     return selected + remainder
+
+
+def _load_agent_system_prompt(agent_name: str) -> str:
+    path = resolve_agent_prompt_md_path(agent_name)
+    if path is None:
+        raise FileNotFoundError(f"Agent system prompt markdown not found for {agent_name!r}")
+    prompt = load_agent_prompt_section(agent_name, heading="System Prompt", level=2)
+    logger.debug("Loaded agent system prompt from md: agent=%s path=%s", agent_name, path)
+    return prompt
+
+
+def _extract_system_prompt_from_agent_md(text: str) -> str | None:
+    from ..utils.markdown import extract_markdown_section
+
+    return extract_markdown_section(text, heading="System Prompt", level=2)
 
 
 def _select_playbook_skills(agent_name: str, phase: str, skill_names: list[str]) -> list[str]:

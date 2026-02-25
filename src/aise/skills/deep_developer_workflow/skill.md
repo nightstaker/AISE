@@ -12,7 +12,7 @@
 
 ## Purpose
 
-Execute subsystem-based implementation loops with paired programmer/reviewer iterations, generating source code,
+Execute subsystem-based implementation loops with paired coder/reviewer iterations, generating source code,
 pytest tests, revision traces, and merge-ready review artifacts.
 
 ## Input
@@ -57,7 +57,7 @@ Fallback behavior when dependencies are missing:
 
 1. Load architecture and derive subsystem assignments.
 2. Build FN task map from `FUNCTIONAL_DESIGN` or infer from architecture allocation.
-3. For each FN item, run programmer/reviewer paired rounds (minimum multiple review passes).
+3. For each FN item, run coder/reviewer paired rounds (minimum multiple review passes).
 4. Write source/tests and append revision history.
 5. Store aggregated code/test/review artifacts and return progress summary.
 

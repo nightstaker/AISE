@@ -8,9 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ....agents.prompts import load_agent_prompt_section
 from ....core.artifact import Artifact, ArtifactType
 from ....core.skill import Skill, SkillContext
 from ....utils.logging import format_inference_result, get_logger
+from ....utils.markdown import write_markdown
 
 logger = get_logger(__name__)
 
@@ -177,16 +179,17 @@ class DeepProductWorkflowSkill(Skill):
 
         design_doc_path = output_dir / "system-design.md"
         req_doc_path = output_dir / "system-requirements.md"
-        design_doc_path.write_text(
+        write_markdown(
+            design_doc_path,
             self._render_system_design_doc(
                 project_name=project_name,
                 expanded=expanded,
                 latest_design=latest_design,
                 rounds=design_rounds,
             ),
-            encoding="utf-8",
         )
-        req_doc_path.write_text(
+        write_markdown(
+            req_doc_path,
             self._render_system_requirements_doc(
                 project_name=project_name,
                 expanded=expanded,
@@ -194,7 +197,6 @@ class DeepProductWorkflowSkill(Skill):
                 latest_requirements=latest_requirements,
                 rounds=requirements_rounds,
             ),
-            encoding="utf-8",
         )
         _step_end(
             "product_manager.deep_product_workflow.step3.design",
@@ -402,10 +404,14 @@ class DeepProductWorkflowSkill(Skill):
             purpose=(
                 f"subagent:product_designer step:requirement_expansion.core project:{self._purpose_token(project_name)}"
             ),
-            system_prompt=(
-                "You are Product Designer.\n"
-                "Task: expand and clarify user raw requirements with user memory.\n"
-                "Return JSON only with keys: intent_summary, business_goals."
+            system_prompt=self._subagent_prompt(
+                "product_designer",
+                "Prompt: requirement_expansion.core",
+                fallback=(
+                    "You are Product Designer.\n"
+                    "Task: expand and clarify user raw requirements with user memory.\n"
+                    "Return JSON only with keys: intent_summary, business_goals."
+                ),
             ),
             user_prompt=common_prompt,
             required_keys=["intent_summary", "business_goals"],
@@ -416,10 +422,14 @@ class DeepProductWorkflowSkill(Skill):
                 "subagent:product_designer step:requirement_expansion.context "
                 f"project:{self._purpose_token(project_name)}"
             ),
-            system_prompt=(
-                "You are Product Designer.\n"
-                "Task: derive delivery context and risks from user requirements.\n"
-                "Return JSON only with keys: users, scenarios, constraints, assumptions, risks."
+            system_prompt=self._subagent_prompt(
+                "product_designer",
+                "Prompt: requirement_expansion.context",
+                fallback=(
+                    "You are Product Designer.\n"
+                    "Task: derive delivery context and risks from user requirements.\n"
+                    "Return JSON only with keys: users, scenarios, constraints, assumptions, risks."
+                ),
             ),
             user_prompt=(
                 common_prompt + f"\nIntent summary (may be partial): {str(llm_core.get('intent_summary', ''))[:1000]}\n"
@@ -657,11 +667,15 @@ class DeepProductWorkflowSkill(Skill):
         payload = self._run_llm_json_segment(
             context=context,
             purpose=f"subagent:product_designer step:product_design round:{round_index}",
-            system_prompt=(
-                "You are Product Designer.\n"
-                "Generate product/system feature design JSON.\n"
-                "Return JSON only with keys: overview, overall_solution, system_features, designer_response.\n"
-                "system_features items require keys: id, name, goal, functions, constraints, priority.\n"
+            system_prompt=self._subagent_prompt(
+                "product_designer",
+                "Prompt: product_design",
+                fallback=(
+                    "You are Product Designer.\n"
+                    "Generate product/system feature design JSON.\n"
+                    "Return JSON only with keys: overview, overall_solution, system_features, designer_response.\n"
+                    "system_features items require keys: id, name, goal, functions, constraints, priority.\n"
+                ),
             ),
             user_prompt=(
                 f"Round: {round_index}\n"
@@ -746,11 +760,15 @@ class DeepProductWorkflowSkill(Skill):
         payload = self._run_llm_json_segment(
             context=context,
             purpose=f"subagent:product_reviewer step:product_review round:{round_index}",
-            system_prompt=(
-                "You are Product Reviewer.\n"
-                "Review product design and return JSON only with keys: approved, "
-                "summary, issues, suggestions, decision.\n"
-                "decision must be approve or revise.\n"
+            system_prompt=self._subagent_prompt(
+                "product_reviewer",
+                "Prompt: product_review",
+                fallback=(
+                    "You are Product Reviewer.\n"
+                    "Review product design and return JSON only with keys: approved, "
+                    "summary, issues, suggestions, decision.\n"
+                    "decision must be approve or revise.\n"
+                ),
             ),
             user_prompt=(
                 f"Round: {round_index}\n"
@@ -878,36 +896,48 @@ class DeepProductWorkflowSkill(Skill):
         payload = self._run_llm_json_segment(
             context=context,
             purpose=f"subagent:product_designer step:system_requirement_design round:{round_index}",
-            system_prompt=(
-                "You are Product Designer.\n"
-                "Generate system requirements (SR) from system features (SF).\n"
-                "Return ONE JSON object only.\n"
-                "Top-level keys MUST be exactly: design_goals, design_approach, requirements, designer_response.\n"
-                "Do not rename keys. Do not translate key names. Do not nest under data/result/output.\n"
-                "requirements must be a list of objects with keys:\n"
-                "source_sfs, title, requirement_overview, scenario, users, interaction_process, expected_result,\n"
-                "spec_targets, constraints, use_case_diagram, use_case_description, "
-                "type, category, priority, verification_method.\n"
-                "Rules:\n"
-                "- Keep SR entries implementation-oriented and independently verifiable.\n"
-                "- Preserve traceability with non-empty source_sfs mapped to provided SF ids.\n"
-                "- Do not rely on project-specific templates; infer from provided inputs only.\n"
-                "- If a list has no items, return [] (not null, not omitted).\n"
-                "- Ensure all four top-level keys are present even on draft output.\n"
-                "Minimal top-level JSON skeleton:\n"
-                "{"
-                '"design_goals":[],'
-                '"design_approach":[],'
-                '"requirements":[],'
-                '"designer_response":[]'
-                "}\n"
+            system_prompt=self._subagent_prompt(
+                "product_designer",
+                "Prompt: system_requirement_design",
+                fallback=(
+                    "You are Product Designer.\n"
+                    "Generate system requirements (SR) from system features (SF).\n"
+                    "Return ONE JSON object only.\n"
+                    "Top-level keys MUST be exactly: design_goals, design_approach, requirements, designer_response.\n"
+                    "Do not rename keys. Do not translate key names. Do not nest under data/result/output.\n"
+                    "requirements must be a list of objects with keys:\n"
+                    "source_sfs, title, requirement_overview, scenario, users, interaction_process, expected_result,\n"
+                    "spec_targets, constraints, use_case_diagram, use_case_description, "
+                    "type, category, priority, verification_method.\n"
+                    "Rules:\n"
+                    "- Keep SR entries implementation-oriented and independently verifiable.\n"
+                    "- Preserve traceability with non-empty source_sfs mapped to provided SF ids.\n"
+                    "- Do not rely on project-specific templates; infer from provided inputs only.\n"
+                    "- If a list has no items, return [] (not null, not omitted).\n"
+                    "- Ensure all four top-level keys are present even on draft output.\n"
+                    "Minimal top-level JSON skeleton:\n"
+                    "{"
+                    '"design_goals":[],'
+                    '"design_approach":[],'
+                    '"requirements":[],'
+                    '"designer_response":[]'
+                    "}\n"
+                ),
             ),
             user_prompt=(
                 f"Round: {round_index}\n"
                 "IMPORTANT OUTPUT CONTRACT:\n"
-                "- Top-level keys must be exactly: design_goals, design_approach, requirements, designer_response\n"
-                "- No markdown fences\n"
-                "- No explanatory prose outside JSON\n\n"
+                + self._subagent_prompt(
+                    "product_designer",
+                    "Contract: system_requirement_design.user_output_contract",
+                    fallback=(
+                        "- Top-level keys must be exactly: design_goals, "
+                        "design_approach, requirements, designer_response\n"
+                        "- No markdown fences\n"
+                        "- No explanatory prose outside JSON\n"
+                    ),
+                )
+                + "\n"
                 f"Expanded understanding:\n{self._compact_json(expanded)}\n\n"
                 f"System design (SFs):\n{self._compact_json(design)}\n\n"
                 f"Previous SR design (optional):\n{self._compact_json(previous_requirements or {})}\n\n"
@@ -938,31 +968,42 @@ class DeepProductWorkflowSkill(Skill):
         payload = self._run_llm_json_segment(
             context=context,
             purpose=f"subagent:product_reviewer step:system_requirement_review round:{round_index}",
-            system_prompt=(
-                "You are Product Reviewer.\n"
-                "Review the SR design and return ONE JSON object only.\n"
-                "Top-level keys MUST be exactly: approved, summary, issues, suggestions, decision.\n"
-                "Do not rename keys. Do not translate key names. Do not wrap under data/result/output.\n"
-                "decision must be approve or revise.\n"
-                "Evaluate completeness, traceability, verifiability, ambiguity, "
-                "duplication risk, and implementation clarity.\n"
-                "If there are no issues/suggestions, return empty arrays for those keys.\n"
-                "Minimal top-level JSON skeleton:\n"
-                "{"
-                '"approved":false,'
-                '"summary":"",'
-                '"issues":[],'
-                '"suggestions":[],'
-                '"decision":"revise"'
-                "}\n"
+            system_prompt=self._subagent_prompt(
+                "product_reviewer",
+                "Prompt: system_requirement_review",
+                fallback=(
+                    "You are Product Reviewer.\n"
+                    "Review the SR design and return ONE JSON object only.\n"
+                    "Top-level keys MUST be exactly: approved, summary, issues, suggestions, decision.\n"
+                    "Do not rename keys. Do not translate key names. Do not wrap under data/result/output.\n"
+                    "decision must be approve or revise.\n"
+                    "Evaluate completeness, traceability, verifiability, ambiguity, "
+                    "duplication risk, and implementation clarity.\n"
+                    "If there are no issues/suggestions, return empty arrays for those keys.\n"
+                    "Minimal top-level JSON skeleton:\n"
+                    "{"
+                    '"approved":false,'
+                    '"summary":"",'
+                    '"issues":[],'
+                    '"suggestions":[],'
+                    '"decision":"revise"'
+                    "}\n"
+                ),
             ),
             user_prompt=(
                 f"Round: {round_index}\n"
                 "IMPORTANT OUTPUT CONTRACT:\n"
-                "- Top-level keys must be exactly: approved, summary, issues, suggestions, decision\n"
-                '- decision must be "approve" or "revise"\n'
-                "- No markdown fences\n"
-                "- No explanatory prose outside JSON\n\n"
+                + self._subagent_prompt(
+                    "product_reviewer",
+                    "Contract: system_requirement_review.user_output_contract",
+                    fallback=(
+                        "- Top-level keys must be exactly: approved, summary, issues, suggestions, decision\n"
+                        '- decision must be "approve" or "revise"\n'
+                        "- No markdown fences\n"
+                        "- No explanatory prose outside JSON\n"
+                    ),
+                )
+                + "\n"
                 f"System design:\n{self._compact_json(design)}\n\n"
                 f"System requirements document:\n{self._compact_json(system_requirements)}\n"
             ),
@@ -1429,16 +1470,20 @@ class DeepProductWorkflowSkill(Skill):
     ) -> dict[str, Any]:
         if context.llm_client is None:
             raise RuntimeError("LLM client is required for deep_product_workflow")
-        json_contract = (
-            "\n\nOutput contract:\n"
-            "- Return exactly one JSON object only.\n"
-            "- Do not return markdown fences, comments, or explanatory prose.\n"
-            "- Do not wrap the object under extra keys such as "
-            "data/result/output/payload unless explicitly requested.\n"
-            "- Use exact key names and nested key names specified in the prompt schema (no translation/synonyms).\n"
-            "- Use exact enum/keyword literals specified in the prompt (for example approve/revise, low/medium/high).\n"
-            "- Match the expected value types in the schema "
-            "(string/list/object/boolean), do not stringify nested JSON.\n"
+        json_contract = "\n\nOutput contract:\n" + self._agent_contract(
+            "product_manager",
+            "Contract: deep_workflow_json_output",
+            fallback=(
+                "- Return exactly one JSON object only.\n"
+                "- Do not return markdown fences, comments, or explanatory prose.\n"
+                "- Do not wrap the object under extra keys such as "
+                "data/result/output/payload unless explicitly requested.\n"
+                "- Use exact key names and nested key names specified in the prompt schema (no translation/synonyms).\n"
+                "- Use exact enum/keyword literals specified in the prompt "
+                "(for example approve/revise, low/medium/high).\n"
+                "- Match the expected value types in the schema "
+                "(string/list/object/boolean), do not stringify nested JSON.\n"
+            ),
         )
         response = context.llm_client.complete(
             [
@@ -1504,6 +1549,14 @@ class DeepProductWorkflowSkill(Skill):
     def _purpose_token(self, value: str) -> str:
         token = re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
         return (token or "na")[:80]
+
+    def _subagent_prompt(self, agent_name: str, heading: str, *, fallback: str) -> str:
+        _ = fallback
+        return load_agent_prompt_section(agent_name, heading=heading, level=2)
+
+    def _agent_contract(self, agent_name: str, heading: str, *, fallback: str) -> str:
+        _ = fallback
+        return load_agent_prompt_section(agent_name, heading=heading, level=2)
 
     def _parse_json_response(self, text: str) -> dict[str, Any] | None:
         if not text:

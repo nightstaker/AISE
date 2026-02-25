@@ -9,6 +9,7 @@ from typing import Any
 
 from ....core.artifact import Artifact, ArtifactType
 from ....core.skill import Skill, SkillContext
+from ....utils.markdown import read_markdown, write_markdown
 
 
 class RequirementAnalysisSkill(Skill):
@@ -109,10 +110,7 @@ class RequirementAnalysisSkill(Skill):
 
     def _load_prompt_file(self, relative_path: str) -> str:
         path = Path(__file__).resolve().parent / relative_path
-        try:
-            return path.read_text(encoding="utf-8").strip()
-        except OSError:
-            return ""
+        return read_markdown(path, strip=True, default="")
 
     def _parse_json_response(self, text: str) -> dict[str, Any] | None:
         try:
@@ -247,7 +245,7 @@ class RequirementAnalysisSkill(Skill):
                         )
                     )
 
-        path.write_text("\n".join(lines), encoding="utf-8")
+        write_markdown(path, "\n".join(lines))
 
     def _format_requirement_detail(
         self,

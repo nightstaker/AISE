@@ -571,7 +571,7 @@ function setupRunReact() {
       const name = String(agentName || "").toLowerCase();
       if (name.includes("reviewer")) return "review";
       if (name.includes("designer") || name.includes("architect")) return "design";
-      if (name.includes("programmer") || name.includes("developer")) return "build";
+      if (name.includes("coder") || name.includes("developer")) return "build";
       if (name.includes("qa")) return "qa";
       return "task";
     }
@@ -589,7 +589,7 @@ function setupRunReact() {
       const hasReviewer = lanes.some((lane) => String(lane.agent || "").toLowerCase().includes("reviewer"));
       const hasDesignerOrBuilder = lanes.some((lane) => {
         const n = String(lane.agent || "").toLowerCase();
-        return n.includes("designer") || n.includes("architect") || n.includes("programmer");
+        return n.includes("designer") || n.includes("architect") || n.includes("coder");
       });
       const allTasks = lanes.flatMap((lane) => (Array.isArray(lane.tasks) ? lane.tasks : []));
       const hasSrGroupedDev = allTasks.some((task) =>

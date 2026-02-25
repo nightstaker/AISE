@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -15,7 +16,75 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 import aise.web.app as web_app_module
+from aise.runtime.runtime import AgentRuntime
 from aise.web.app import WebProjectService, create_app
+
+
+class _FakePlanningLLM:
+    model = "fake-planning-llm"
+
+    def complete(self, prompt: str, **kwargs):
+        text = str(prompt).lower()
+        runtime_like = any(k in text for k in ["runtime", "设计", "架构"])
+        if runtime_like:
+            return json.dumps(
+                {
+                    "selected_process_id": "runtime_design_standard",
+                    "task_plan": {
+                        "task_name": "web-runtime-plan",
+                        "tasks": [
+                            {
+                                "id": "req_analysis",
+                                "name": "Requirement Analysis",
+                                "assigned_agent_type": "generic_worker",
+                                "capability_hints": ["analyze"],
+                            },
+                            {
+                                "id": "architecture_design",
+                                "name": "Architecture Design",
+                                "assigned_agent_type": "generic_worker",
+                                "dependencies": ["req_analysis"],
+                                "capability_hints": ["design", "architecture"],
+                            },
+                            {
+                                "id": "document_finalize",
+                                "name": "Finalize",
+                                "assigned_agent_type": "generic_worker",
+                                "dependencies": ["architecture_design"],
+                                "capability_hints": ["summarize"],
+                            },
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "selected_process_id": None,
+                "task_plan": {
+                    "task_name": "generic",
+                    "tasks": [
+                        {
+                            "id": "t1",
+                            "name": "A",
+                            "assigned_agent_type": "generic_worker",
+                            "capability_hints": ["analyze"],
+                        },
+                        {
+                            "id": "t2",
+                            "name": "B",
+                            "assigned_agent_type": "generic_worker",
+                            "dependencies": ["t1"],
+                            "capability_hints": ["summarize"],
+                        },
+                    ],
+                },
+            }
+        )
+
+
+def _inject_runtime_planner_llm(app) -> None:
+    app.state.agent_runtime = AgentRuntime(llm_client=_FakePlanningLLM())
 
 
 def _mock_workflow_result(*args, **kwargs):
@@ -219,12 +288,90 @@ class TestWebApi:
         assert "product_designer" in requirements_agents
         assert "product_reviewer" in requirements_agents
         design_agents = [item.get("agent") for item in workflow_nodes[1].get("agent_tasks", [])]
-        assert "architecture_designer" in design_agents
+        assert "architect" in design_agents
         assert "architecture_reviewer[*]" in design_agents
-        assert "subsystem_architect[*]" in design_agents
+        assert "subsystem_expert[*]" in design_agents
+        assert "subsystem_reviewer[*]" in design_agents
         implementation_agents = [item.get("agent") for item in workflow_nodes[2].get("agent_tasks", [])]
-        assert "programmer[*]" in implementation_agents
-        assert "code_reviewer[*]" in implementation_agents
+        assert "coder[*]" in implementation_agents
+        assert "commiter[*]" in implementation_agents
+
+    def test_runtime_api_submit_status_result_report(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+
+        app = create_app()
+        _inject_runtime_planner_llm(app)
+        client = TestClient(app)
+        _login_dev(client)
+
+        submit = client.post(
+            "/api/runtime/tasks",
+            json={"prompt": "设计一个简单 runtime 并返回结果", "run_sync": True},
+        )
+        assert submit.status_code == 200
+        task_id = submit.json()["task_id"]
+        assert submit.json()["status"] == "completed"
+
+        status = client.get(f"/api/runtime/tasks/{task_id}/status")
+        assert status.status_code == 200
+        assert status.json()["status"] == "completed"
+
+        result = client.get(f"/api/runtime/tasks/{task_id}/result")
+        assert result.status_code == 200
+        assert result.json()["status"] == "completed"
+
+        report = client.get(f"/api/runtime/tasks/{task_id}/report")
+        assert report.status_code == 200
+        assert report.json()["summary"]["status"] == "completed"
+
+        logs = client.get(f"/api/runtime/tasks/{task_id}/logs")
+        assert logs.status_code == 200
+        assert isinstance(logs.json()["events"], list)
+
+    def test_runtime_plan_validate_api(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+
+        app = create_app()
+        _inject_runtime_planner_llm(app)
+        client = TestClient(app)
+        _login_dev(client)
+
+        ok = client.post(
+            "/api/runtime/plans/validate",
+            json={"plan": {"task_name": "p1", "tasks": [{"id": "t1", "name": "n1"}]}},
+        )
+        assert ok.status_code == 200
+        assert ok.json() == {"valid": True}
+
+        bad = client.post(
+            "/api/runtime/plans/validate",
+            json={"plan": {"task_name": "p1", "tasks": [{"id": "t1", "name": "n1", "dependencies": ["x"]}]}},
+        )
+        assert bad.status_code == 400
+
+    def test_runtime_task_detail_ui_shows_process_and_requirements(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+
+        app = create_app()
+        _inject_runtime_planner_llm(app)
+        client = TestClient(app)
+        _login_dev(client)
+
+        submit = client.post(
+            "/api/runtime/tasks",
+            json={"prompt": "设计一个 agent runtime 架构", "run_sync": True},
+        )
+        assert submit.status_code == 200
+        task_id = submit.json()["task_id"]
+
+        page = client.get(f"/runtime/tasks/{task_id}")
+        assert page.status_code == 200
+        html = page.text
+        assert "命中流程" in html
+        assert "生效要求覆盖结果" in html
 
 
 class TestWebPersistence:

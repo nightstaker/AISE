@@ -9,6 +9,7 @@ from typing import Any
 
 from ....core.artifact import Artifact, ArtifactType
 from ....core.skill import Skill, SkillContext
+from ....utils.markdown import read_markdown
 
 
 class TechStackSelectionSkill(Skill):
@@ -116,10 +117,7 @@ class TechStackSelectionSkill(Skill):
 
     def _load_prompt_file(self, relative_path: str) -> str:
         path = Path(__file__).resolve().parent / relative_path
-        try:
-            return path.read_text(encoding="utf-8").strip()
-        except OSError:
-            return ""
+        return read_markdown(path, strip=True, default="")
 
     def _parse_json_response(self, text: str) -> dict[str, Any]:
         if not text:

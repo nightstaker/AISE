@@ -25,6 +25,8 @@ from .core.agent import AgentRole
 from .core.multi_project_session import MultiProjectSession
 from .core.orchestrator import Orchestrator
 from .core.session import OnDemandSession
+from .runtime import AgentRuntime, validate_task_plan_payload
+from .runtime.models import Principal
 from .utils.logging import configure_logging
 from .whatsapp.client import WhatsAppConfig
 from .whatsapp.session import WhatsAppGroupSession
@@ -399,6 +401,30 @@ def main() -> None:
     web_parser.add_argument("--port", type=int, default=8000, help="Port for web server")
     web_parser.add_argument("--reload", action="store_true", help="Enable auto reload")
 
+    runtime_run_parser = subparsers.add_parser(
+        "runtime-run",
+        help="Run a task using the new Agent Runtime (sync by default)",
+    )
+    runtime_run_parser.add_argument("--prompt", "-p", required=True, help="Task prompt text or file path")
+    runtime_run_parser.add_argument("--task-name", help="Optional task display name")
+    runtime_run_parser.add_argument("--output", "-o", help="Output file for runtime result JSON")
+    runtime_run_parser.add_argument(
+        "--max-parallelism",
+        type=int,
+        default=4,
+        help="Planner/scheduler max parallelism",
+    )
+    runtime_run_parser.add_argument(
+        "--plan-json",
+        help="Optional task plan JSON file used as constraints.task_plan override",
+    )
+
+    runtime_validate_parser = subparsers.add_parser(
+        "runtime-validate-plan",
+        help="Validate a runtime task plan JSON file against the TaskPlan schema",
+    )
+    runtime_validate_parser.add_argument("--file", "-f", required=True, help="Path to plan JSON file")
+
     retry_parser = subparsers.add_parser(
         "task-retry",
         help="Retry a single workflow task in a web-managed project run",
@@ -545,6 +571,70 @@ def main() -> None:
 
     elif args.command == "web":
         start_web_app(host=args.host, port=args.port, reload=args.reload)
+
+    elif args.command == "runtime-run":
+        prompt = args.prompt
+        try:
+            with open(prompt) as f:
+                prompt = f.read()
+        except (FileNotFoundError, IsADirectoryError, PermissionError):
+            pass
+
+        constraints: dict[str, object] = {"max_parallelism": max(1, int(args.max_parallelism))}
+        if args.plan_json:
+            try:
+                with open(args.plan_json) as f:
+                    plan_payload = json.load(f)
+            except Exception as exc:
+                print(f"Failed to read plan JSON: {exc}")
+                sys.exit(1)
+            if not isinstance(plan_payload, dict):
+                print("Invalid plan JSON: root must be an object")
+                sys.exit(1)
+            try:
+                validate_task_plan_payload(plan_payload)
+            except Exception as exc:
+                print(f"Plan validation failed: {exc}")
+                sys.exit(1)
+            constraints["task_plan"] = plan_payload
+
+        runtime = AgentRuntime()
+        principal = Principal(user_id="cli-user", tenant_id="cli-default", roles=["Admin"])
+        task_id = runtime.submit_task(
+            prompt=prompt,
+            principal=principal,
+            task_name=args.task_name,
+            constraints=constraints,
+            run_sync=True,
+        )
+        payload = {
+            "status": runtime.get_task_status(task_id, principal=principal),
+            "result": runtime.get_task_result(task_id, principal=principal),
+            "report": runtime.get_task_report(task_id, principal=principal),
+        }
+        if args.output:
+            with open(args.output, "w") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
+            print(f"Runtime results written to {args.output}")
+        else:
+            print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+
+    elif args.command == "runtime-validate-plan":
+        try:
+            with open(args.file) as f:
+                payload = json.load(f)
+        except Exception as exc:
+            print(f"Failed to read JSON: {exc}")
+            sys.exit(1)
+        if not isinstance(payload, dict):
+            print("Invalid JSON: root must be an object")
+            sys.exit(1)
+        try:
+            validate_task_plan_payload(payload)
+        except Exception as exc:
+            print(f"INVALID: {exc}")
+            sys.exit(2)
+        print("VALID")
 
     elif args.command == "task-retry":
         from .web.app import WebProjectService

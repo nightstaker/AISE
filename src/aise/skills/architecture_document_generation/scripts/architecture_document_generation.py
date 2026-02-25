@@ -8,6 +8,7 @@ from typing import Any
 
 from ....core.artifact import Artifact, ArtifactType
 from ....core.skill import Skill, SkillContext
+from ....utils.markdown import open_markdown
 
 
 class ArchitectureDocumentGenerationSkill(Skill):
@@ -72,7 +73,7 @@ class ArchitectureDocumentGenerationSkill(Skill):
         ar_matrix = ar_artifact.content.get("traceability_matrix", {})
         fn_matrix = fn_artifact.content.get("traceability_matrix", {})
 
-        with open(file_path, "w", encoding="utf-8") as f:
+        with open_markdown(file_path, "w") as f:
             # Header
             f.write("# 系统架构设计文档\n\n")
             f.write(f"**项目名称**: {project_name}\n\n")
@@ -199,7 +200,7 @@ class ArchitectureDocumentGenerationSkill(Skill):
         elements = status_artifact.content.get("elements", {})
         summary = status_artifact.content.get("summary", {})
 
-        with open(file_path, "w", encoding="utf-8") as f:
+        with open_markdown(file_path, "w") as f:
             # Header
             f.write("# 项目状态跟踪\n\n")
             f.write(f"**项目名称**: {project_name}\n\n")

@@ -9,9 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ....agents.prompts import load_agent_prompt_section
 from ....core.artifact import Artifact, ArtifactType
 from ....core.skill import Skill, SkillContext
 from ....utils.logging import format_inference_result, get_logger
+from ....utils.markdown import read_markdown, write_markdown
 
 logger = get_logger(__name__)
 
@@ -146,8 +148,8 @@ class DeepDeveloperWorkflowSkill(Skill):
             subsystem_jobs: list[tuple[str, list[dict[str, Any]], dict[str, Any]]] = []
             for subsystem_key, fn_items in fn_by_subsystem.items():
                 assign = assignments.get(subsystem_key) or {
-                    "programmer": "programmer_1",
-                    "code_reviewer": "code_reviewer_1",
+                    "coder": "coder_1",
+                    "commiter": "commiter_1",
                     "subsystem": subsystem_key,
                 }
                 subsystem_jobs.append((str(subsystem_key), list(fn_items), dict(assign)))
@@ -252,8 +254,8 @@ class DeepDeveloperWorkflowSkill(Skill):
                 "subsystems": sorted(fn_by_subsystem.keys()),
                 "merged_fn_ids": merged_fn_ids,
             },
-            producer="programmer",
-            metadata={"project_name": project_name, "subagent": "programmer[*]"},
+            producer="coder",
+            metadata={"project_name": project_name, "subagent": "coder[*]"},
         )
         context.artifact_store.store(source_artifact)
 
@@ -264,8 +266,8 @@ class DeepDeveloperWorkflowSkill(Skill):
                 "files": all_test_files,
                 "total_test_cases": len(merged_fn_ids),
             },
-            producer="programmer",
-            metadata={"project_name": project_name, "subagent": "programmer[*]"},
+            producer="coder",
+            metadata={"project_name": project_name, "subagent": "coder[*]"},
         )
         context.artifact_store.store(test_artifact)
 
@@ -276,8 +278,8 @@ class DeepDeveloperWorkflowSkill(Skill):
                 "records": review_records,
                 "total_reviews": len(review_records),
             },
-            producer="code_reviewer",
-            metadata={"project_name": project_name, "subagent": "code_reviewer[*]"},
+            producer="commiter",
+            metadata={"project_name": project_name, "subagent": "commiter[*]"},
         )
         context.artifact_store.store(review_artifact)
 
@@ -286,7 +288,7 @@ class DeepDeveloperWorkflowSkill(Skill):
             content={
                 "workflow": "deep_developer_workflow",
                 "project_name": project_name,
-                "sub_agents": ["programmer[*]", "code_reviewer[*]"],
+                "sub_agents": ["coder[*]", "commiter[*]"],
                 "step1": {
                     "name": "subsystem_task_split",
                     "status": "completed",
@@ -373,14 +375,14 @@ class DeepDeveloperWorkflowSkill(Skill):
         subsystems: list[dict[str, Any]],
     ) -> dict[str, dict[str, Any]]:
         assignments: dict[str, dict[str, Any]] = {}
-        programmer_pool = ["programmer_1", "programmer_2", "programmer_3"]
-        reviewer_pool = ["code_reviewer_1", "code_reviewer_2"]
+        programmer_pool = ["coder_1", "coder_2", "coder_3"]
+        reviewer_pool = ["commiter_1", "commiter_2"]
         if not subsystems:
             return {
                 "subsystem": {
                     "subsystem": "subsystem",
-                    "programmer": programmer_pool[0],
-                    "code_reviewer": reviewer_pool[0],
+                    "coder": programmer_pool[0],
+                    "commiter": reviewer_pool[0],
                 }
             }
 
@@ -391,8 +393,8 @@ class DeepDeveloperWorkflowSkill(Skill):
             assignments[subsystem_id] = {
                 "subsystem": subsystem_display,
                 "subsystem_english_name": subsystem_english,
-                "programmer": programmer_pool[index % len(programmer_pool)],
-                "code_reviewer": reviewer_pool[index % len(reviewer_pool)],
+                "coder": programmer_pool[index % len(programmer_pool)],
+                "commiter": reviewer_pool[index % len(reviewer_pool)],
             }
         return assignments
 
@@ -405,7 +407,7 @@ class DeepDeveloperWorkflowSkill(Skill):
         for path in candidates:
             if path.exists():
                 try:
-                    return path.read_text(encoding="utf-8")
+                    return read_markdown(path)
                 except OSError:
                     continue
         return ""
@@ -622,36 +624,42 @@ class DeepDeveloperWorkflowSkill(Skill):
             payload = self._run_llm_json_segment(
                 context=context,
                 purpose=(
-                    "subagent:programmer step:sr_group_test_generation "
+                    "subagent:coder step:sr_group_test_generation "
                     f"subsystem:{self._purpose_token(subsystem_slug)} "
                     f"sr:{self._purpose_token(sr_key)} round:{round_index} fns:{len(fn_items)}"
                 ),
-                system_prompt=(
-                    "You are a senior software engineer writing pytest tests first for one SR group.\n"
-                    "Return JSON only with key: items.\n"
-                    "Schema:\n"
-                    "- items: list[object]\n"
-                    "- each item must include keys: fn_id, module_name, test_content\n"
-                    "Rules:\n"
-                    "- Return exactly one item for each FN in the input list (no extras, no omissions).\n"
-                    "- fn_id and module_name must exactly match the provided values.\n"
-                    "- test_content must import from src.<subsystem>.<module>.\n"
-                    "- Preserve and test the existing public API style inferred "
-                    "from current source files (class-based or function-based).\n"
-                    "- If existing_class_names is non-empty, preserve and test "
-                    "those classes/methods; do not replace the module with a "
-                    "different public API style.\n"
-                    "- If implementation_style=open, infer a suitable public API "
-                    "from subsystem design doc + existing source/test context "
-                    "and keep imports consistent.\n"
-                    "- include at least 2 pytest test functions per item (count `def test_` >= 2)\n"
-                    "- if only one behavior is obvious, still provide a second deterministic test "
-                    "(edge case, invalid input, or interaction assertion)\n"
-                    "- keep tests deterministic (avoid flaky randomness)\n"
-                    "- use subsystem architecture design doc module/class constraints and cross-module interactions\n"
-                    "- prioritize tests around class/module interactions and SR behavior, not placeholder-only tests\n"
-                    "- do not echo FN ids in runtime payloads, logs, comments, constants, or exceptions\n"
-                    "- no markdown fences"
+                system_prompt=self._subagent_prompt(
+                    "coder",
+                    "Prompt: sr_group_test_generation",
+                    fallback=(
+                        "You are a senior software engineer writing pytest tests first for one SR group.\n"
+                        "Return JSON only with key: items.\n"
+                        "Schema:\n"
+                        "- items: list[object]\n"
+                        "- each item must include keys: fn_id, module_name, test_content\n"
+                        "Rules:\n"
+                        "- Return exactly one item for each FN in the input list (no extras, no omissions).\n"
+                        "- fn_id and module_name must exactly match the provided values.\n"
+                        "- test_content must import from src.<subsystem>.<module>.\n"
+                        "- Preserve and test the existing public API style inferred "
+                        "from current source files (class-based or function-based).\n"
+                        "- If existing_class_names is non-empty, preserve and test "
+                        "those classes/methods; do not replace the module with a "
+                        "different public API style.\n"
+                        "- If implementation_style=open, infer a suitable public API "
+                        "from subsystem design doc + existing source/test context "
+                        "and keep imports consistent.\n"
+                        "- include at least 2 pytest test functions per item (count `def test_` >= 2)\n"
+                        "- if only one behavior is obvious, still provide a second deterministic test "
+                        "(edge case, invalid input, or interaction assertion)\n"
+                        "- keep tests deterministic (avoid flaky randomness)\n"
+                        "- use subsystem architecture design doc module/class "
+                        "constraints and cross-module interactions\n"
+                        "- prioritize tests around class/module interactions and "
+                        "SR behavior, not placeholder-only tests\n"
+                        "- do not echo FN ids in runtime payloads, logs, comments, constants, or exceptions\n"
+                        "- no markdown fences"
+                    ),
                 ),
                 user_prompt=(
                     f"Subsystem: {subsystem_slug}\n"
@@ -735,33 +743,38 @@ class DeepDeveloperWorkflowSkill(Skill):
             payload = self._run_llm_json_segment(
                 context=context,
                 purpose=(
-                    "subagent:programmer step:sr_group_code_generation "
+                    "subagent:coder step:sr_group_code_generation "
                     f"subsystem:{self._purpose_token(subsystem_slug)} "
                     f"sr:{self._purpose_token(sr_key)} round:{round_index} fns:{len(fn_items)}"
                 ),
-                system_prompt=(
-                    "You are a senior software engineer implementing code for one SR group after tests are written.\n"
-                    "Return JSON only with key: items.\n"
-                    "Schema:\n"
-                    "- items: list[object]\n"
-                    "- each item must include keys: fn_id, module_name, code_content\n"
-                    "Rules:\n"
-                    "- Return exactly one item for each FN in the input list (no extras, no omissions).\n"
-                    "- fn_id and module_name must exactly match the provided values.\n"
-                    "- Preserve the module's existing public API style inferred "
-                    "from current source files (class-based or function-based).\n"
-                    "- If existing_class_names is non-empty, preserve those "
-                    "class names and extend/implement methods in class-based "
-                    "structure.\n"
-                    "- If implementation_style=open, infer a suitable public API "
-                    "from subsystem design doc + generated tests for current SR.\n"
-                    "- Reuse/extend existing subsystem source skeletons and preserve import relationships.\n"
-                    "- Use subsystem architecture design doc module/class "
-                    "constraints and generated tests for current SR.\n"
-                    "- Implement inter-module calls where required by module dependencies and SR behavior.\n"
-                    "- Do not arbitrarily rename modules/classes.\n"
-                    "- do not echo FN ids in runtime payloads, logs, comments, constants, or exceptions\n"
-                    "- no markdown fences"
+                system_prompt=self._subagent_prompt(
+                    "coder",
+                    "Prompt: sr_group_code_generation",
+                    fallback=(
+                        "You are a senior software engineer implementing code for "
+                        "one SR group after tests are written.\n"
+                        "Return JSON only with key: items.\n"
+                        "Schema:\n"
+                        "- items: list[object]\n"
+                        "- each item must include keys: fn_id, module_name, code_content\n"
+                        "Rules:\n"
+                        "- Return exactly one item for each FN in the input list (no extras, no omissions).\n"
+                        "- fn_id and module_name must exactly match the provided values.\n"
+                        "- Preserve the module's existing public API style inferred "
+                        "from current source files (class-based or function-based).\n"
+                        "- If existing_class_names is non-empty, preserve those "
+                        "class names and extend/implement methods in class-based "
+                        "structure.\n"
+                        "- If implementation_style=open, infer a suitable public API "
+                        "from subsystem design doc + generated tests for current SR.\n"
+                        "- Reuse/extend existing subsystem source skeletons and preserve import relationships.\n"
+                        "- Use subsystem architecture design doc module/class "
+                        "constraints and generated tests for current SR.\n"
+                        "- Implement inter-module calls where required by module dependencies and SR behavior.\n"
+                        "- Do not arbitrarily rename modules/classes.\n"
+                        "- do not echo FN ids in runtime payloads, logs, comments, constants, or exceptions\n"
+                        "- no markdown fences"
+                    ),
                 ),
                 user_prompt=(
                     f"Subsystem: {subsystem_slug}\n"
@@ -795,6 +808,16 @@ class DeepDeveloperWorkflowSkill(Skill):
     def _purpose_token(self, value: str) -> str:
         token = self._slugify(str(value))
         return token[:80] if token else "na"
+
+    def _subagent_prompt(self, agent_name: str, heading: str, *, fallback: str) -> str:
+        _ = fallback
+        alias_map = {"coder": "programmer", "commiter": "commiter"}
+        prompt_agent_name = alias_map.get(agent_name, agent_name)
+        return load_agent_prompt_section(prompt_agent_name, heading=heading, level=2)
+
+    def _agent_contract(self, agent_name: str, heading: str, *, fallback: str) -> str:
+        _ = fallback
+        return load_agent_prompt_section(agent_name, heading=heading, level=2)
 
     def _subsystem_slug_from_assignment(self, *, assign: dict[str, Any], subsystem_key: str) -> str:
         english_name = str(assign.get("subsystem_english_name", "")).strip()
@@ -849,27 +872,33 @@ class DeepDeveloperWorkflowSkill(Skill):
             payload = self._run_llm_json_segment(
                 context=context,
                 purpose=(
-                    "subagent:programmer step:subsystem_file_manifest_planning "
+                    "subagent:coder step:subsystem_file_manifest_planning "
                     f"subsystem:{self._purpose_token(subsystem_slug)} fns:{len(fn_summary)}"
                 ),
-                system_prompt=(
-                    "You are a senior software engineer planning subsystem source files.\n"
-                    "Return JSON only with keys: module_files, fn_to_module_map.\n"
-                    "Rules:\n"
-                    "- module_files: list[str] of implementation module filenames under src/<subsystem>/.\n"
-                    "- ASCII lowercase snake_case filenames only, suffix .py, no directories.\n"
-                    "- fn_to_module_map: object mapping each FN id to one filename from module_files.\n"
-                    "- Every FN id must be mapped exactly once.\n"
-                    "- Use one dedicated module per FN for now (do not map multiple FN ids to the same file).\n"
-                    "- Plan a stable file list first; later implementation rounds will only modify these files.\n"
-                    "- Prefer domain-meaningful names; avoid generic file names like module.py/service.py/handler.py.\n"
-                    "- Do not assume files named api.py, service.py, or schemas.py are required.\n"
-                    "- Only include api-like/contract files when explicitly needed by FN responsibilities.\n"
-                    "- The subsystem architecture design doc defines canonical module filenames (base module stems).\n"
-                    "- Prefer those documented base module stems and append FN/SR suffixes "
-                    "for dedicated per-FN files.\n"
-                    "- If an FN description says '<module> module', preserve that documented "
-                    "module stem as the filename prefix.\n"
+                system_prompt=self._subagent_prompt(
+                    "coder",
+                    "Prompt: subsystem_file_manifest_planning",
+                    fallback=(
+                        "You are a senior software engineer planning subsystem source files.\n"
+                        "Return JSON only with keys: module_files, fn_to_module_map.\n"
+                        "Rules:\n"
+                        "- module_files: list[str] of implementation module filenames under src/<subsystem>/.\n"
+                        "- ASCII lowercase snake_case filenames only, suffix .py, no directories.\n"
+                        "- fn_to_module_map: object mapping each FN id to one filename from module_files.\n"
+                        "- Every FN id must be mapped exactly once.\n"
+                        "- Use one dedicated module per FN for now (do not map multiple FN ids to the same file).\n"
+                        "- Plan a stable file list first; later implementation rounds will only modify these files.\n"
+                        "- Prefer domain-meaningful names; avoid generic file names "
+                        "like module.py/service.py/handler.py.\n"
+                        "- Do not assume files named api.py, service.py, or schemas.py are required.\n"
+                        "- Only include api-like/contract files when explicitly needed by FN responsibilities.\n"
+                        "- The subsystem architecture design doc defines canonical "
+                        "module filenames (base module stems).\n"
+                        "- Prefer those documented base module stems and append FN/SR suffixes "
+                        "for dedicated per-FN files.\n"
+                        "- If an FN description says '<module> module', preserve that documented "
+                        "module stem as the filename prefix.\n"
+                    ),
                 ),
                 user_prompt=(
                     f"Subsystem key: {subsystem_key}\n"
@@ -1465,14 +1494,11 @@ class DeepDeveloperWorkflowSkill(Skill):
         src_revision = src_subsystem_dir / "revision.md"
         tests_revision = tests_subsystem_dir / "revision.md"
         if not src_revision.exists():
-            src_revision.write_text(
-                f"# {subsystem_slug} source revisions\n\nGenerated at {self._now_iso()}\n\n",
-                encoding="utf-8",
-            )
+            write_markdown(src_revision, f"# {subsystem_slug} source revisions\n\nGenerated at {self._now_iso()}\n\n")
         if not tests_revision.exists():
-            tests_revision.write_text(
+            write_markdown(
+                tests_revision,
                 f"# {subsystem_slug} test revisions\n\nGenerated at {self._now_iso()}\n\n",
-                encoding="utf-8",
             )
 
         subsystem_design_doc = self._load_subsystem_design_doc_text(
@@ -1608,7 +1634,7 @@ class DeepDeveloperWorkflowSkill(Skill):
                     fn_description=fn_description,
                     round_index=round_index,
                     check_result=check_result,
-                    reviewer=str(assign.get("code_reviewer", "code_reviewer_1")),
+                    reviewer=str(assign.get("commiter", "commiter_1")),
                 )
                 round_reviews.append(review)
                 plan["comments"] = list(review.get("suggestions", []))
@@ -1619,8 +1645,8 @@ class DeepDeveloperWorkflowSkill(Skill):
                         "sr_group": self._sr_group_key_from_fn_id(fn_id),
                         "fn_id": fn_id,
                         "round": round_index,
-                        "programmer": assign.get("programmer", "programmer_1"),
-                        "reviewer": assign.get("code_reviewer", "code_reviewer_1"),
+                        "coder": assign.get("coder", "coder_1"),
+                        "reviewer": assign.get("commiter", "commiter_1"),
                         "check_result": check_result,
                         "review": review,
                         "review_scope": "subsystem_round_batch",
@@ -1634,7 +1660,7 @@ class DeepDeveloperWorkflowSkill(Skill):
                 self._append_revision(
                     src_revision,
                     fn_id=fn_id,
-                    role="code_reviewer",
+                    role="commiter",
                     round_index=round_index,
                     summary=str(review.get("summary", "")),
                     details=list(review.get("suggestions", [])),
@@ -1642,7 +1668,7 @@ class DeepDeveloperWorkflowSkill(Skill):
                 self._append_revision(
                     src_revision,
                     fn_id=fn_id,
-                    role="programmer",
+                    role="coder",
                     round_index=round_index,
                     summary="Applied review feedback and updated implementation.",
                     details=[f"Response: addressed reviewer suggestions in round {round_index}."],
@@ -1650,7 +1676,7 @@ class DeepDeveloperWorkflowSkill(Skill):
                 self._append_revision(
                     tests_revision,
                     fn_id=fn_id,
-                    role="programmer",
+                    role="coder",
                     round_index=round_index,
                     summary="Updated tests to align with latest implementation.",
                     details=[
@@ -1662,7 +1688,7 @@ class DeepDeveloperWorkflowSkill(Skill):
             self._append_revision(
                 src_revision,
                 fn_id=f"SUBSYSTEM-BATCH-{subsystem_slug}",
-                role="code_reviewer",
+                role="commiter",
                 round_index=round_index,
                 summary=f"Batch review completed for subsystem {subsystem_slug}.",
                 details=[
@@ -2483,17 +2509,20 @@ class DeepDeveloperWorkflowSkill(Skill):
     ) -> dict[str, Any]:
         if context.llm_client is None:
             raise RuntimeError("LLM client is required for deep_developer_workflow")
-        json_contract = (
-            "\n\nOutput contract:\n"
-            "- Return exactly one JSON object only.\n"
-            "- Do not return markdown fences, comments, or explanatory prose.\n"
-            "- Do not wrap the object under extra keys such as "
-            "data/result/output/payload unless explicitly requested.\n"
-            "- Use exact key names and nested key names specified in the prompt schema (no translation/synonyms).\n"
-            "- Use exact enum/keyword literals specified in the prompt "
-            "(for example language names, booleans, status values).\n"
-            "- Match the expected value types in the schema "
-            "(string/list/object/boolean), do not stringify nested JSON.\n"
+        json_contract = "\n\nOutput contract:\n" + self._agent_contract(
+            "developer",
+            "Contract: deep_workflow_json_output",
+            fallback=(
+                "- Return exactly one JSON object only.\n"
+                "- Do not return markdown fences, comments, or explanatory prose.\n"
+                "- Do not wrap the object under extra keys such as "
+                "data/result/output/payload unless explicitly requested.\n"
+                "- Use exact key names and nested key names specified in the prompt schema (no translation/synonyms).\n"
+                "- Use exact enum/keyword literals specified in the prompt "
+                "(for example language names, booleans, status values).\n"
+                "- Match the expected value types in the schema "
+                "(string/list/object/boolean), do not stringify nested JSON.\n"
+            ),
         )
         response = context.llm_client.complete(
             [

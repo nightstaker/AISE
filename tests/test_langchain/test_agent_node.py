@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -15,8 +16,9 @@ from aise.core.message import MessageBus
 from aise.core.skill import Skill, SkillContext
 from aise.langchain.agent_node import (
     _DEFAULT_SYSTEM_PROMPT,
-    AGENT_SYSTEM_PROMPTS,
     _build_llm,
+    _extract_system_prompt_from_agent_md,
+    _load_agent_system_prompt,
     _suggest_skills_for_phase,
     make_agent_node,
 )
@@ -87,19 +89,91 @@ def _make_workflow_state(phase: str = "requirements") -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Tests: AGENT_SYSTEM_PROMPTS
+# Tests: markdown-backed system prompts
 # ---------------------------------------------------------------------------
 
 
-def test_system_prompts_cover_core_agents() -> None:
-    """All four primary SDLC agents must have a system prompt."""
+def test_load_agent_system_prompt_from_md_for_core_agents() -> None:
+    """Core agents should load non-trivial prompts from markdown docs."""
     for role in ("product_manager", "architect", "developer", "qa_engineer"):
-        assert role in AGENT_SYSTEM_PROMPTS
-        assert len(AGENT_SYSTEM_PROMPTS[role]) > 50  # non-trivial content
+        prompt = _load_agent_system_prompt(role)
+        assert prompt != _DEFAULT_SYSTEM_PROMPT
+        assert len(prompt) > 50
 
 
 def test_default_system_prompt_is_non_empty() -> None:
     assert len(_DEFAULT_SYSTEM_PROMPT) > 10
+
+
+def test_extract_system_prompt_from_agent_md_reads_only_target_section() -> None:
+    text = """# Agent
+
+## Runtime Role
+doc section
+
+## System Prompt
+line 1
+line 2
+
+## Notes / Deprecated Responsibilities
+should not be included
+"""
+    prompt = _extract_system_prompt_from_agent_md(text)
+    assert prompt == "line 1\nline 2"
+
+
+def test_load_agent_system_prompt_raises_when_md_section_missing() -> None:
+    with patch("aise.langchain.agent_node.resolve_agent_prompt_md_path") as mock_path:
+        mock_path.return_value = Path("src/aise/agents/product_manager_agent.md")
+        with patch("aise.langchain.agent_node.load_agent_prompt_section", side_effect=ValueError("missing section")):
+            with pytest.raises(ValueError, match="missing section"):
+                _load_agent_system_prompt("product_manager")
+
+
+def test_load_agent_system_prompt_supports_indexed_agent_names() -> None:
+    prompt = _load_agent_system_prompt("reviewer_1")
+    assert prompt != _DEFAULT_SYSTEM_PROMPT
+    assert "review" in prompt.lower()
+
+
+def test_agent_prompt_markdown_coverage_and_sections() -> None:
+    agents_dir = Path("src/aise/agents")
+    expected_skill_markers = {
+        "product_manager": ["deep_product_workflow", "requirement_analysis", "product_review"],
+        "architect": ["deep_architecture_workflow", "system_design", "architecture_review"],
+        "developer": ["deep_developer_workflow", "code_generation", "code_review"],
+        "qa_engineer": ["test_plan_design", "test_case_design", "test_review"],
+        "project_manager": ["progress_tracking", "team_health", "conflict_resolution"],
+        "rd_director": ["team_formation", "requirement_distribution"],
+        "reviewer": ["code_review", "pr_review", "pr_merge"],
+    }
+    for agent_name in (
+        "product_manager",
+        "architect",
+        "developer",
+        "qa_engineer",
+        "project_manager",
+        "rd_director",
+        "reviewer",
+    ):
+        path = agents_dir / f"{agent_name}_agent.md"
+        assert path.exists(), f"Missing agent markdown: {path}"
+        text = path.read_text(encoding="utf-8")
+        assert "## Current Skills (from Python class)" in text
+        assert "## System Prompt" in text
+        assert _extract_system_prompt_from_agent_md(text)
+        for skill_name in expected_skill_markers[agent_name]:
+            assert f"`{skill_name}`" in text
+
+
+def test_project_manager_and_rd_director_prompts_do_not_cross_core_responsibilities() -> None:
+    pm_prompt = _load_agent_system_prompt("project_manager")
+    rd_prompt = _load_agent_system_prompt("rd_director")
+
+    assert "requirement_distribution" not in pm_prompt
+    assert "team_formation" not in pm_prompt
+    assert "progress_tracking" not in rd_prompt
+    assert "team_health" not in rd_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +277,7 @@ def test_agent_node_uses_correct_system_prompt(
         make_agent_node(test_agent, skill_context)
 
         prompt_arg = mock_create_runtime.call_args.args[2]
-        expected_prompt = AGENT_SYSTEM_PROMPTS.get(test_agent.name, _DEFAULT_SYSTEM_PROMPT)
+        expected_prompt = _load_agent_system_prompt(test_agent.name)
         assert prompt_arg == expected_prompt
 
 

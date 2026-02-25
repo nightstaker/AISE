@@ -676,7 +676,7 @@ class TestDeveloperAgent:
             try:
                 skill._run_llm_json_segment(
                     context=ctx,
-                    purpose="subagent:programmer step:test_segment",
+                    purpose="subagent:coder step:test_segment",
                     system_prompt="Return JSON",
                     user_prompt="payload",
                     required_keys=["code_content"],

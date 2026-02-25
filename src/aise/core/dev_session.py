@@ -17,6 +17,7 @@ from enum import Enum
 from typing import Any
 
 from ..config import ProjectConfig
+from ..utils.markdown import write_markdown
 from .artifact import ArtifactType
 from .orchestrator import Orchestrator
 from .status_updater import StatusUpdater
@@ -506,8 +507,5 @@ class SessionManager:
 
         lines.append("")
 
-        import os
-
-        status_path = os.path.join(self.repo_root, "status.md")
-        with open(status_path, "w") as f:
-            f.write("\n".join(lines))
+        status_path = f"{self.repo_root}/status.md"
+        write_markdown(status_path, "\n".join(lines))

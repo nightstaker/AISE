@@ -1,0 +1,93 @@
+{% extends "layout.html" %}
+{% block content %}
+<section class="page-section">
+  <h1>Runtime Task Detail</h1>
+  <p><strong>Task ID:</strong> {{ task.task_id }}</p>
+  <p><strong>Status:</strong> {{ task.status }}</p>
+  <p><strong>Prompt:</strong> {{ task.prompt }}</p>
+
+  <hr />
+
+  <h2>命中流程</h2>
+  {% if selected_process %}
+    <p><strong>Process ID:</strong> {{ selected_process.process_id }}</p>
+    <p><strong>Name:</strong> {{ selected_process.name }}</p>
+    <p><strong>Work Type:</strong> {{ selected_process.work_type }}</p>
+    <p><strong>Score:</strong> {{ selected_process.score }}</p>
+    <p><strong>Summary:</strong> {{ selected_process.summary }}</p>
+  {% else %}
+    <p>未命中标准流程（Master 自主规划）。</p>
+  {% endif %}
+
+  <h2>流程步骤</h2>
+  {% if process_steps %}
+    <table>
+      <thead>
+        <tr>
+          <th>Step ID</th>
+          <th>Name</th>
+          <th>Agents</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for step in process_steps %}
+          <tr>
+            <td>{{ step.step_id }}</td>
+            <td>{{ step.name }}</td>
+            <td>{{ ", ".join(step.participating_agents or []) }}</td>
+            <td>{{ step.description }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>无流程步骤上下文。</p>
+  {% endif %}
+
+  <h2>计划节点与生效要求覆盖结果</h2>
+  {% if plan_tasks %}
+    <table>
+      <thead>
+        <tr>
+          <th>Node ID</th>
+          <th>Name</th>
+          <th>Agent</th>
+          <th>Status</th>
+          <th>Process Step</th>
+          <th>Effective Requirements</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for node in plan_tasks %}
+          {% set meta = node.metadata or {} %}
+          {% set step = meta.get("process_step", {}) %}
+          {% set reqs = meta.get("effective_agent_requirements", []) %}
+          {% set result = node_results.get(node.id, {}) %}
+          <tr>
+            <td>{{ node.id }}</td>
+            <td>{{ node.name }}</td>
+            <td>{{ node.assigned_agent_type or "-" }}</td>
+            <td>{{ result.get("status", "-") }}</td>
+            <td>{{ step.get("step_id", "-") }} / {{ step.get("name", "-") }}</td>
+            <td>
+              {% if reqs %}
+                <ul>
+                  {% for item in reqs %}
+                    <li><code>{{ item }}</code></li>
+                  {% endfor %}
+                </ul>
+              {% else %}
+                <span>-</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>暂无计划节点。</p>
+  {% endif %}
+</section>
+{% endblock %}
+

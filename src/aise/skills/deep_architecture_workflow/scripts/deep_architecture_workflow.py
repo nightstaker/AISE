@@ -9,9 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ....agents.prompts import load_agent_prompt_section
 from ....core.artifact import Artifact, ArtifactType
 from ....core.skill import Skill, SkillContext
 from ....utils.logging import format_inference_result, get_logger
+from ....utils.markdown import read_markdown, read_markdown_lines, write_markdown
 
 logger = get_logger(__name__)
 
@@ -217,7 +219,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                     path = docs_dir / file_name
                     # Write immediately after this subsystem finishes so users can inspect
                     # detail docs while other subsystems are still running.
-                    path.write_text(rendered_doc, encoding="utf-8")
+                    write_markdown(path, rendered_doc)
                     future_results[sid] = (detail, rounds, path)
             else:
                 with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="arch-subsys") as pool:
@@ -227,7 +229,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                         path = docs_dir / file_name
                         # Real-time incremental persistence: each subsystem doc is flushed
                         # as soon as its design+review loop completes.
-                        path.write_text(rendered_doc, encoding="utf-8")
+                        write_markdown(path, rendered_doc)
                         future_results[sid] = (detail, rounds, path)
 
             for subsystem_id in subsystem_order:
@@ -321,7 +323,8 @@ class DeepArchitectureWorkflowSkill(Skill):
             raise
 
         architecture_doc_path = docs_dir / "system-architecture.md"
-        architecture_doc_path.write_text(
+        write_markdown(
+            architecture_doc_path,
             self._render_system_architecture_doc(
                 project_name=project_name,
                 product_design=product_design,
@@ -330,7 +333,6 @@ class DeepArchitectureWorkflowSkill(Skill):
                 rounds=architecture_rounds,
                 assignments=assignments,
             ),
-            encoding="utf-8",
         )
 
         # Subsystem detail docs were already written incrementally during Step 4.
@@ -360,10 +362,10 @@ class DeepArchitectureWorkflowSkill(Skill):
                 "subsystems": architecture_design.get("subsystems", []),
                 "sr_allocation": architecture_design.get("sr_allocation", {}),
             },
-            producer="architecture_designer",
+            producer="architect",
             metadata={
                 "project_name": project_name,
-                "subagent": "architecture_designer",
+                "subagent": "architect",
                 "step": "step1",
             },
         )
@@ -372,7 +374,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         api_artifact = Artifact(
             artifact_type=ArtifactType.API_CONTRACT,
             content=api_contract,
-            producer="architecture_designer",
+            producer="architect",
             metadata={"project_name": project_name, "step": "step2"},
         )
         context.artifact_store.store(api_artifact)
@@ -380,7 +382,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         tech_stack_artifact = Artifact(
             artifact_type=ArtifactType.TECH_STACK,
             content=tech_stack,
-            producer="architecture_designer",
+            producer="architect",
             metadata={"project_name": project_name, "step": "step2"},
         )
         context.artifact_store.store(tech_stack_artifact)
@@ -388,7 +390,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         architecture_requirement_artifact = Artifact(
             artifact_type=ArtifactType.ARCHITECTURE_REQUIREMENT,
             content=architecture_requirements,
-            producer="architecture_designer",
+            producer="architect",
             metadata={"project_name": project_name, "step": "step4"},
         )
         context.artifact_store.store(architecture_requirement_artifact)
@@ -396,7 +398,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         functional_design_artifact = Artifact(
             artifact_type=ArtifactType.FUNCTIONAL_DESIGN,
             content=functional_design,
-            producer="subsystem_architect",
+            producer="subsystem_expert",
             metadata={"project_name": project_name, "step": "step4"},
         )
         context.artifact_store.store(functional_design_artifact)
@@ -441,9 +443,9 @@ class DeepArchitectureWorkflowSkill(Skill):
                 "project_name": project_name,
                 "project_root": str(project_root) if project_root else "",
                 "sub_agents": [
-                    "architecture_designer",
+                    "architect",
                     "architecture_reviewer[*]",
-                    "subsystem_architect[*]",
+                    "subsystem_expert[*]",
                 ],
                 "steps": {
                     "step1": {
@@ -493,7 +495,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         path = docs_dir / "system-design.md"
         if not path.exists():
             return {"overview": "", "system_features": []}
-        content = path.read_text(encoding="utf-8")
+        content = read_markdown(path)
         lines = content.splitlines()
         features: list[dict[str, Any]] = []
         intent_summary = ""
@@ -589,7 +591,7 @@ class DeepArchitectureWorkflowSkill(Skill):
             return {"requirements": []}
 
         requirements: list[dict[str, Any]] = []
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = read_markdown_lines(path, default=[])
         current: dict[str, Any] | None = None
         for line in lines:
             stripped = line.strip()
@@ -760,17 +762,21 @@ class DeepArchitectureWorkflowSkill(Skill):
         )
         llm_design = self._run_llm_json_segment(
             context=context,
-            purpose=f"subagent:architecture_designer step:architecture_design.foundation{architecture_scope}",
-            system_prompt=(
-                "You are an architecture designer. Return JSON only with keys: "
-                "design_goals (list[str]), principles (list[str]), architecture_overview (str), "
-                "layering (list[str]), architecture_diagram (str).\n"
-                "Rules for architecture_diagram:\n"
-                "- Mermaid syntax starting with `flowchart TD` or `graph TD`\n"
-                "- No markdown code fence\n"
-                "- Max 50 lines\n"
-                "- Max 3000 chars total\n"
-                "- Show only major layers/components and key flows\n"
+            purpose=f"subagent:architect step:architecture_design.foundation{architecture_scope}",
+            system_prompt=self._subagent_prompt(
+                "architect",
+                "Prompt: architecture_design.foundation",
+                fallback=(
+                    "You are an architecture designer. Return JSON only with keys: "
+                    "design_goals (list[str]), principles (list[str]), architecture_overview (str), "
+                    "layering (list[str]), architecture_diagram (str).\n"
+                    "Rules for architecture_diagram:\n"
+                    "- Mermaid syntax starting with `flowchart TD` or `graph TD`\n"
+                    "- No markdown code fence\n"
+                    "- Max 50 lines\n"
+                    "- Max 3000 chars total\n"
+                    "- Show only major layers/components and key flows\n"
+                ),
             ),
             user_prompt=(
                 f"Round: {round_index}\n"
@@ -818,25 +824,31 @@ class DeepArchitectureWorkflowSkill(Skill):
             previous_structure_context = self._compact_json(previous_structure)
         structure_payload = self._run_llm_json_segment(
             context=context,
-            purpose=f"subagent:architecture_designer step:architecture_design.structure{architecture_scope}",
-            system_prompt=(
-                "You are an architecture designer. Return JSON only with keys: subsystems, components, sr_allocation.\n"
-                "Rules:\n"
-                "- Design domain-meaningful subsystems (not generic 'service layer' or 'data layer').\n"
-                "- subsystems: list[object] with keys: name, english_name, description, constraints, apis.\n"
-                "- name may be Chinese or bilingual for documentation display.\n"
-                "- english_name is REQUIRED and must be 1-3 English words (ASCII letters/numbers only), "
-                "used for directories/module names.\n"
-                "- each subsystem.apis item has keys: method, path, description.\n"
-                "- components: list[object] with keys: name, type, subsystem_id_or_name, responsibilities.\n"
-                "- Use subsystem_id, subsystem name, or subsystem english_name when referencing subsystem_id_or_name.\n"
-                "- sr_allocation: object mapping subsystem ids/names to SR id lists.\n"
-                "- An SR may be allocated to multiple related subsystems when "
-                "cross-subsystem collaboration is required.\n"
-                "- Every SR must be allocated to at least one subsystem.\n"
-                "- Components must have concrete responsibilities tied to domain behavior.\n"
-                "- Infer APIs/components from requirements and architecture context; do NOT use fixed templates "
-                "like health+execute for every subsystem.\n"
+            purpose=f"subagent:architect step:architecture_design.structure{architecture_scope}",
+            system_prompt=self._subagent_prompt(
+                "architect",
+                "Prompt: architecture_design.structure",
+                fallback=(
+                    "You are an architecture designer. Return JSON only with keys: "
+                    "subsystems, components, sr_allocation.\n"
+                    "Rules:\n"
+                    "- Design domain-meaningful subsystems (not generic 'service layer' or 'data layer').\n"
+                    "- subsystems: list[object] with keys: name, english_name, description, constraints, apis.\n"
+                    "- name may be Chinese or bilingual for documentation display.\n"
+                    "- english_name is REQUIRED and must be 1-3 English words (ASCII letters/numbers only), "
+                    "used for directories/module names.\n"
+                    "- each subsystem.apis item has keys: method, path, description.\n"
+                    "- components: list[object] with keys: name, type, subsystem_id_or_name, responsibilities.\n"
+                    "- Use subsystem_id, subsystem name, or subsystem english_name "
+                    "when referencing subsystem_id_or_name.\n"
+                    "- sr_allocation: object mapping subsystem ids/names to SR id lists.\n"
+                    "- An SR may be allocated to multiple related subsystems when "
+                    "cross-subsystem collaboration is required.\n"
+                    "- Every SR must be allocated to at least one subsystem.\n"
+                    "- Components must have concrete responsibilities tied to domain behavior.\n"
+                    "- Infer APIs/components from requirements and architecture context; do NOT use fixed templates "
+                    "like health+execute for every subsystem.\n"
+                ),
             ),
             user_prompt=(
                 f"Round: {round_index}\n"
@@ -1067,9 +1079,13 @@ class DeepArchitectureWorkflowSkill(Skill):
                 "subagent:architecture_reviewer step:architecture_review "
                 f"round:{round_index} reqs:{len(requirements)} reviewers:{len(reviewer_instances)}"
             ),
-            system_prompt=(
-                "You are an architecture reviewer. Return JSON only with optional keys: "
-                "summary (str), suggestions (list[str])."
+            system_prompt=self._subagent_prompt(
+                "architecture_reviewer",
+                "Prompt: architecture_review",
+                fallback=(
+                    "You are an architecture reviewer. Return JSON only with optional keys: "
+                    "summary (str), suggestions (list[str])."
+                ),
             ),
             user_prompt=(
                 (f"Round: {round_index}\nCurrent issues:\n- " + "\n- ".join(issues or ["(none)"]) + "\n")
@@ -1147,7 +1163,7 @@ class DeepArchitectureWorkflowSkill(Skill):
             for api in subsystem.get("apis", []):
                 lines.append(f"- `{api.get('method', 'GET')} {api.get('path', '/')}`: {api.get('description', '')}")
             lines.append("")
-        api_index.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+        write_markdown(api_index, "\n".join(lines).strip() + "\n")
         files.append(str(api_index))
         return files
 
@@ -1156,8 +1172,8 @@ class DeepArchitectureWorkflowSkill(Skill):
         architecture_design: dict[str, Any],
     ) -> dict[str, dict[str, Any]]:
         assignments: dict[str, dict[str, Any]] = {}
-        reviewer_pool = ["architecture_reviewer_1", "architecture_reviewer_2"]
-        architect_pool = ["subsystem_architect_1", "subsystem_architect_2", "subsystem_architect_3"]
+        reviewer_pool = ["subsystem_reviewer_1", "subsystem_reviewer_2"]
+        architect_pool = ["subsystem_expert_1", "subsystem_expert_2", "subsystem_expert_3"]
 
         subsystems = architecture_design.get("subsystems", [])
         for index, subsystem in enumerate(subsystems):
@@ -1165,8 +1181,8 @@ class DeepArchitectureWorkflowSkill(Skill):
             subsystem_display = str(subsystem.get("name", subsystem_id))
             subsystem_slug = self._subsystem_slug(subsystem, fallback=subsystem_id)
             assignments[subsystem_id] = {
-                "subsystem_architect": architect_pool[index % len(architect_pool)],
-                "architecture_reviewer": reviewer_pool[index % len(reviewer_pool)],
+                "subsystem_expert": architect_pool[index % len(architect_pool)],
+                "subsystem_reviewer": reviewer_pool[index % len(reviewer_pool)],
                 "subsystem": subsystem_display,
                 "subsystem_english_name": str(subsystem.get("english_name", "")).strip() or subsystem_slug,
                 "assigned_sr_ids": architecture_design.get(
@@ -1208,7 +1224,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                 subsystem=subsystem,
                 detail_design=detail_design,
                 round_index=round_index,
-                reviewer=str(assignment.get("architecture_reviewer", "architecture_reviewer_1")),
+                reviewer=str(assignment.get("subsystem_reviewer", "subsystem_reviewer_1")),
             )
             rounds.append({"round": round_index, "detail_design": detail_design, "review": review})
             previous_design = detail_design
@@ -1255,29 +1271,33 @@ class DeepArchitectureWorkflowSkill(Skill):
         llm_detail = self._run_llm_json(
             context=context,
             purpose=(
-                "subagent:subsystem_architect step:subsystem_detail_design "
+                "subagent:subsystem_expert step:subsystem_detail_design "
                 f"round:{round_index} subsystem:{self._purpose_token(str(subsystem.get('id', '')))} "
-                f"owner:{self._purpose_token(str(assignment.get('subsystem_architect', '')))}"
+                f"owner:{self._purpose_token(str(assignment.get('subsystem_expert', '')))}"
             ),
-            system_prompt=(
-                "You are a subsystem architect. Return JSON only with optional keys: "
-                "logic_architecture_goals (list[str]), design_strategy (list[str]), "
-                "technology_choices (object with language/framework/storage), "
-                "logic_architecture_views (list[object]), module_designs (list[object]), "
-                "module_dependency_rules (list[str]), integration_flow_notes (list[str]).\n"
-                "Rules for logic_architecture_views:\n"
-                "- Prefer 3 views: layered_view, runtime_interaction_view, module_dependency_view.\n"
-                "- Each view item keys: view_id, view_name, view_type, description, mermaid.\n"
-                "- Mermaid must be valid text starting with flowchart/graph/sequenceDiagram.\n"
-                "Rules for module_designs:\n"
-                "- Each module item keys: module_name, file_name, responsibilities, "
-                "depends_on_modules, classes, class_diagram_mermaid.\n"
-                "- file_name must be snake_case Python filename ending with .py.\n"
-                "- depends_on_modules must reference module_name values in module_designs (no unknown modules).\n"
-                "- Each classes item keys: class_name, class_kind, purpose, "
-                "attributes, methods, inherits, uses_classes.\n"
-                "- class_diagram_mermaid must be Mermaid classDiagram text.\n"
-                "- Module/class design should align semantically with SR/FN decomposition."
+            system_prompt=self._subagent_prompt(
+                "subsystem_expert",
+                "Prompt: subsystem_detail_design",
+                fallback=(
+                    "You are a subsystem architect. Return JSON only with optional keys: "
+                    "logic_architecture_goals (list[str]), design_strategy (list[str]), "
+                    "technology_choices (object with language/framework/storage), "
+                    "logic_architecture_views (list[object]), module_designs (list[object]), "
+                    "module_dependency_rules (list[str]), integration_flow_notes (list[str]).\n"
+                    "Rules for logic_architecture_views:\n"
+                    "- Prefer 3 views: layered_view, runtime_interaction_view, module_dependency_view.\n"
+                    "- Each view item keys: view_id, view_name, view_type, description, mermaid.\n"
+                    "- Mermaid must be valid text starting with flowchart/graph/sequenceDiagram.\n"
+                    "Rules for module_designs:\n"
+                    "- Each module item keys: module_name, file_name, responsibilities, "
+                    "depends_on_modules, classes, class_diagram_mermaid.\n"
+                    "- file_name must be snake_case Python filename ending with .py.\n"
+                    "- depends_on_modules must reference module_name values in module_designs (no unknown modules).\n"
+                    "- Each classes item keys: class_name, class_kind, purpose, "
+                    "attributes, methods, inherits, uses_classes.\n"
+                    "- class_diagram_mermaid must be Mermaid classDiagram text.\n"
+                    "- Module/class design should align semantically with SR/FN decomposition."
+                ),
             ),
             user_prompt=(
                 f"Subsystem: {subsystem.get('id', '')} {subsystem.get('name', '')}\n"
@@ -1318,7 +1338,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         return {
             "round": round_index,
             "subsystem": subsystem.get("name", subsystem.get("id", "")),
-            "owner": assignment.get("subsystem_architect", "subsystem_architect_1"),
+            "owner": assignment.get("subsystem_expert", "subsystem_expert_1"),
             "logic_architecture_goals": self._as_str_list(
                 llm_detail.get("logic_architecture_goals"),
                 fallback=[
@@ -1452,13 +1472,17 @@ class DeepArchitectureWorkflowSkill(Skill):
         llm_review = self._run_llm_json(
             context=context,
             purpose=(
-                "subagent:architecture_reviewer step:subsystem_detail_review "
+                "subagent:subsystem_reviewer step:subsystem_detail_review "
                 f"round:{round_index} subsystem:{self._purpose_token(str(subsystem.get('id', '')))} "
                 f"reviewer:{self._purpose_token(reviewer)}"
             ),
-            system_prompt=(
-                "You are an architecture reviewer. Return JSON only with optional keys: "
-                "summary (str), suggestions (list[str])."
+            system_prompt=self._subagent_prompt(
+                "subsystem_reviewer",
+                "Prompt: subsystem_detail_review",
+                fallback=(
+                    "You are a subsystem reviewer. Return JSON only with optional keys: "
+                    "summary (str), suggestions (list[str])."
+                ),
             ),
             user_prompt=(
                 f"Subsystem: {subsystem.get('id', '')} {subsystem.get('name', '')}\n"
@@ -1535,7 +1559,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                 for fn in sr_item.get("functions", []):
                     fn_lines.append(f"- {fn.get('id', '')}: {fn.get('description', '')} ({fn.get('spec', '')})")
                 fn_lines.append("")
-            fn_path.write_text("\n".join(fn_lines).strip() + "\n", encoding="utf-8")
+            write_markdown(fn_path, "\n".join(fn_lines).strip() + "\n")
             files.append(str(fn_path))
 
         return files
@@ -1606,7 +1630,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                     ]
                 )
 
-            path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+            write_markdown(path, "\n".join(lines).rstrip() + "\n")
             files.append(str(path))
         return files
 
@@ -2852,7 +2876,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                     assignment = assignments.get(sid, {})
                     impl_lines.append(
                         f"{sid} ({subsystem_names.get(sid, sid)}): "
-                        f"implemented by subsystem architect {assignment.get('subsystem_architect', '')} "
+                        f"implemented by subsystem architect {assignment.get('subsystem_expert', '')} "
                         f"through subsystem APIs/components mapped to this SR."
                     )
                 lines.extend(["- Implementation by Subsystem:", *[f"  - {x}" for x in impl_lines]])
@@ -3304,6 +3328,20 @@ class DeepArchitectureWorkflowSkill(Skill):
         token = self._slugify(text)
         return token[:80] if token else "na"
 
+    def _subagent_prompt(self, agent_name: str, heading: str, *, fallback: str) -> str:
+        _ = fallback
+        alias_map = {
+            "architect": "architecture_designer",
+            "subsystem_expert": "subsystem_architect",
+            "subsystem_reviewer": "subsystem_reviewer",
+        }
+        prompt_agent_name = alias_map.get(agent_name, agent_name)
+        return load_agent_prompt_section(prompt_agent_name, heading=heading, level=2)
+
+    def _agent_contract(self, agent_name: str, heading: str, *, fallback: str) -> str:
+        _ = fallback
+        return load_agent_prompt_section(agent_name, heading=heading, level=2)
+
     def _build_current_architecture_context(
         self,
         previous_design: dict[str, Any] | None,
@@ -3462,17 +3500,20 @@ class DeepArchitectureWorkflowSkill(Skill):
     ) -> dict[str, Any]:
         if context.llm_client is None:
             raise RuntimeError("LLM client is required for deep_architecture_workflow")
-        json_contract = (
-            "\n\nOutput contract:\n"
-            "- Return exactly one JSON object only.\n"
-            "- Do not return markdown fences, comments, or explanatory prose.\n"
-            "- Do not wrap the object under extra keys such as "
-            "data/result/output/payload unless explicitly requested.\n"
-            "- Use exact key names and nested key names specified in the prompt schema (no translation/synonyms).\n"
-            "- Use exact enum/keyword literals specified in the prompt "
-            "(for example approve/revise, layer names, etc.).\n"
-            "- Match the expected value types in the schema "
-            "(string/list/object/boolean), do not stringify nested JSON.\n"
+        json_contract = "\n\nOutput contract:\n" + self._agent_contract(
+            "architect",
+            "Contract: deep_workflow_json_output",
+            fallback=(
+                "- Return exactly one JSON object only.\n"
+                "- Do not return markdown fences, comments, or explanatory prose.\n"
+                "- Do not wrap the object under extra keys such as "
+                "data/result/output/payload unless explicitly requested.\n"
+                "- Use exact key names and nested key names specified in the prompt schema (no translation/synonyms).\n"
+                "- Use exact enum/keyword literals specified in the prompt "
+                "(for example approve/revise, layer names, etc.).\n"
+                "- Match the expected value types in the schema "
+                "(string/list/object/boolean), do not stringify nested JSON.\n"
+            ),
         )
         response = context.llm_client.complete(
             [

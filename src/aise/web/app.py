@@ -29,6 +29,10 @@ from ..core.task_state import RunTaskStateStore, TaskDocRef, TaskMemoryRecorder
 from ..core.workflow import WorkflowEngine
 from ..langchain.agent_node import SKILL_INPUT_HINTS, build_retry_skill_input
 from ..main import create_team
+from ..runtime import AgentRuntime, InMemoryMemoryManager, MasterAgent, validate_task_plan_payload
+from ..runtime.exceptions import AuthorizationError as RuntimeAuthorizationError
+from ..runtime.models import Principal
+from ..runtime.registry import WorkerRegistry
 from ..utils.logging import configure_logging, configure_module_file_logger, get_logger
 
 try:
@@ -1070,7 +1074,7 @@ class WebProjectService:
                         if isinstance(item.get("assigned_sr_ids"), list)
                         else []
                     ),
-                    "designer": str(item.get("subsystem_architect", "")),
+                    "designer": str(item.get("subsystem_expert", "")),
                     "reviewer": str(item.get("architecture_reviewer", "")),
                 }
             )
@@ -1126,8 +1130,8 @@ class WebProjectService:
                     "subsystem_name": str(item.get("subsystem", subsystem_id)),
                     "assigned_sr_ids": list(sr_allocation.get(str(subsystem_id), [])),
                     "srs": list(sr_groups_by_subsystem.get(str(subsystem_id), [])),
-                    "programmer": str(item.get("programmer", "")),
-                    "reviewer": str(item.get("code_reviewer", "")),
+                    "coder": str(item.get("coder", "")),
+                    "reviewer": str(item.get("commiter", "")),
                 }
             )
         return cards
@@ -1371,8 +1375,8 @@ class WebProjectService:
         elif task_key.startswith("architect.deep_architecture_workflow.step1.design"):
             spec["agent"] = "architect"
             spec["skill"] = "deep_architecture_workflow"
-            spec["purpose_prefixes"] = ["subagent:architecture_designer step:architecture_design"]
-            spec["log_tokens"].extend(["subagent:architecture_designer", "architecture_design"])
+            spec["purpose_prefixes"] = ["subagent:architect step:architecture_design"]
+            spec["log_tokens"].extend(["subagent:architect", "architecture_design"])
         elif task_key.startswith("architect.deep_architecture_workflow.step1.review"):
             spec["agent"] = "architect"
             spec["skill"] = "deep_architecture_workflow"
@@ -1381,33 +1385,33 @@ class WebProjectService:
         elif task_key.startswith("architect.deep_architecture_workflow.step4.design"):
             spec["agent"] = "architect"
             spec["skill"] = "deep_architecture_workflow"
-            spec["purpose_prefixes"] = ["subagent:subsystem_architect step:subsystem_detail_design"]
-            spec["log_tokens"].extend(["subagent:subsystem_architect", "subsystem_detail_design"])
+            spec["purpose_prefixes"] = ["subagent:subsystem_expert step:subsystem_detail_design"]
+            spec["log_tokens"].extend(["subagent:subsystem_expert", "subsystem_detail_design"])
         elif task_key.startswith("architect.deep_architecture_workflow.step4.review"):
             spec["agent"] = "architect"
             spec["skill"] = "deep_architecture_workflow"
-            spec["purpose_prefixes"] = ["subagent:architecture_reviewer step:subsystem_detail_review"]
-            spec["log_tokens"].extend(["subagent:architecture_reviewer", "subsystem_detail_review"])
+            spec["purpose_prefixes"] = ["subagent:subsystem_reviewer step:subsystem_detail_review"]
+            spec["log_tokens"].extend(["subagent:subsystem_reviewer", "subsystem_detail_review"])
         elif task_key.startswith("architect.deep_architecture_workflow.step2_3"):
             spec["agent"] = "architect"
             spec["skill"] = "deep_architecture_workflow"
             spec["purpose_prefixes"] = [
-                "subagent:architecture_designer step:bootstrap_architecture_code",
-                "subagent:architecture_designer step:subsystem_task_split",
+                "subagent:architect step:bootstrap_architecture_code",
+                "subagent:architect step:subsystem_task_split",
             ]
             spec["log_tokens"].extend(["bootstrap_architecture_code", "subsystem_task_split"])
         elif task_key.startswith("architect.deep_architecture_workflow.step2"):
             spec["agent"] = "architect"
             spec["skill"] = "deep_architecture_workflow"
-            spec["purpose_prefixes"] = ["subagent:architecture_designer step:bootstrap_architecture_code"]
+            spec["purpose_prefixes"] = ["subagent:architect step:bootstrap_architecture_code"]
         elif task_key.startswith("architect.deep_architecture_workflow.step3"):
             spec["agent"] = "architect"
             spec["skill"] = "deep_architecture_workflow"
-            spec["purpose_prefixes"] = ["subagent:architecture_designer step:subsystem_task_split"]
+            spec["purpose_prefixes"] = ["subagent:architect step:subsystem_task_split"]
         elif task_key.startswith("architect.deep_architecture_workflow.step5"):
             spec["agent"] = "architect"
             spec["skill"] = "deep_architecture_workflow"
-            spec["purpose_prefixes"] = ["subagent:subsystem_architect step:subsystem_code_init_and_api_definition"]
+            spec["purpose_prefixes"] = ["subagent:subsystem_expert step:subsystem_code_init_and_api_definition"]
         elif task_key.startswith("architect.deep_architecture_workflow"):
             spec["agent"] = "architect"
             spec["skill"] = "deep_architecture_workflow"
@@ -1419,21 +1423,21 @@ class WebProjectService:
             spec["skill"] = "deep_developer_workflow"
             spec["log_tokens"].extend(["agent=developer", "deep_developer_workflow"])
             if task_key.startswith("developer.deep_developer_workflow.step1"):
-                spec["purpose_prefixes"] = ["subagent:programmer step:subsystem_task_assignment"]
+                spec["purpose_prefixes"] = ["subagent:coder step:subsystem_task_assignment"]
             elif task_key.startswith("developer.deep_developer_workflow.step2.develop"):
                 spec["purpose_prefixes"] = [
-                    "subagent:programmer step:fn_code_generation",
-                    "subagent:programmer step:fn_test_generation",
+                    "subagent:coder step:fn_code_generation",
+                    "subagent:coder step:fn_test_generation",
                     "agent:developer role:developer skill:deep_developer_workflow",
                 ]
             elif task_key.startswith("developer.deep_developer_workflow.step2.review"):
-                spec["purpose_prefixes"] = ["subagent:code_reviewer step:fn_code_and_test_review"]
+                spec["purpose_prefixes"] = ["subagent:commiter step:fn_code_and_test_review"]
             elif task_key.startswith("developer.deep_developer_workflow.step2.revision"):
-                spec["purpose_prefixes"] = ["subagent:code_reviewer step:revision_feedback_record"]
+                spec["purpose_prefixes"] = ["subagent:commiter step:revision_feedback_record"]
             elif task_key.startswith("developer.deep_developer_workflow.step2.merge"):
                 spec["purpose_prefixes"] = [
-                    "subagent:programmer step:subsystem_batch_merge_after_review_rounds",
-                    "subagent:programmer step:fn_merge_after_three_rounds",
+                    "subagent:coder step:subsystem_batch_merge_after_review_rounds",
+                    "subagent:coder step:fn_merge_after_three_rounds",
                 ]
             elif task_key != "developer.deep_developer_workflow":
                 spec["purpose_prefixes"] = [f"task_key:{task_key}"]
@@ -2410,7 +2414,7 @@ class WebProjectService:
         if phase == "design" and "architect.deep_architecture_workflow" in task_keys:
             return [
                 {
-                    "agent": "architecture_designer",
+                    "agent": "architect",
                     "tasks": [
                         {
                             "key": "architect.deep_architecture_workflow.step1.design",
@@ -2431,16 +2435,21 @@ class WebProjectService:
                             "key": "architect.deep_architecture_workflow.step1.review",
                             "name": "system_architecture_review",
                             "input_hints": ["system_architecture_doc", "system_requirements_doc"],
-                        },
+                        }
+                    ],
+                },
+                {
+                    "agent": "subsystem_reviewer[*]",
+                    "tasks": [
                         {
                             "key": "architect.deep_architecture_workflow.step4.review",
                             "name": "subsystem_detail_review",
                             "input_hints": ["subsystem_detail_design_doc", "system_requirements_doc"],
-                        },
+                        }
                     ],
                 },
                 {
-                    "agent": "subsystem_architect[*]",
+                    "agent": "subsystem_expert[*]",
                     "tasks": [
                         {
                             "key": "architect.deep_architecture_workflow.step4.design",
@@ -2459,7 +2468,7 @@ class WebProjectService:
         if phase == "implementation" and "developer.deep_developer_workflow" in task_keys:
             return [
                 {
-                    "agent": "programmer[*]",
+                    "agent": "coder[*]",
                     "tasks": [
                         {
                             "key": "developer.deep_developer_workflow.step1",
@@ -2479,7 +2488,7 @@ class WebProjectService:
                     ],
                 },
                 {
-                    "agent": "code_reviewer[*]",
+                    "agent": "commiter[*]",
                     "tasks": [
                         {
                             "key": "developer.deep_developer_workflow.step2.review",
@@ -2536,6 +2545,18 @@ def create_app() -> FastAPI:
     templates = Jinja2Templates(directory=str(_template_dir()))
     service = WebProjectService()
     app.state.web_service = service
+    runtime_worker_registry = WorkerRegistry()
+    runtime_memory_manager = InMemoryMemoryManager()
+    runtime_master_agent = MasterAgent(
+        worker_registry=runtime_worker_registry,
+        memory_manager=runtime_memory_manager,
+    )
+    app.state.master_agent = runtime_master_agent
+    app.state.agent_runtime = AgentRuntime(
+        master_agent=runtime_master_agent,
+        worker_registry=runtime_worker_registry,
+        memory_manager=runtime_memory_manager,
+    )
     oauth = _build_oauth()
     dev_login_enabled = os.environ.get("AISE_WEB_ENABLE_DEV_LOGIN", "").lower() in {"1", "true", "yes"}
     local_admin_username = os.environ.get("AISE_ADMIN_USERNAME", "admin")
@@ -2569,6 +2590,26 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Login required")
         return user
 
+    def runtime_principal_from_request(request: Request) -> Principal:
+        user = require_login(request)
+        role = str(user.get("role", "")).lower()
+        permissions = set(str(p) for p in user.get("permissions", []))
+        roles: list[str] = []
+        if role in {"super_admin", "admin"} or "super_admin" in permissions:
+            roles.append("Admin")
+        if role in {"operator"}:
+            roles.append("Operator")
+        if role in {"viewer"}:
+            roles.append("Viewer")
+        if not roles:
+            roles = ["Viewer"]
+        return Principal(
+            user_id=str(user.get("id", "web-user")),
+            tenant_id="web-default",
+            roles=roles,
+            attributes={"provider": user.get("provider", "unknown"), "email": user.get("email", "")},
+        )
+
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request) -> HTMLResponse:
         user = request.session.get("user")
@@ -2581,6 +2622,41 @@ def create_app() -> FastAPI:
                 "projects": service.list_projects(),
                 "global_config_data": service.get_global_config_data(),
                 "user": user,
+            },
+        )
+
+    @app.get("/runtime/tasks/{task_id}", response_class=HTMLResponse)
+    async def runtime_task_detail_page(request: Request, task_id: str) -> HTMLResponse:
+        user = request.session.get("user")
+        if not user:
+            return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
+        principal = runtime_principal_from_request(request)
+        runtime: AgentRuntime = app.state.agent_runtime
+        try:
+            task_payload = runtime.get_task(task_id, principal=principal)
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        plan = task_payload.get("plan") or {}
+        plan_meta = plan.get("metadata") if isinstance(plan, dict) else {}
+        selected_process = (plan_meta or {}).get("selected_process")
+        process_context = (plan_meta or {}).get("process_context") or {}
+        process_steps = process_context.get("steps", []) if isinstance(process_context, dict) else []
+        node_results = task_payload.get("node_results", {})
+        tasks = plan.get("tasks", []) if isinstance(plan, dict) else []
+
+        return templates.TemplateResponse(
+            "runtime_task_detail.html",
+            {
+                "request": request,
+                "user": user,
+                "task": task_payload,
+                "plan": plan,
+                "plan_meta": plan_meta or {},
+                "selected_process": selected_process,
+                "process_steps": process_steps,
+                "plan_tasks": tasks,
+                "node_results": node_results,
             },
         )
 
@@ -3147,5 +3223,132 @@ def create_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"saved": True}
+
+    # Runtime API (independent from project workflow APIs)
+    @app.post("/api/runtime/tasks")
+    async def api_runtime_submit_task(request: Request) -> dict[str, Any]:
+        principal = runtime_principal_from_request(request)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        prompt = str(payload.get("prompt", "")).strip()
+        if not prompt:
+            raise HTTPException(status_code=400, detail="prompt is required")
+        run_sync = bool(payload.get("run_sync", True))
+        constraints = payload.get("constraints", {})
+        metadata = payload.get("metadata", {})
+        if not isinstance(constraints, dict):
+            raise HTTPException(status_code=400, detail="constraints must be an object")
+        if not isinstance(metadata, dict):
+            raise HTTPException(status_code=400, detail="metadata must be an object")
+        task_plan = constraints.get("task_plan")
+        if task_plan is not None:
+            if not isinstance(task_plan, dict):
+                raise HTTPException(status_code=400, detail="constraints.task_plan must be an object")
+            try:
+                validate_task_plan_payload(task_plan)
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid task plan: {exc}") from exc
+        runtime: AgentRuntime = app.state.agent_runtime
+        try:
+            task_id = runtime.submit_task(
+                prompt=prompt,
+                principal=principal,
+                task_name=str(payload.get("task_name", "")).strip() or None,
+                constraints=constraints,
+                metadata=metadata,
+                run_sync=run_sync,
+            )
+        except RuntimeAuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        task_status = runtime.get_task_status(task_id, principal=principal)
+        return {"task_id": task_id, "status": task_status["status"], "run_sync": run_sync}
+
+    @app.get("/api/runtime/tasks/{task_id}")
+    async def api_runtime_get_task(request: Request, task_id: str) -> dict[str, Any]:
+        principal = runtime_principal_from_request(request)
+        runtime: AgentRuntime = app.state.agent_runtime
+        try:
+            return runtime.get_task(task_id, principal=principal)
+        except RuntimeAuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/runtime/tasks/{task_id}/status")
+    async def api_runtime_get_task_status(request: Request, task_id: str) -> dict[str, Any]:
+        principal = runtime_principal_from_request(request)
+        runtime: AgentRuntime = app.state.agent_runtime
+        try:
+            return runtime.get_task_status(task_id, principal=principal)
+        except RuntimeAuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/runtime/tasks/{task_id}/result")
+    async def api_runtime_get_task_result(request: Request, task_id: str) -> dict[str, Any]:
+        principal = runtime_principal_from_request(request)
+        runtime: AgentRuntime = app.state.agent_runtime
+        try:
+            return runtime.get_task_result(task_id, principal=principal)
+        except RuntimeAuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/runtime/tasks/{task_id}/logs")
+    async def api_runtime_get_task_logs(request: Request, task_id: str) -> dict[str, Any]:
+        principal = runtime_principal_from_request(request)
+        runtime: AgentRuntime = app.state.agent_runtime
+        try:
+            return {"task_id": task_id, "events": runtime.get_task_logs(task_id, principal=principal)}
+        except RuntimeAuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/runtime/tasks/{task_id}/report")
+    async def api_runtime_get_task_report(request: Request, task_id: str) -> dict[str, Any]:
+        principal = runtime_principal_from_request(request)
+        runtime: AgentRuntime = app.state.agent_runtime
+        try:
+            return runtime.get_task_report(task_id, principal=principal)
+        except RuntimeAuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/runtime/tasks/{task_id}/retry-node")
+    async def api_runtime_retry_node(request: Request, task_id: str) -> dict[str, Any]:
+        principal = runtime_principal_from_request(request)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        node_id = str(payload.get("node_id", "")).strip()
+        if not node_id:
+            raise HTTPException(status_code=400, detail="node_id is required")
+        runtime: AgentRuntime = app.state.agent_runtime
+        try:
+            return runtime.retry_node(task_id, node_id, principal=principal)
+        except RuntimeAuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/runtime/plans/validate")
+    async def api_runtime_validate_plan(request: Request) -> dict[str, Any]:
+        runtime_principal_from_request(request)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        plan = payload.get("plan")
+        if not isinstance(plan, dict):
+            raise HTTPException(status_code=400, detail="plan must be an object")
+        try:
+            validate_task_plan_payload(plan)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"valid": True}
 
     return app

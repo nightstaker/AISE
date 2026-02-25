@@ -8,6 +8,7 @@ from typing import Any
 
 from ....core.artifact import Artifact, ArtifactType
 from ....core.skill import Skill, SkillContext
+from ....utils.markdown import write_markdown
 
 
 class DocumentGenerationSkill(Skill):
@@ -43,7 +44,7 @@ class DocumentGenerationSkill(Skill):
             try:
                 design_doc = self._generate_system_design_md(system_design_content)
                 design_path = output_dir / "system-design.md"
-                design_path.write_text(design_doc, encoding="utf-8")
+                write_markdown(design_path, design_doc)
                 results["generated_files"].append(str(design_path))
             except Exception as e:
                 results["errors"].append(f"Failed to generate system-design.md: {e}")
@@ -62,7 +63,7 @@ class DocumentGenerationSkill(Skill):
             try:
                 req_doc = self._generate_system_requirements_md(system_requirements_content)
                 req_path = output_dir / "System-Requirements.md"
-                req_path.write_text(req_doc, encoding="utf-8")
+                write_markdown(req_path, req_doc)
                 results["generated_files"].append(str(req_path))
             except Exception as e:
                 results["errors"].append(f"Failed to generate System-Requirements.md: {e}")

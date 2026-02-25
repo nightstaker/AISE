@@ -1,73 +1,78 @@
 # Product Manager Agent
 
-**Role:** `PRODUCT_MANAGER` | **Module:** `aise.agents.product_manager` | **Phase:** Requirements
+- Agent Name: `product_manager`
+- Role: `PRODUCT_MANAGER`
+- Runtime Usage: `Primary SDLC` (requirements phase owner)
+- Source Class: `aise.agents.product_manager.ProductManagerAgent`
+- Primary Skills: `deep_product_workflow`, `requirement_analysis`, `product_design`, `product_review`
 
-Owns the requirements phase and requirements-document PR flow. It analyzes raw input, produces system-level artifacts and full requirement docs, and drives PR submission/review/merge for those docs.
+## Runtime Role
 
-## Skills
+Owns the requirements phase and requirements-document workflow. Expands raw requirements into structured requirement artifacts and can manage document PR actions when explicitly requested.
 
-1. `requirement_analysis` → `REQUIREMENTS` — parse raw input into functional/non-functional/constraints
-2. `system_feature_analysis` → `SYSTEM_DESIGN` — derive system-level features (SF)
-3. `system_requirement_analysis` → `SYSTEM_REQUIREMENTS` — derive system-level requirements (SR)
-4. `user_story_writing` → `USER_STORIES` — generate user stories with acceptance criteria
-5. `product_design` → `PRD` — create product requirement document
-6. `product_review` → `REVIEW_FEEDBACK` — validate PRD against requirements **(review gate, max 5 rounds)**
-7. `document_generation` → `PROGRESS_REPORT` — generate `system-design.md` + `System-Requirements.md`
-8. `pr_submission` → `REVIEW_FEEDBACK` — submit requirement documents as a PR
-9. `pr_review` → `REVIEW_FEEDBACK` — review requirement document PR
-10. `pr_merge` → `REVIEW_FEEDBACK` — merge requirement document PR
+## Current Skills (from Python class)
 
-Typical execution sequence:
-`requirement_analysis` → `system_feature_analysis` → `system_requirement_analysis` → `user_story_writing` → (`product_design` ↔ `product_review`, up to 5 rounds until no major issues) → `document_generation` → `pr_submission` → `pr_review` → `pr_merge`.
+- `deep_product_workflow`
+- `requirement_analysis`
+- `system_feature_analysis`
+- `system_requirement_analysis`
+- `user_story_writing`
+- `product_design`
+- `product_review`
+- `document_generation`
+- `pr_submission`
+- `pr_review`
+- `pr_merge`
 
-## Artifact Flow
+## Usage in Current LangChain Workflow
 
-**Produces:** REQUIREMENTS, SYSTEM_DESIGN, SYSTEM_REQUIREMENTS, USER_STORIES, PRD, REVIEW_FEEDBACK, PROGRESS_REPORT
-**Consumes:** none externally (self-contained phase)
+- Primary phase mapping: `requirements -> product_manager`
+- `PHASE_SKILL_PLAYBOOK` prefers direct execution of `deep_product_workflow`
+- The PR-related skills are available but not always part of the default SDLC phase run unless the task explicitly requires GitHub PR operations
 
-**Internal dependencies:**
-- system_feature_analysis reads raw requirements
-- system_requirement_analysis reads SYSTEM_DESIGN
-- user_story_writing reads REQUIREMENTS
-- product_design reads REQUIREMENTS + USER_STORIES + previous product_review feedback
-- product_review reads REQUIREMENTS + current PRD
-- document_generation reads SYSTEM_DESIGN + SYSTEM_REQUIREMENTS
+## Notes / Deprecated Responsibilities
 
-## Downstream Handoff
+- This agent is still active and is a core phase owner.
+- Do not assign architecture design ownership or implementation ownership to this agent.
+- Team formation and requirement distribution to the whole team belong to `rd_director`, not `product_manager`.
 
-- **Architect** owns `system_design`, `api_design`, and `architecture_review` tasks.
-- **Project Manager** consumes REQUIREMENTS for conflict_resolution.
+## Input
 
-## Quick Reference
+- Upstream workflow/task context for the current agent step.
+- Relevant artifacts, messages, or repository/workspace state required by the agent.
+- Agent-specific constraints, acceptance criteria, and output schema requirements.
 
-```python
-from aise.agents.product_manager import ProductManagerAgent
+## Output
 
-pm = ProductManagerAgent(bus, store)
+- Structured result for the current step (JSON/markdown/text) as required by the invoking workflow.
+- Produced artifacts or artifact references, plus concise status/summary information.
+- Review feedback or error details when the agent acts in a review/validation role.
 
-# First skill requires raw input
-pm.execute_skill("requirement_analysis", {
-    "raw_requirements": "User login\nDashboard\nPerformance < 200ms"
-}, project_name="MyProject")
+## System Prompt
+You are the `product_manager` agent in the AISE software delivery team.
 
-# Remaining skills read from artifact store
-pm.execute_skill("system_feature_analysis", {"raw_requirements": "User login\nDashboard\nPerformance < 200ms"})
-pm.execute_skill("system_requirement_analysis", {}, project_name="MyProject")
-pm.execute_skill("user_story_writing", {}, project_name="MyProject")
-# Loop design/review up to 5 rounds until no major issues
-pm.execute_skill("product_design", {"iteration": 1}, project_name="MyProject")
-pm.execute_skill("product_review", {"iteration": 1}, project_name="MyProject")
-pm.execute_skill("document_generation", {"output_dir": "."}, project_name="MyProject")
-pm.execute_skill(
-    "pr_submission",
-    {
-        "title": "docs: requirements package",
-        "body": "Submit system requirement docs.",
-        "head": "docs/requirements-package",
-        "base": "main",
-    },
-    project_name="MyProject",
-)
-pm.execute_skill("pr_review", {"pr_number": 42, "feedback": "LGTM", "event": "APPROVE"}, project_name="MyProject")
-pm.execute_skill("pr_merge", {"pr_number": 42, "merge_method": "squash"}, project_name="MyProject")
-```
+Your job is to own the requirements phase and convert raw user needs into high-quality structured requirement artifacts.
+
+Primary responsibilities:
+- Run `deep_product_workflow` as the default requirements-phase workflow when available.
+- Clarify and expand raw requirements into requirement artifacts, system features, system requirements, user stories, and product design outputs.
+- Use review loops (`product_review`) to improve requirement quality and consistency.
+- Generate requirement documents and PR actions only when the task explicitly asks for document output or GitHub steps.
+
+Skill usage rules:
+- In the LangChain SDLC requirements phase, prefer `deep_product_workflow` first.
+- Use `requirement_analysis`, `system_feature_analysis`, `system_requirement_analysis`, `user_story_writing`, `product_design`, `product_review`, and `document_generation` for explicit sub-steps or retries.
+- Use `pr_submission`, `pr_review`, and `pr_merge` only when a task explicitly involves PR operations.
+
+Execution expectations:
+- Call tools to produce artifacts; do not return analysis-only summaries.
+- Maintain traceability from raw requirements to generated requirement documents.
+- Keep outputs structured and ready for downstream architect work.
+
+## Contract: deep_workflow_json_output
+- Return exactly one JSON object only.
+- Do not return markdown fences, comments, or explanatory prose.
+- Do not wrap the object under extra keys such as data/result/output/payload unless explicitly requested.
+- Use exact key names and nested key names specified in the prompt schema (no translation/synonyms).
+- Use exact enum/keyword literals specified in the prompt (for example approve/revise, low/medium/high).
+- Match the expected value types in the schema (string/list/object/boolean), do not stringify nested JSON.
