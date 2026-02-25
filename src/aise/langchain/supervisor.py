@@ -114,7 +114,11 @@ def create_supervisor(
 
         if error and error_retryable is False:
             logger.warning(
-                "Supervisor: non-retryable agent error detected, terminating workflow to avoid phase re-execution: phase=%s error=%s",
+                (
+                    "Supervisor: non-retryable agent error detected, "
+                    "terminating workflow to avoid phase re-execution: "
+                    "phase=%s error=%s"
+                ),
                 phase,
                 error,
             )

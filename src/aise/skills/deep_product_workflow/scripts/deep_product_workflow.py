@@ -1426,10 +1426,12 @@ class DeepProductWorkflowSkill(Skill):
             "\n\nOutput contract:\n"
             "- Return exactly one JSON object only.\n"
             "- Do not return markdown fences, comments, or explanatory prose.\n"
-            "- Do not wrap the object under extra keys such as data/result/output/payload unless explicitly requested.\n"
+            "- Do not wrap the object under extra keys such as "
+            "data/result/output/payload unless explicitly requested.\n"
             "- Use exact key names and nested key names specified in the prompt schema (no translation/synonyms).\n"
             "- Use exact enum/keyword literals specified in the prompt (for example approve/revise, low/medium/high).\n"
-            "- Match the expected value types in the schema (string/list/object/boolean), do not stringify nested JSON.\n"
+            "- Match the expected value types in the schema "
+            "(string/list/object/boolean), do not stringify nested JSON.\n"
         )
         response = context.llm_client.complete(
             [

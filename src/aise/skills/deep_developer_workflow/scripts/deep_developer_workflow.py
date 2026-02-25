@@ -13,7 +13,6 @@ from ....core.artifact import Artifact, ArtifactType
 from ....core.skill import Skill, SkillContext
 from ....utils.logging import get_logger
 
-
 logger = get_logger(__name__)
 
 
@@ -537,6 +536,14 @@ class DeepDeveloperWorkflowSkill(Skill):
             return {}
         if context.llm_client is None:
             raise RuntimeError("LLM client is required for SR-group test generation")
+        source_context_payload = {
+            "source_files": existing_source_context.get("source_files", []),
+            "test_files": [],
+        }
+        test_context_payload = {
+            "source_files": [],
+            "test_files": existing_test_context.get("test_files", []),
+        }
 
         fn_items = []
         for plan in plans:
@@ -575,9 +582,14 @@ class DeepDeveloperWorkflowSkill(Skill):
                     "- Return exactly one item for each FN in the input list (no extras, no omissions).\n"
                     "- fn_id and module_name must exactly match the provided values.\n"
                     "- test_content must import from src.<subsystem>.<module>.\n"
-                    "- Preserve and test the existing public API style inferred from current source files (class-based or function-based).\n"
-                    "- If existing_class_names is non-empty, preserve and test those classes/methods; do not replace the module with a different public API style.\n"
-                    "- If implementation_style=open, infer a suitable public API from subsystem design doc + existing source/test context and keep imports consistent.\n"
+                    "- Preserve and test the existing public API style inferred "
+                    "from current source files (class-based or function-based).\n"
+                    "- If existing_class_names is non-empty, preserve and test "
+                    "those classes/methods; do not replace the module with a "
+                    "different public API style.\n"
+                    "- If implementation_style=open, infer a suitable public API "
+                    "from subsystem design doc + existing source/test context "
+                    "and keep imports consistent.\n"
                     "- include at least 2 pytest test functions per item\n"
                     "- keep tests deterministic (avoid flaky randomness)\n"
                     "- use subsystem architecture design doc module/class constraints and cross-module interactions\n"
@@ -592,11 +604,11 @@ class DeepDeveloperWorkflowSkill(Skill):
                     "Generate pytest tests for all FN items below in one batch LLM response.\n"
                     "The output must contain the exact keys fn_id/module_name/test_content per item.\n\n"
                     "subsystem_architecture_design_doc:\n"
-                    f"{subsystem_architecture_design_doc[:60000] if subsystem_architecture_design_doc else '(missing)'}\n\n"
+                    f"{self._truncate_text_for_prompt(subsystem_architecture_design_doc, 60000, '(missing)')}\n\n"
                     "existing_source_code:\n"
-                    f"{self._serialize_subsystem_context_for_prompt({'source_files': existing_source_context.get('source_files', []), 'test_files': []})}\n\n"
+                    f"{self._serialize_subsystem_context_for_prompt(source_context_payload)}\n\n"
                     "existing_test_code:\n"
-                    f"{self._serialize_subsystem_context_for_prompt({'source_files': [], 'test_files': existing_test_context.get('test_files', [])})}\n\n"
+                    f"{self._serialize_subsystem_context_for_prompt(test_context_payload)}\n\n"
                     f"FN items:\n{self._compact_json(fn_items)}\n"
                 ),
                 required_keys=["items"],
@@ -629,6 +641,14 @@ class DeepDeveloperWorkflowSkill(Skill):
             return {}
         if context.llm_client is None:
             raise RuntimeError("LLM client is required for SR-group code generation")
+        source_context_payload = {
+            "source_files": existing_source_context.get("source_files", []),
+            "test_files": [],
+        }
+        test_context_payload = {
+            "source_files": [],
+            "test_files": existing_test_context.get("test_files", []),
+        }
         fn_items = []
         for plan in plans:
             module_contract = plan.get("module_contract", {}) if isinstance(plan.get("module_contract"), dict) else {}
@@ -664,11 +684,16 @@ class DeepDeveloperWorkflowSkill(Skill):
                     "Rules:\n"
                     "- Return exactly one item for each FN in the input list (no extras, no omissions).\n"
                     "- fn_id and module_name must exactly match the provided values.\n"
-                    "- Preserve the module's existing public API style inferred from current source files (class-based or function-based).\n"
-                    "- If existing_class_names is non-empty, preserve those class names and extend/implement methods in class-based structure.\n"
-                    "- If implementation_style=open, infer a suitable public API from subsystem design doc + generated tests for current SR.\n"
+                    "- Preserve the module's existing public API style inferred "
+                    "from current source files (class-based or function-based).\n"
+                    "- If existing_class_names is non-empty, preserve those "
+                    "class names and extend/implement methods in class-based "
+                    "structure.\n"
+                    "- If implementation_style=open, infer a suitable public API "
+                    "from subsystem design doc + generated tests for current SR.\n"
                     "- Reuse/extend existing subsystem source skeletons and preserve import relationships.\n"
-                    "- Use subsystem architecture design doc module/class constraints and generated tests for current SR.\n"
+                    "- Use subsystem architecture design doc module/class "
+                    "constraints and generated tests for current SR.\n"
                     "- Implement inter-module calls where required by module dependencies and SR behavior.\n"
                     "- Do not arbitrarily rename modules/classes.\n"
                     "- do not echo FN ids in runtime payloads, logs, comments, constants, or exceptions\n"
@@ -681,11 +706,11 @@ class DeepDeveloperWorkflowSkill(Skill):
                     "Generate source code for all FN items below in one batch LLM response.\n"
                     "The output must contain the exact keys fn_id/module_name/code_content per item.\n\n"
                     "subsystem_architecture_design_doc:\n"
-                    f"{subsystem_architecture_design_doc[:60000] if subsystem_architecture_design_doc else '(missing)'}\n\n"
+                    f"{self._truncate_text_for_prompt(subsystem_architecture_design_doc, 60000, '(missing)')}\n\n"
                     "existing_source_code:\n"
-                    f"{self._serialize_subsystem_context_for_prompt({'source_files': existing_source_context.get('source_files', []), 'test_files': []})}\n\n"
+                    f"{self._serialize_subsystem_context_for_prompt(source_context_payload)}\n\n"
                     "existing_test_code:\n"
-                    f"{self._serialize_subsystem_context_for_prompt({'source_files': [], 'test_files': existing_test_context.get('test_files', [])})}\n\n"
+                    f"{self._serialize_subsystem_context_for_prompt(test_context_payload)}\n\n"
                     "generated_tests_for_current_sr:\n"
                     f"{self._compact_json(generated_tests_for_current_sr)}\n\n"
                     f"FN items:\n{self._compact_json(fn_items)}\n"
@@ -929,7 +954,10 @@ class DeepDeveloperWorkflowSkill(Skill):
             f"from src.{subsystem_slug}.{module_name} import *\n"
             "import pytest\n\n\n"
             f"def test_{module_name}_placeholder() -> None:\n"
-            f"    pytest.skip('Placeholder test for {subsystem_slug}.{module_name}; replaced during SR implementation')\n"
+            "    pytest.skip(\n"
+            f"        'Placeholder test for {subsystem_slug}.{module_name}; "
+            "replaced during SR implementation'\n"
+            "    )\n"
         )
 
     def _fallback_test_content(
@@ -942,8 +970,16 @@ class DeepDeveloperWorkflowSkill(Skill):
         module_contract: dict[str, Any] | None = None,
     ) -> str:
         contract = module_contract if isinstance(module_contract, dict) else {}
-        class_names = [str(x).strip() for x in contract.get("class_names", [])] if isinstance(contract.get("class_names"), list) else []
-        function_names = [str(x).strip() for x in contract.get("function_names", [])] if isinstance(contract.get("function_names"), list) else []
+        class_names = (
+            [str(x).strip() for x in contract.get("class_names", [])]
+            if isinstance(contract.get("class_names"), list)
+            else []
+        )
+        function_names = (
+            [str(x).strip() for x in contract.get("function_names", [])]
+            if isinstance(contract.get("function_names"), list)
+            else []
+        )
         if class_names:
             class_name = class_names[0]
             return (
@@ -971,7 +1007,10 @@ class DeepDeveloperWorkflowSkill(Skill):
             f"    module = __import__('src.{subsystem_slug}.{module_name}', fromlist=['*'])\n"
             "    assert module is not None\n\n"
             f"def test_{module_name}_fallback_placeholder() -> None:\n"
-            "    pytest.skip('Fallback test template; LLM should generate concrete tests from design and code context')\n"
+            "    pytest.skip(\n"
+            "        'Fallback test template; LLM should generate concrete tests "
+            "from design and code context'\n"
+            "    )\n"
         )
 
     def _fallback_code_content(
@@ -985,8 +1024,16 @@ class DeepDeveloperWorkflowSkill(Skill):
         module_contract: dict[str, Any] | None = None,
     ) -> str:
         contract = module_contract if isinstance(module_contract, dict) else {}
-        class_names = [str(x).strip() for x in contract.get("class_names", [])] if isinstance(contract.get("class_names"), list) else []
-        function_names = [str(x).strip() for x in contract.get("function_names", [])] if isinstance(contract.get("function_names"), list) else []
+        class_names = (
+            [str(x).strip() for x in contract.get("class_names", [])]
+            if isinstance(contract.get("class_names"), list)
+            else []
+        )
+        function_names = (
+            [str(x).strip() for x in contract.get("function_names", [])]
+            if isinstance(contract.get("function_names"), list)
+            else []
+        )
         if class_names:
             class_name = class_names[0]
             return (
@@ -994,7 +1041,12 @@ class DeepDeveloperWorkflowSkill(Skill):
                 f"class {class_name}:\n"
                 '    """Fallback class implementation generated when LLM output is unavailable."""\n\n'
                 "    def run(self, payload: dict | None = None) -> dict:\n"
-                "        return {'status': 'fallback', 'data': payload or {}, 'errors': [], 'meta': {'fallback': True}}\n"
+                "        return {\n"
+                "            'status': 'fallback',\n"
+                "            'data': payload or {},\n"
+                "            'errors': [],\n"
+                "            'meta': {'fallback': True},\n"
+                "        }\n"
             )
         if function_names:
             func_name = function_names[0]
@@ -1059,12 +1111,14 @@ class DeepDeveloperWorkflowSkill(Skill):
                 existing_text
                 if existing_text.strip() and not is_placeholder
                 else self._fallback_code_content(
-                subsystem_slug=subsystem_slug,
-                module_name=module_name,
-                fn_id=fn_id,
-                fn_description=str(plan.get("fn_description", "")),
-                fn_spec=str(plan.get("fn_spec", "")),
-                module_contract=plan.get("module_contract", {}) if isinstance(plan.get("module_contract"), dict) else {},
+                    subsystem_slug=subsystem_slug,
+                    module_name=module_name,
+                    fn_id=fn_id,
+                    fn_description=str(plan.get("fn_description", "")),
+                    fn_spec=str(plan.get("fn_spec", "")),
+                    module_contract=plan.get("module_contract", {})
+                    if isinstance(plan.get("module_contract"), dict)
+                    else {},
                 )
             )
             out[fn_id] = {"module_name": module_name, "code_content": code_content}
@@ -1133,7 +1187,11 @@ class DeepDeveloperWorkflowSkill(Skill):
             )
             if not test_ok:
                 logger.warning(
-                    "Developer SR generation invalid content: kind=pytest subsystem=%s sr_group=%s round=%s fn_id=%s module=%s reason=%s preview=%r",
+                    (
+                        "Developer SR generation invalid content: kind=pytest "
+                        "subsystem=%s sr_group=%s round=%s fn_id=%s "
+                        "module=%s reason=%s preview=%r"
+                    ),
                     subsystem_slug,
                     sr_key,
                     round_index,
@@ -1186,7 +1244,11 @@ class DeepDeveloperWorkflowSkill(Skill):
             )
             if not code_ok:
                 logger.warning(
-                    "Developer SR generation invalid content: kind=code subsystem=%s sr_group=%s round=%s fn_id=%s module=%s reason=%s preview=%r",
+                    (
+                        "Developer SR generation invalid content: kind=code "
+                        "subsystem=%s sr_group=%s round=%s fn_id=%s "
+                        "module=%s reason=%s preview=%r"
+                    ),
                     subsystem_slug,
                     sr_key,
                     round_index,
@@ -1559,6 +1621,12 @@ class DeepDeveloperWorkflowSkill(Skill):
             return raw
         return raw[:limit].rstrip() + "...(truncated)"
 
+    def _truncate_text_for_prompt(self, text: str, limit: int, default: str) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return default
+        return raw[:limit]
+
     def _validate_generated_code_content(
         self,
         code_content: str,
@@ -1571,11 +1639,6 @@ class DeepDeveloperWorkflowSkill(Skill):
         class_names = (
             [str(x).strip() for x in contract.get("class_names", [])]
             if isinstance(contract.get("class_names"), list)
-            else []
-        )
-        function_names = (
-            [str(x).strip() for x in contract.get("function_names", [])]
-            if isinstance(contract.get("function_names"), list)
             else []
         )
         if not code_content.strip():
@@ -2114,7 +2177,11 @@ class DeepDeveloperWorkflowSkill(Skill):
             except Exception as exc:
                 last_error = exc
                 logger.warning(
-                    "Developer LLM segment attempt failed: purpose=%s attempt=%s/%s module=%s subsystem=%s error_type=%s error=%s",
+                    (
+                        "Developer LLM segment attempt failed: purpose=%s "
+                        "attempt=%s/%s module=%s subsystem=%s "
+                        "error_type=%s error=%s"
+                    ),
                     purpose,
                     attempt,
                     max(1, max_attempts),
@@ -2136,7 +2203,11 @@ class DeepDeveloperWorkflowSkill(Skill):
                 return payload
             payload_keys = list(payload.keys()) if isinstance(payload, dict) else []
             logger.warning(
-                "Developer LLM segment invalid payload: purpose=%s attempt=%s/%s module=%s subsystem=%s reason=%s required_keys=%s payload_keys=%s partial_preview=%r",
+                (
+                    "Developer LLM segment invalid payload: purpose=%s "
+                    "attempt=%s/%s module=%s subsystem=%s reason=%s "
+                    "required_keys=%s payload_keys=%s partial_preview=%r"
+                ),
                 purpose,
                 attempt,
                 max(1, max_attempts),
@@ -2238,10 +2309,13 @@ class DeepDeveloperWorkflowSkill(Skill):
             "\n\nOutput contract:\n"
             "- Return exactly one JSON object only.\n"
             "- Do not return markdown fences, comments, or explanatory prose.\n"
-            "- Do not wrap the object under extra keys such as data/result/output/payload unless explicitly requested.\n"
+            "- Do not wrap the object under extra keys such as "
+            "data/result/output/payload unless explicitly requested.\n"
             "- Use exact key names and nested key names specified in the prompt schema (no translation/synonyms).\n"
-            "- Use exact enum/keyword literals specified in the prompt (for example language names, booleans, status values).\n"
-            "- Match the expected value types in the schema (string/list/object/boolean), do not stringify nested JSON.\n"
+            "- Use exact enum/keyword literals specified in the prompt "
+            "(for example language names, booleans, status values).\n"
+            "- Match the expected value types in the schema "
+            "(string/list/object/boolean), do not stringify nested JSON.\n"
         )
         response = context.llm_client.complete(
             [

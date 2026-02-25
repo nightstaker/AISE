@@ -1263,10 +1263,12 @@ class DeepArchitectureWorkflowSkill(Skill):
                 "- Each view item keys: view_id, view_name, view_type, description, mermaid.\n"
                 "- Mermaid must be valid text starting with flowchart/graph/sequenceDiagram.\n"
                 "Rules for module_designs:\n"
-                "- Each module item keys: module_name, file_name, responsibilities, depends_on_modules, classes, class_diagram_mermaid.\n"
+                "- Each module item keys: module_name, file_name, responsibilities, "
+                "depends_on_modules, classes, class_diagram_mermaid.\n"
                 "- file_name must be snake_case Python filename ending with .py.\n"
                 "- depends_on_modules must reference module_name values in module_designs (no unknown modules).\n"
-                "- Each classes item keys: class_name, class_kind, purpose, attributes, methods, inherits, uses_classes.\n"
+                "- Each classes item keys: class_name, class_kind, purpose, "
+                "attributes, methods, inherits, uses_classes.\n"
                 "- class_diagram_mermaid must be Mermaid classDiagram text.\n"
                 "- Module/class design should align semantically with SR/FN decomposition."
             ),
@@ -2535,7 +2537,6 @@ class DeepArchitectureWorkflowSkill(Skill):
                 sr_to_subs.setdefault(sr_key, [])
                 if str(sid) not in sr_to_subs[sr_key]:
                     sr_to_subs[sr_key].append(str(sid))
-        by_id = {str(s.get("id", "")): s for s in subsystems}
         lines: list[str] = []
         for subsystem in subsystems:
             sid = str(subsystem.get("id", ""))
@@ -2589,10 +2590,10 @@ class DeepArchitectureWorkflowSkill(Skill):
             first = self._slugify(subsystem_ids[0]) or "subsystem"
             lines.append(f"  User->>{first}: Trigger {sr_id}")
             for left, right in zip(subsystem_ids, subsystem_ids[1:]):
-                l = self._slugify(left) or "left"
-                r = self._slugify(right) or "right"
-                lines.append(f"  {l}->>{r}: Request capability for {sr_id}")
-                lines.append(f"  {r}-->>{l}: Return result/status")
+                left_alias = self._slugify(left) or "left"
+                right_alias = self._slugify(right) or "right"
+                lines.append(f"  {left_alias}->>{right_alias}: Request capability for {sr_id}")
+                lines.append(f"  {right_alias}-->>{left_alias}: Return result/status")
             lines.append(f"  {first}-->>User: Aggregate response for {sr_id}")
         return "\n".join(lines)
 
@@ -2735,7 +2736,6 @@ class DeepArchitectureWorkflowSkill(Skill):
         assignments: dict[str, dict[str, Any]],
     ) -> str:
         sr_items = self._normalize_requirements(system_requirements.get("requirements", []))
-        sr_map = {str(item.get("id", "")): item for item in sr_items}
         sr_to_subsystems = self._reverse_sr_allocation(architecture_design)
         subsystem_names = {
             str(s.get("id", "")): str(s.get("name", s.get("id", "")))
@@ -2871,9 +2871,17 @@ class DeepArchitectureWorkflowSkill(Skill):
                     [
                         "",
                         "- Cross-Subsystem Description:",
-                        f"  - {subsystem_names.get(subsystem_ids[0], subsystem_ids[0])} receives the SR entry request and orchestrates the flow.",
+                        (
+                            "  - "
+                            f"{subsystem_names.get(subsystem_ids[0], subsystem_ids[0])} "
+                            "receives the SR entry request and orchestrates the flow."
+                        ),
                         *[
-                            f"  - {subsystem_names.get(left, left)} calls {subsystem_names.get(right, right)} to complete delegated capability for {sr_id}."
+                            (
+                                f"  - {subsystem_names.get(left, left)} calls "
+                                f"{subsystem_names.get(right, right)} to complete "
+                                f"delegated capability for {sr_id}."
+                            )
                             for left, right in zip(subsystem_ids, subsystem_ids[1:])
                         ],
                         "  - Responses are composed and returned to the caller with SR-level status.",
@@ -3114,11 +3122,14 @@ class DeepArchitectureWorkflowSkill(Skill):
         )
 
         for component in detail_design.get("components", []):
+            responsibility_text = str(component.get("responsibility", "")).strip() or ", ".join(
+                component.get("responsibilities", [])
+            )
             lines.extend(
                 [
                     f"### {component.get('id', '')} - {component.get('name', '')}",
                     f"- Type: {component.get('type', '')}",
-                    f"- Responsibility: {component.get('responsibility', '') or ', '.join(component.get('responsibilities', []))}",
+                    f"- Responsibility: {responsibility_text}",
                     "",
                 ]
             )
@@ -3448,10 +3459,13 @@ class DeepArchitectureWorkflowSkill(Skill):
             "\n\nOutput contract:\n"
             "- Return exactly one JSON object only.\n"
             "- Do not return markdown fences, comments, or explanatory prose.\n"
-            "- Do not wrap the object under extra keys such as data/result/output/payload unless explicitly requested.\n"
+            "- Do not wrap the object under extra keys such as "
+            "data/result/output/payload unless explicitly requested.\n"
             "- Use exact key names and nested key names specified in the prompt schema (no translation/synonyms).\n"
-            "- Use exact enum/keyword literals specified in the prompt (for example approve/revise, layer names, etc.).\n"
-            "- Match the expected value types in the schema (string/list/object/boolean), do not stringify nested JSON.\n"
+            "- Use exact enum/keyword literals specified in the prompt "
+            "(for example approve/revise, layer names, etc.).\n"
+            "- Match the expected value types in the schema "
+            "(string/list/object/boolean), do not stringify nested JSON.\n"
         )
         response = context.llm_client.complete(
             [

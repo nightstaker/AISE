@@ -111,7 +111,8 @@ class TestDeveloperAgent:
                         f"def test_{str(plan.get('module_name', 'module'))}_ok():\n"
                         f"    assert implement_{str(plan.get('module_name', 'module'))}({{}})['status'] == 'ok'\n\n"
                         f"def test_{str(plan.get('module_name', 'module'))}_meta():\n"
-                        f"    assert isinstance(implement_{str(plan.get('module_name', 'module'))}({{}})['meta'], dict)\n"
+                        "    assert isinstance("
+                        f"implement_{str(plan.get('module_name', 'module'))}({{}})['meta'], dict)\n"
                     ),
                 }
                 for plan in kwargs.get("plans", [])
@@ -284,7 +285,8 @@ class TestDeveloperAgent:
                         f"def test_{str(plan.get('module_name', 'module'))}_ok():\n"
                         f"    assert implement_{str(plan.get('module_name', 'module'))}({{}})['status'] == 'ok'\n\n"
                         f"def test_{str(plan.get('module_name', 'module'))}_meta():\n"
-                        f"    assert isinstance(implement_{str(plan.get('module_name', 'module'))}({{}})['meta'], dict)\n"
+                        "    assert isinstance("
+                        f"implement_{str(plan.get('module_name', 'module'))}({{}})['meta'], dict)\n"
                     ),
                 }
                 for plan in kwargs.get("plans", [])
@@ -529,7 +531,12 @@ class TestDeveloperAgent:
                         "class SyncOrchestrator:\n"
                         "    def run(self, payload: dict | None = None) -> dict:\n"
                         "        data = payload or {}\n"
-                        "        return {'status': 'ok', 'data': data, 'errors': [], 'meta': {'module': 'syncorchestrator'}}\n"
+                        "        return {\n"
+                        "            'status': 'ok',\n"
+                        "            'data': data,\n"
+                        "            'errors': [],\n"
+                        "            'meta': {'module': 'syncorchestrator'},\n"
+                        "        }\n"
                     ),
                 }
             },
