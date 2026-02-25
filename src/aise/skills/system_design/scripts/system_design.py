@@ -123,6 +123,8 @@ class SystemDesignSkill(Skill):
             '"deployment":{"strategy":"string","environments":["string"]},'
             '"non_functional_considerations":[{"requirement":"string","approach":"string"}]'
             "}"
+            "。键名必须与上述完全一致；architecture_style 枚举值必须使用 monolith|microservices|modular_monolith；"
+            "不得翻译或改名；不得包裹在 data/result/output/payload 下。"
         )
         user_prompt = (
             "功能需求:\n"

@@ -102,6 +102,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         system_requirements = self._load_system_requirements(context, docs_dir)
         if not system_requirements:
             system_requirements = self._fallback_requirements_from_product_design(product_design)
+        review_min_rounds, review_max_rounds = self._resolve_review_round_bounds(input_data=input_data, context=context)
 
         # Step 1: architecture design + reviewer loop.
         _start("architect.deep_architecture_workflow.step1.design")
@@ -111,7 +112,8 @@ class DeepArchitectureWorkflowSkill(Skill):
                 context=context,
                 product_design=product_design,
                 system_requirements=system_requirements,
-                min_rounds=2,
+                min_rounds=review_min_rounds,
+                max_rounds=review_max_rounds,
             )
             _end(
                 "architect.deep_architecture_workflow.step1.design",
@@ -189,10 +191,11 @@ class DeepArchitectureWorkflowSkill(Skill):
                     system_requirements=system_requirements,
                     architecture_design=architecture_design,
                     assignment=assignments.get(subsystem.get("id", ""), {}),
-                    min_rounds=2,
+                    min_rounds=review_min_rounds,
+                    max_rounds=review_max_rounds,
                 )
                 detail = rounds[-1]["detail_design"]
-                file_name = f"{self._subsystem_slug(subsystem, fallback=subsystem_id)}-detail-design.md"
+                file_name = f"subsystem-{self._subsystem_slug(subsystem, fallback=subsystem_id)}-design.md"
                 rendered_doc = self._render_subsystem_detail_doc(
                     project_name=project_name,
                     subsystem=subsystem,
@@ -673,11 +676,12 @@ class DeepArchitectureWorkflowSkill(Skill):
         product_design: dict[str, Any],
         system_requirements: dict[str, Any],
         min_rounds: int,
+        max_rounds: int,
     ) -> list[dict[str, Any]]:
         rounds: list[dict[str, Any]] = []
         previous_design: dict[str, Any] | None = None
         previous_review: dict[str, Any] | None = None
-        total_rounds = max(2, min_rounds)
+        total_rounds = self._clamp_review_rounds(min_rounds=min_rounds, max_rounds=max_rounds)
 
         for round_index in range(1, total_rounds + 1):
             design = self._designer_build_architecture_design(
@@ -1104,8 +1108,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         for module in subsystem_modules:
             include_contract_lines.extend(
                 [
-                    f"    from .{module}.api import build_contract as {module}_contract",
-                    f"    contracts.extend({module}_contract())",
+                    f"    contracts.append({{'subsystem': '{module}', 'status': 'scaffolded'}})",
                 ]
             )
 
@@ -1177,11 +1180,12 @@ class DeepArchitectureWorkflowSkill(Skill):
         architecture_design: dict[str, Any],
         assignment: dict[str, Any],
         min_rounds: int,
+        max_rounds: int,
     ) -> list[dict[str, Any]]:
         rounds: list[dict[str, Any]] = []
         previous_design: dict[str, Any] | None = None
         previous_review: dict[str, Any] | None = None
-        total_rounds = max(2, min_rounds)
+        total_rounds = self._clamp_review_rounds(min_rounds=min_rounds, max_rounds=max_rounds)
 
         for round_index in range(1, total_rounds + 1):
             detail_design = self._subsystem_architect_design(
@@ -1251,18 +1255,58 @@ class DeepArchitectureWorkflowSkill(Skill):
             system_prompt=(
                 "You are a subsystem architect. Return JSON only with optional keys: "
                 "logic_architecture_goals (list[str]), design_strategy (list[str]), "
-                "technology_choices (object with language/framework/storage)."
+                "technology_choices (object with language/framework/storage), "
+                "logic_architecture_views (list[object]), module_designs (list[object]), "
+                "module_dependency_rules (list[str]), integration_flow_notes (list[str]).\n"
+                "Rules for logic_architecture_views:\n"
+                "- Prefer 3 views: layered_view, runtime_interaction_view, module_dependency_view.\n"
+                "- Each view item keys: view_id, view_name, view_type, description, mermaid.\n"
+                "- Mermaid must be valid text starting with flowchart/graph/sequenceDiagram.\n"
+                "Rules for module_designs:\n"
+                "- Each module item keys: module_name, file_name, responsibilities, "
+                "depends_on_modules, classes, class_diagram_mermaid.\n"
+                "- file_name must be snake_case Python filename ending with .py.\n"
+                "- depends_on_modules must reference module_name values in module_designs (no unknown modules).\n"
+                "- Each classes item keys: class_name, class_kind, purpose, "
+                "attributes, methods, inherits, uses_classes.\n"
+                "- class_diagram_mermaid must be Mermaid classDiagram text.\n"
+                "- Module/class design should align semantically with SR/FN decomposition."
             ),
             user_prompt=(
                 f"Subsystem: {subsystem.get('id', '')} {subsystem.get('name', '')}\n"
                 f"Round: {round_index}\n"
                 f"Assigned SR IDs: {', '.join(sr_ids)}\n"
+                f"Subsystem APIs: {self._compact_json(subsystem.get('apis', []))}\n"
+                f"Subsystem components: {self._compact_json(components)}\n"
+                f"SR/FN breakdown draft: {self._compact_json(fn_items)}\n"
                 "\n"
                 + self._json_schema_echo_prompt(
-                    optional_keys=["logic_architecture_goals", "design_strategy", "technology_choices"]
+                    optional_keys=[
+                        "logic_architecture_goals",
+                        "design_strategy",
+                        "technology_choices",
+                        "logic_architecture_views",
+                        "module_designs",
+                        "module_dependency_rules",
+                        "integration_flow_notes",
+                    ]
                 )
             ),
         )
+
+        module_designs = self._normalize_module_designs(
+            value=llm_detail.get("module_designs"),
+            subsystem=subsystem,
+            fn_items=fn_items,
+            components=components,
+        )
+        logic_architecture_views = self._normalize_logic_architecture_views(
+            value=llm_detail.get("logic_architecture_views"),
+            subsystem=subsystem,
+            module_designs=module_designs,
+            components=components,
+        )
+        sr_breakdown = self._build_module_based_sr_breakdown(sr_items=sr_items, module_designs=module_designs)
 
         return {
             "round": round_index,
@@ -1283,17 +1327,25 @@ class DeepArchitectureWorkflowSkill(Skill):
                     "API-first for component boundaries",
                 ],
             ),
+            "logic_architecture_views": logic_architecture_views,
+            "module_designs": module_designs,
+            "module_dependency_rules": self._as_str_list(
+                llm_detail.get("module_dependency_rules"),
+                fallback=[
+                    "Higher-level orchestration modules may depend on domain modules, but avoid circular imports.",
+                    "Model/schema-like classes should not depend on service orchestration modules.",
+                ],
+            ),
+            "integration_flow_notes": self._as_str_list(
+                llm_detail.get("integration_flow_notes"),
+                fallback=[
+                    "Use explicit module interfaces and dependency injection points for cross-module coordination.",
+                ],
+            ),
             "components": components,
             "apis": subsystem.get("apis", []),
             "technology_choices": self._normalize_technology_choices(llm_detail.get("technology_choices")),
-            "sr_breakdown": [
-                {
-                    "sr_id": item.get("id", ""),
-                    "title": item.get("title", ""),
-                    "functions": [fn for fn in fn_items if fn.get("source_sr") == item.get("id", "")],
-                }
-                for item in sr_items
-            ],
+            "sr_breakdown": sr_breakdown,
             "designer_response": self._build_designer_response(previous_review),
             "architecture_reference": architecture_design.get("architecture_overview", ""),
         }
@@ -1343,6 +1395,38 @@ class DeepArchitectureWorkflowSkill(Skill):
         breakdown = detail_design.get("sr_breakdown", [])
         if not breakdown:
             issues.append("No SR breakdown found for subsystem detail design.")
+        views = detail_design.get("logic_architecture_views", [])
+        if not isinstance(views, list) or not views:
+            issues.append("Missing logic_architecture_views for subsystem detail design.")
+        module_designs = detail_design.get("module_designs", [])
+        if not isinstance(module_designs, list) or not module_designs:
+            issues.append("Missing module_designs for subsystem detail design.")
+            module_designs = []
+        known_modules: set[str] = set()
+        for module in module_designs:
+            if not isinstance(module, dict):
+                continue
+            module_name = str(module.get("module_name", "")).strip()
+            if not module_name:
+                issues.append("Module design missing module_name.")
+                continue
+            known_modules.add(module_name)
+            classes = module.get("classes", [])
+            if not isinstance(classes, list) or not classes:
+                issues.append(f"Module {module_name} missing classes.")
+            if not str(module.get("class_diagram_mermaid", "")).strip():
+                issues.append(f"Module {module_name} missing class_diagram_mermaid.")
+        for module in module_designs:
+            if not isinstance(module, dict):
+                continue
+            module_name = str(module.get("module_name", "")).strip() or "UNKNOWN"
+            deps = module.get("depends_on_modules", [])
+            if not isinstance(deps, list):
+                continue
+            for dep in deps:
+                dep_name = str(dep).strip()
+                if dep_name and dep_name not in known_modules:
+                    issues.append(f"Module {module_name} depends on unknown module {dep_name}.")
 
         for sr_item in breakdown:
             fns = sr_item.get("functions", [])
@@ -1414,171 +1498,26 @@ class DeepArchitectureWorkflowSkill(Skill):
             subsystem_dir = src_dir / module_name
             subsystem_dir.mkdir(parents=True, exist_ok=True)
 
-            init_path = subsystem_dir / "__init__.py"
-            init_path.write_text("# generated subsystem package\n", encoding="utf-8")
-            files.append(str(init_path))
-
-            api_prefix = f"/api/v1/{module_name}"
-
-            schemas_path = subsystem_dir / "schemas.py"
-            schemas_path.write_text(
-                (
-                    "from __future__ import annotations\n\n"
-                    "from dataclasses import dataclass, field\n\n\n"
-                    "@dataclass(slots=True)\n"
-                    "class OperationRequest:\n"
-                    "    session_id: str = 'default-session'\n"
-                    "    payload: dict[str, object] = field(default_factory=dict)\n\n\n"
-                    "@dataclass(slots=True)\n"
-                    "class OperationResponse:\n"
-                    "    subsystem: str\n"
-                    "    operation: str\n"
-                    "    accepted: bool\n"
-                    "    detail: str\n"
-                    "    state: dict[str, object] = field(default_factory=dict)\n"
-                ),
-                encoding="utf-8",
-            )
-            files.append(str(schemas_path))
-
-            service_path = subsystem_dir / "service.py"
-            service_lines = [
-                "from __future__ import annotations",
-                "",
-                "from .schemas import OperationRequest, OperationResponse",
-                "",
-                "",
-                "def health_check() -> dict[str, str]:",
-                "    return {'status': 'ok'}",
-                "",
-            ]
-            for index, api in enumerate(subsystem.get("apis", []), start=1):
-                method = str(api.get("method", "GET")).lower()
-                raw_path = str(api.get("path", f"{api_prefix}/action_{index}")).replace("'", "")
-                normalized_path = self._normalize_router_path(raw_path, prefix=api_prefix)
-                operation_name = self._extract_operation_name(normalized_path, fallback=f"action_{index}")
-                if method == "get" and operation_name == "health":
-                    continue
-                handler_name = f"handle_{operation_name}"
-                service_lines.extend(
-                    [
-                        f"def {handler_name}(request: OperationRequest) -> OperationResponse:",
-                        f"    detail = 'processed {operation_name} for session ' + request.session_id",
-                        "    state = {",
-                        "        'payload_keys': sorted(request.payload.keys()),",
-                        f"        'operation': '{operation_name}',",
-                        "    }",
-                        "    return OperationResponse(",
-                        f"        subsystem='{module_name}',",
-                        f"        operation='{operation_name}',",
-                        "        accepted=True,",
-                        "        detail=detail,",
-                        "        state=state,",
-                        "    )",
-                        "",
-                    ]
-                )
-            if len(service_lines) <= 8:
-                service_lines.extend(
-                    [
-                        "def handle_action(request: OperationRequest) -> OperationResponse:",
-                        "    return OperationResponse(",
-                        f"        subsystem='{module_name}',",
-                        "        operation='action',",
-                        "        accepted=True,",
-                        "        detail='default action processed',",
-                        "        state={'payload_keys': sorted(request.payload.keys())},",
-                        "    )",
-                        "",
-                    ]
-                )
-            service_path.write_text("\n".join(service_lines).rstrip() + "\n", encoding="utf-8")
-            files.append(str(service_path))
-
-            api_path = subsystem_dir / "api.py"
-            api_lines = [
-                "from .schemas import OperationRequest, OperationResponse",
-                "from .service import health_check",
-                "",
-                "",
-                "def build_contract() -> list[dict[str, object]]:",
-                "    return [",
-            ]
-            for index, api in enumerate(subsystem.get("apis", []), start=1):
-                method = str(api.get("method", "GET")).lower()
-                raw_path = str(api.get("path", f"{api_prefix}/action_{index}")).replace("'", "")
-                path = self._normalize_router_path(raw_path, prefix=api_prefix)
-                func_name = self._build_handler_name(method=method, path=path, index=index)
-                operation_name = self._extract_operation_name(path, fallback=f"action_{index}")
-                description = str(api.get("description", "")).strip().replace("'", "\\'")
-                if method == "get" and operation_name == "health":
-                    api_lines.extend(
-                        [
-                            "        {",
-                            f"            'method': '{method.upper()}',",
-                            f"            'path': '{path}',",
-                            "            'handler': 'get_health',",
-                            "            'description': 'health check endpoint',",
-                            "        },",
-                        ]
-                    )
-                    continue
-                api_lines.extend(
-                    [
-                        "        {",
-                        f"            'method': '{method.upper()}',",
-                        f"            'path': '{path}',",
-                        f"            'handler': '{func_name}',",
-                        f"            'description': '{description}',",
-                        "        },",
-                    ]
-                )
-            if not subsystem.get("apis", []):
-                default_method = "GET"
-                default_path = "/health"
-                default_func_name = "get_health"
-                api_lines.extend(
-                    [
-                        "        {",
-                        f"            'method': '{default_method}',",
-                        f"            'path': '{default_path}',",
-                        f"            'handler': '{default_func_name}',",
-                        "            'description': 'auto-generated default endpoint',",
-                        "        },",
-                    ]
-                )
-            api_lines.extend(
-                [
-                    "    ]",
-                    "",
-                    "def invoke(operation: str, request: OperationRequest) -> OperationResponse:",
-                    "    if operation == 'health':",
-                    "        state = {'health': health_check()}",
-                    "        return OperationResponse(",
-                    f"            subsystem='{module_name}',",
-                    "            operation='health',",
-                    "            accepted=True,",
-                    "            detail='health check succeeded',",
-                    "            state=state,",
-                    "        )",
-                    "    handler_name = f'handle_{operation}'",
-                    "    from . import service",
-                    "    handler = getattr(service, handler_name, None)",
-                    "    if handler is None:",
-                    "        return OperationResponse(",
-                    f"            subsystem='{module_name}',",
-                    "            operation=operation,",
-                    "            accepted=False,",
-                    "            detail='operation is not implemented',",
-                    "            state={'available_operations': [entry['handler'] for entry in build_contract()]},",
-                    "        )",
-                    "    return handler(request)",
-                ]
-            )
-            api_path.write_text("\n".join(api_lines).rstrip() + "\n", encoding="utf-8")
-            files.append(str(api_path))
-
             detail = detail_designs.get(subsystem_id, {})
+            module_designs = detail.get("module_designs", []) if isinstance(detail, dict) else []
+            tech_choices = detail.get("technology_choices", {}) if isinstance(detail, dict) else {}
+            language = str(tech_choices.get("language", "")).strip().lower() if isinstance(tech_choices, dict) else ""
+            uses_python_modules = any(
+                isinstance(item, dict) and str(item.get("file_name", "")).strip().lower().endswith(".py")
+                for item in (module_designs if isinstance(module_designs, list) else [])
+            )
+            if "python" in language or uses_python_modules:
+                init_path = subsystem_dir / "__init__.py"
+                if not init_path.exists():
+                    init_path.write_text('"""Generated subsystem package."""\n', encoding="utf-8")
+                files.append(str(init_path))
+            files.extend(
+                self._generate_python_subsystem_module_skeletons(
+                    subsystem_dir=subsystem_dir,
+                    subsystem_slug=module_name,
+                    module_designs=module_designs if isinstance(module_designs, list) else [],
+                )
+            )
             fn_path = subsystem_dir / "functions.md"
             fn_lines = [
                 f"# {subsystem.get('name', subsystem_id)} Function List",
@@ -1593,6 +1532,146 @@ class DeepArchitectureWorkflowSkill(Skill):
             files.append(str(fn_path))
 
         return files
+
+    def _generate_python_subsystem_module_skeletons(
+        self,
+        *,
+        subsystem_dir: Path,
+        subsystem_slug: str,
+        module_designs: list[dict[str, Any]],
+    ) -> list[str]:
+        files: list[str] = []
+        if not module_designs:
+            return files
+        module_to_file: dict[str, str] = {}
+        file_to_classes: dict[str, list[str]] = {}
+        for module in module_designs:
+            if not isinstance(module, dict):
+                continue
+            module_name = str(module.get("module_name", "")).strip()
+            file_name = str(module.get("file_name", "")).strip()
+            if not module_name or not file_name:
+                continue
+            module_to_file[module_name] = file_name
+            class_names: list[str] = []
+            for cls in module.get("classes", []) if isinstance(module.get("classes"), list) else []:
+                if isinstance(cls, dict):
+                    class_name = str(cls.get("class_name", "")).strip()
+                    if class_name:
+                        class_names.append(class_name)
+            file_to_classes[file_name] = class_names
+
+        for module in module_designs:
+            if not isinstance(module, dict):
+                continue
+            module_name = str(module.get("module_name", "")).strip()
+            file_name = str(module.get("file_name", "")).strip()
+            if not module_name or not file_name:
+                continue
+            path = subsystem_dir / file_name
+            lines = ["from __future__ import annotations", "", "from typing import Any"]
+            import_lines = self._module_import_lines_from_design(
+                module=module,
+                module_to_file=module_to_file,
+                file_to_classes=file_to_classes,
+            )
+            if import_lines:
+                lines.extend(["", *import_lines])
+            lines.extend(["", f'"""Subsystem module skeleton for {subsystem_slug}.{module_name}."""', ""])
+
+            classes = module.get("classes", [])
+            if isinstance(classes, list) and classes:
+                for cls in classes:
+                    if not isinstance(cls, dict):
+                        continue
+                    lines.extend(self._render_python_class_skeleton(cls))
+                    lines.append("")
+            else:
+                class_name = "".join(part.capitalize() for part in module_name.split("_") if part) or "Module"
+                lines.extend(
+                    [
+                        f"class {class_name}Service:",
+                        '    """Generated subsystem skeleton class."""',
+                        "",
+                        "    def execute(self, input_data: dict[str, Any] | None = None) -> dict[str, Any]:",
+                        '        raise NotImplementedError("Generated subsystem skeleton")',
+                        "",
+                    ]
+                )
+
+            path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+            files.append(str(path))
+        return files
+
+    def _module_import_lines_from_design(
+        self,
+        *,
+        module: dict[str, Any],
+        module_to_file: dict[str, str],
+        file_to_classes: dict[str, list[str]],
+    ) -> list[str]:
+        lines: list[str] = []
+        seen: set[str] = set()
+        deps = module.get("depends_on_modules", [])
+        if not isinstance(deps, list):
+            return lines
+        for dep in deps:
+            dep_name = str(dep).strip()
+            if not dep_name:
+                continue
+            dep_file = module_to_file.get(dep_name, "")
+            if not dep_file:
+                continue
+            dep_stem = Path(dep_file).stem
+            classes = file_to_classes.get(dep_file, [])
+            stmt = f"from .{dep_stem} import {classes[0]}" if classes else f"from . import {dep_stem}"
+            if stmt in seen:
+                continue
+            seen.add(stmt)
+            lines.append(stmt)
+        return lines
+
+    def _render_python_class_skeleton(self, cls: dict[str, Any]) -> list[str]:
+        class_name = str(cls.get("class_name", "")).strip() or "GeneratedClass"
+        inherits = (
+            [str(x).strip() for x in cls.get("inherits", []) if str(x).strip()]
+            if isinstance(cls.get("inherits"), list)
+            else []
+        )
+        base_clause = f"({', '.join(inherits)})" if inherits else ""
+        lines = [f"class {class_name}{base_clause}:"]
+        purpose = str(cls.get("purpose", "")).strip() or "Generated subsystem skeleton class."
+        lines.append(f'    """{purpose}"""')
+        methods = cls.get("methods", [])
+        if not isinstance(methods, list) or not methods:
+            lines.append("    pass")
+            return lines
+        for method in methods:
+            if not isinstance(method, dict):
+                continue
+            method_name = str(method.get("name", "")).strip()
+            if not method_name:
+                continue
+            params = method.get("params", [])
+            rendered_params = ["self"]
+            if isinstance(params, list):
+                for p in params:
+                    if not isinstance(p, dict):
+                        continue
+                    p_name = str(p.get("name", "")).strip()
+                    if not p_name or p_name == "self":
+                        continue
+                    p_type = str(p.get("type", "Any")).strip() or "Any"
+                    rendered_params.append(f"{p_name}: {p_type}")
+            returns = str(method.get("returns", "Any")).strip() or "Any"
+            lines.extend(
+                [
+                    "",
+                    f"    def {method_name}({', '.join(rendered_params)}) -> {returns}:",
+                    '        raise NotImplementedError("Generated subsystem skeleton")',
+                ]
+            )
+        return lines
 
     def _normalize_router_path(self, raw_path: str, *, prefix: str) -> str:
         path = raw_path.strip()
@@ -1956,6 +2035,663 @@ class DeepArchitectureWorkflowSkill(Skill):
                 )
         return functions
 
+    def _build_module_based_sr_breakdown(
+        self,
+        *,
+        sr_items: list[dict[str, Any]],
+        module_designs: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        breakdown: list[dict[str, Any]] = []
+        normalized_modules = [m for m in module_designs if isinstance(m, dict)]
+        for sr in sr_items:
+            sr_id = str(sr.get("id", "")).strip() or "SR-UNKNOWN"
+            sr_title = str(sr.get("title", sr.get("requirement_overview", ""))).strip() or sr_id
+            functions: list[dict[str, Any]] = []
+            for idx, module in enumerate(normalized_modules, start=1):
+                module_name = str(module.get("module_name", f"module_{idx}")).strip() or f"module_{idx}"
+                responsibilities = (
+                    [str(x).strip() for x in module.get("responsibilities", [])]
+                    if isinstance(module.get("responsibilities"), list)
+                    else []
+                )
+                desc = f"{module_name} module collaborates to deliver {sr_title}" + (
+                    f"; focus: {responsibilities[0]}" if responsibilities else ""
+                )
+                spec = (
+                    "Implement module responsibilities for the SR, expose callable module/class API, "
+                    "and coordinate with dependent modules according to the subsystem design."
+                )
+                functions.append(
+                    {
+                        "id": f"FN-{sr_id}-{idx:02d}",
+                        "source_sr": sr_id,
+                        "component": module_name,
+                        "module": module_name,
+                        "file_name": str(module.get("file_name", "")),
+                        "description": desc,
+                        "spec": spec,
+                    }
+                )
+            breakdown.append({"sr_id": sr_id, "title": sr_title, "functions": functions})
+        return breakdown
+
+    def _normalize_logic_architecture_views(
+        self,
+        *,
+        value: Any,
+        subsystem: dict[str, Any],
+        module_designs: list[dict[str, Any]],
+        components: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        if isinstance(value, list):
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                view_type = str(item.get("view_type", "")).strip() or "module_dependency_view"
+                mermaid = str(item.get("mermaid", "")).strip()
+                if not mermaid:
+                    continue
+                rows.append(
+                    {
+                        "view_id": str(item.get("view_id", view_type)).strip() or view_type,
+                        "view_name": str(item.get("view_name", view_type)).strip() or view_type,
+                        "view_type": view_type,
+                        "description": str(item.get("description", "")).strip(),
+                        "mermaid": mermaid,
+                    }
+                )
+        if rows:
+            return rows
+        return self._default_logic_architecture_views(
+            subsystem=subsystem,
+            module_designs=module_designs,
+            components=components,
+        )
+
+    def _default_logic_architecture_views(
+        self,
+        *,
+        subsystem: dict[str, Any],
+        module_designs: list[dict[str, Any]],
+        components: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        subsystem_name = str(subsystem.get("name", subsystem.get("id", "subsystem")))
+        component_names = [
+            str(c.get("name", "")) for c in components if isinstance(c, dict) and str(c.get("name", "")).strip()
+        ]
+        module_names = [
+            str(m.get("module_name", ""))
+            for m in module_designs
+            if isinstance(m, dict) and str(m.get("module_name", "")).strip()
+        ]
+        layered_lines = [
+            "flowchart TB",
+            "  Client[Client / Upstream]",
+            "  API[Interface Layer]",
+            "  App[Application Services]",
+            "  Domain[Domain Models]",
+            "  Infra[Infrastructure Adapters]",
+            "  Client --> API --> App --> Domain",
+            "  App --> Infra",
+        ]
+        if component_names:
+            for idx, name in enumerate(component_names[:6], start=1):
+                slug = self._slugify(name) or f"comp_{idx}"
+                layered_lines.append(f"  C{idx}[{slug}]:::comp")
+                layered_lines.append(f"  App --> C{idx}")
+            layered_lines.append("  classDef comp fill:#eef,stroke:#99c")
+
+        dep_lines = ["flowchart LR"]
+        if module_names:
+            for mod in module_names:
+                dep_lines.append(f"  {self._slugify(mod) or 'module'}[{mod}]")
+            for module in module_designs:
+                if not isinstance(module, dict):
+                    continue
+                src = str(module.get("module_name", "")).strip()
+                if not src:
+                    continue
+                for dst in (
+                    module.get("depends_on_modules", []) if isinstance(module.get("depends_on_modules"), list) else []
+                ):
+                    dst_text = str(dst).strip()
+                    if not dst_text:
+                        continue
+                    dep_lines.append(f"  {self._slugify(src)} --> {self._slugify(dst_text)}")
+        else:
+            dep_lines.extend(["  module_a[Module A]", "  module_b[Module B]", "  module_a --> module_b"])
+
+        seq_lines = [
+            "sequenceDiagram",
+            "  participant Caller as Upstream",
+            "  participant Entry as Entry Module",
+            "  participant Core as Core Service",
+            "  participant Repo as Repository/Adapter",
+            "  Caller->>Entry: invoke subsystem capability",
+            "  Entry->>Core: validate and orchestrate",
+            "  Core->>Repo: load/save data",
+            "  Repo-->>Core: data/result",
+            "  Core-->>Entry: response DTO/domain result",
+            "  Entry-->>Caller: subsystem response",
+        ]
+        return [
+            {
+                "view_id": "layered_view",
+                "view_name": f"{subsystem_name} Layered View",
+                "view_type": "layered_view",
+                "description": "Shows subsystem layers and major interaction direction.",
+                "mermaid": "\n".join(layered_lines),
+            },
+            {
+                "view_id": "runtime_interaction_view",
+                "view_name": f"{subsystem_name} Runtime Interaction View",
+                "view_type": "runtime_interaction_view",
+                "description": "Shows runtime call flow among entry/core/infrastructure elements.",
+                "mermaid": "\n".join(seq_lines),
+            },
+            {
+                "view_id": "module_dependency_view",
+                "view_name": f"{subsystem_name} Module Dependency View",
+                "view_type": "module_dependency_view",
+                "description": "Shows planned module-level dependencies inside the subsystem.",
+                "mermaid": "\n".join(dep_lines),
+            },
+        ]
+
+    def _normalize_module_designs(
+        self,
+        *,
+        value: Any,
+        subsystem: dict[str, Any],
+        fn_items: list[dict[str, Any]],
+        components: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return self._default_module_designs(subsystem=subsystem, fn_items=fn_items, components=components)
+        rows: list[dict[str, Any]] = []
+        known_names: set[str] = set()
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            module_name = self._slugify(str(item.get("module_name", "")).strip())
+            file_name_raw = str(item.get("file_name", "")).strip()
+            file_stem = self._slugify(Path(file_name_raw or module_name or "module").stem)
+            if not module_name and file_stem:
+                module_name = file_stem
+            if not module_name:
+                continue
+            file_name = f"{file_stem or module_name}.py"
+            if module_name in known_names:
+                continue
+            known_names.add(module_name)
+            rows.append(
+                {
+                    "module_name": module_name,
+                    "file_name": file_name,
+                    "responsibilities": self._as_str_list(
+                        item.get("responsibilities"),
+                        fallback=[f"Implement module {module_name} responsibilities for assigned SRs."],
+                    ),
+                    "depends_on_modules": [self._slugify(str(x)) for x in item.get("depends_on_modules", [])]
+                    if isinstance(item.get("depends_on_modules"), list)
+                    else [],
+                    "classes": self._normalize_module_classes(item.get("classes"), module_name=module_name),
+                    "class_diagram_mermaid": str(item.get("class_diagram_mermaid", "")).strip(),
+                }
+            )
+        if not rows:
+            return self._default_module_designs(subsystem=subsystem, fn_items=fn_items, components=components)
+
+        valid_names = {str(row.get("module_name", "")) for row in rows}
+        for row in rows:
+            deps = row.get("depends_on_modules", [])
+            deps_list = deps if isinstance(deps, list) else []
+            row["depends_on_modules"] = [
+                d
+                for d in (self._slugify(str(x)) for x in deps_list)
+                if d and d in valid_names and d != row["module_name"]
+            ]
+            if not str(row.get("class_diagram_mermaid", "")).strip():
+                row["class_diagram_mermaid"] = self._build_default_class_diagram_mermaid(
+                    module_name=str(row["module_name"]),
+                    classes=row.get("classes", []),
+                )
+        return rows
+
+    def _normalize_module_classes(self, value: Any, *, module_name: str) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        if isinstance(value, list):
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                class_name = str(item.get("class_name", "")).strip()
+                if not class_name:
+                    continue
+                rows.append(
+                    {
+                        "class_name": class_name,
+                        "class_kind": str(item.get("class_kind", "class")).strip() or "class",
+                        "purpose": str(item.get("purpose", "")).strip() or f"Support {module_name} behaviors.",
+                        "attributes": self._normalize_class_attributes(item.get("attributes")),
+                        "methods": self._normalize_class_methods(item.get("methods")),
+                        "inherits": [str(x).strip() for x in item.get("inherits", []) if str(x).strip()]
+                        if isinstance(item.get("inherits"), list)
+                        else [],
+                        "uses_classes": [str(x).strip() for x in item.get("uses_classes", []) if str(x).strip()]
+                        if isinstance(item.get("uses_classes"), list)
+                        else [],
+                    }
+                )
+        if rows:
+            return rows
+        class_base = "".join(part.capitalize() for part in module_name.split("_") if part) or "Module"
+        return [
+            {
+                "class_name": f"{class_base}Service",
+                "class_kind": "class",
+                "purpose": f"Implements {module_name} orchestration and business interactions.",
+                "attributes": [{"name": "logger", "type": "Any", "visibility": "-", "description": "Runtime logger"}],
+                "methods": [
+                    {
+                        "name": "execute",
+                        "params": [{"name": "input_data", "type": "dict[str, Any] | None"}],
+                        "returns": "dict[str, Any]",
+                        "visibility": "+",
+                        "description": "Execute module use case and return standard response payload.",
+                    }
+                ],
+                "inherits": [],
+                "uses_classes": [],
+            }
+        ]
+
+    def _normalize_class_attributes(self, value: Any) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        if isinstance(value, list):
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "")).strip()
+                if not name:
+                    continue
+                rows.append(
+                    {
+                        "name": name,
+                        "type": str(item.get("type", "Any")).strip() or "Any",
+                        "visibility": str(item.get("visibility", "-")).strip() or "-",
+                        "description": str(item.get("description", "")).strip(),
+                    }
+                )
+        return rows
+
+    def _normalize_class_methods(self, value: Any) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        if isinstance(value, list):
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "")).strip()
+                if not name:
+                    continue
+                params = item.get("params", [])
+                norm_params = []
+                if isinstance(params, list):
+                    for p in params:
+                        if not isinstance(p, dict):
+                            continue
+                        p_name = str(p.get("name", "")).strip()
+                        if not p_name:
+                            continue
+                        norm_params.append({"name": p_name, "type": str(p.get("type", "Any")).strip() or "Any"})
+                rows.append(
+                    {
+                        "name": name,
+                        "params": norm_params,
+                        "returns": str(item.get("returns", "Any")).strip() or "Any",
+                        "visibility": str(item.get("visibility", "+")).strip() or "+",
+                        "description": str(item.get("description", "")).strip(),
+                    }
+                )
+        return rows
+
+    def _default_module_designs(
+        self,
+        *,
+        subsystem: dict[str, Any],
+        fn_items: list[dict[str, Any]],
+        components: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        component_by_name = {
+            self._slugify(str(c.get("name", ""))): c
+            for c in components
+            if isinstance(c, dict) and str(c.get("name", "")).strip()
+        }
+        for fn in fn_items:
+            if not isinstance(fn, dict):
+                continue
+            comp_name = self._slugify(str(fn.get("component", "")))
+            module_name = comp_name or self._slugify(str(fn.get("id", ""))) or "module"
+            if module_name in seen:
+                continue
+            seen.add(module_name)
+            comp = component_by_name.get(module_name, {})
+            class_base = "".join(part.capitalize() for part in module_name.split("_") if part) or "Module"
+            classes = [
+                {
+                    "class_name": f"{class_base}Service",
+                    "class_kind": "class",
+                    "purpose": str(comp.get("responsibility", "")).strip()
+                    or f"Implements {module_name} responsibilities for subsystem {subsystem.get('id', '')}.",
+                    "attributes": [
+                        {"name": "logger", "type": "Any", "visibility": "-", "description": "Runtime logger"}
+                    ],
+                    "methods": [
+                        {
+                            "name": "execute",
+                            "params": [{"name": "input_data", "type": "dict[str, Any] | None"}],
+                            "returns": "dict[str, Any]",
+                            "visibility": "+",
+                            "description": "Execute primary use case.",
+                        }
+                    ],
+                    "inherits": [],
+                    "uses_classes": [],
+                }
+            ]
+            rows.append(
+                {
+                    "module_name": module_name,
+                    "file_name": f"{module_name}.py",
+                    "responsibilities": [
+                        str(comp.get("responsibility", "")).strip() or f"Handle {module_name} operations."
+                    ],
+                    "depends_on_modules": [],
+                    "classes": classes,
+                    "class_diagram_mermaid": self._build_default_class_diagram_mermaid(
+                        module_name=module_name,
+                        classes=classes,
+                    ),
+                }
+            )
+        # Add simple chain dependencies to ensure non-isolated references in generated scaffold.
+        for idx, row in enumerate(rows):
+            if idx > 0:
+                row["depends_on_modules"] = [str(rows[idx - 1]["module_name"])]
+                classes = row.get("classes", [])
+                if isinstance(classes, list) and classes and isinstance(classes[0], dict):
+                    uses = classes[0].get("uses_classes")
+                    if not isinstance(uses, list):
+                        uses = []
+                        classes[0]["uses_classes"] = uses
+                    prev_classes = rows[idx - 1].get("classes", [])
+                    if isinstance(prev_classes, list) and prev_classes and isinstance(prev_classes[0], dict):
+                        prev_class = str(prev_classes[0].get("class_name", "")).strip()
+                        if prev_class and prev_class not in uses:
+                            uses.append(prev_class)
+                row["class_diagram_mermaid"] = self._build_default_class_diagram_mermaid(
+                    module_name=str(row["module_name"]),
+                    classes=row.get("classes", []),
+                )
+        return rows
+
+    def _build_default_class_diagram_mermaid(self, *, module_name: str, classes: Any) -> str:
+        lines = ["classDiagram"]
+        for item in classes if isinstance(classes, list) else []:
+            if not isinstance(item, dict):
+                continue
+            class_name = str(item.get("class_name", "")).strip()
+            if not class_name:
+                continue
+            lines.append(f"  class {class_name} {{")
+            for attr in item.get("attributes", []) if isinstance(item.get("attributes"), list) else []:
+                if not isinstance(attr, dict):
+                    continue
+                a_name = str(attr.get("name", "")).strip()
+                if not a_name:
+                    continue
+                a_type = str(attr.get("type", "Any")).strip() or "Any"
+                lines.append(f"    {a_type} {a_name}")
+            for method in item.get("methods", []) if isinstance(item.get("methods"), list) else []:
+                if not isinstance(method, dict):
+                    continue
+                m_name = str(method.get("name", "")).strip()
+                if not m_name:
+                    continue
+                m_ret = str(method.get("returns", "Any")).strip() or "Any"
+                lines.append(f"    {m_name}() {m_ret}")
+            lines.append("  }")
+            for parent in item.get("inherits", []) if isinstance(item.get("inherits"), list) else []:
+                p = str(parent).strip()
+                if p:
+                    lines.append(f"  {p} <|-- {class_name}")
+            for used in item.get("uses_classes", []) if isinstance(item.get("uses_classes"), list) else []:
+                u = str(used).strip()
+                if u:
+                    lines.append(f"  {class_name} ..> {u}")
+        if len(lines) == 1:
+            base = "".join(part.capitalize() for part in module_name.split("_") if part) or "Module"
+            lines.extend(
+                [f"  class {base}Service", f"  class {base}Repository", f"  {base}Service ..> {base}Repository"]
+            )
+        return "\n".join(lines)
+
+    def _render_mermaid_block(self, diagram: str) -> list[str]:
+        text = str(diagram or "").strip()
+        if not text:
+            return ["```mermaid", "flowchart LR", "  A[Empty] --> B[Diagram]", "```"]
+        return ["```mermaid", text, "```"]
+
+    def _build_overall_architecture_c4_diagram(self, architecture_design: dict[str, Any]) -> str:
+        lines = [
+            "C4Container",
+            "title System Architecture (C4 Container View)",
+            'Person(user, "User", "Primary end user / operator")',
+            'System_Boundary(app, "Application System") {',
+        ]
+        subsystems = [s for s in architecture_design.get("subsystems", []) if isinstance(s, dict)]
+        for idx, subsystem in enumerate(subsystems, start=1):
+            sid = str(subsystem.get("id", f"SUBSYS-{idx:03d}"))
+            name = str(subsystem.get("name", sid))
+            desc = str(subsystem.get("description", "")).strip() or f"Subsystem {sid}"
+            alias = f"s{idx}"
+            tech = "Python module set"
+            safe_desc = desc.replace('"', "'")
+            safe_name = name.replace('"', "'")
+            lines.append(f'  Container({alias}, "{safe_name}", "{tech}", "{safe_desc}")')
+        lines.append("}")
+        for idx, _ in enumerate(subsystems, start=1):
+            lines.append(f'Rel(user, s{idx}, "Uses related capabilities")')
+        allocation = architecture_design.get("sr_allocation", {}) if isinstance(architecture_design, dict) else {}
+        sr_to_subs: dict[str, list[str]] = {}
+        alias_by_sid = {str(s.get("id", "")): f"s{i}" for i, s in enumerate(subsystems, start=1)}
+        for sid, sr_ids in allocation.items():
+            for sr_id in sr_ids if isinstance(sr_ids, list) else []:
+                key = str(sr_id).strip()
+                if not key:
+                    continue
+                sr_to_subs.setdefault(key, [])
+                if str(sid) not in sr_to_subs[key]:
+                    sr_to_subs[key].append(str(sid))
+        for sr_id, sids in sr_to_subs.items():
+            if len(sids) < 2:
+                continue
+            for left, right in zip(sids, sids[1:]):
+                l_alias = alias_by_sid.get(left)
+                r_alias = alias_by_sid.get(right)
+                if l_alias and r_alias:
+                    lines.append(f'Rel({l_alias}, {r_alias}, "Collaborates for {sr_id}")')
+        return "\n".join(lines)
+
+    def _describe_subsystem_dependencies(self, architecture_design: dict[str, Any]) -> list[str]:
+        subsystems = [s for s in architecture_design.get("subsystems", []) if isinstance(s, dict)]
+        allocation = architecture_design.get("sr_allocation", {}) if isinstance(architecture_design, dict) else {}
+        sr_to_subs: dict[str, list[str]] = {}
+        for sid, sr_ids in allocation.items():
+            for sr_id in sr_ids if isinstance(sr_ids, list) else []:
+                sr_key = str(sr_id).strip()
+                if not sr_key:
+                    continue
+                sr_to_subs.setdefault(sr_key, [])
+                if str(sid) not in sr_to_subs[sr_key]:
+                    sr_to_subs[sr_key].append(str(sid))
+        lines: list[str] = []
+        for subsystem in subsystems:
+            sid = str(subsystem.get("id", ""))
+            name = str(subsystem.get("name", sid))
+            desc = str(subsystem.get("description", "")).strip() or "Provides subsystem capabilities."
+            apis = subsystem.get("apis", []) if isinstance(subsystem.get("apis"), list) else []
+            api_summary = (
+                ", ".join(
+                    f"{str(api.get('method', 'GET')).upper()} {str(api.get('path', '/'))}"
+                    for api in apis[:4]
+                    if isinstance(api, dict)
+                )
+                or "no explicit APIs yet"
+            )
+            shared_srs = [sr for sr, sids in sr_to_subs.items() if sid in sids and len(sids) > 1]
+            dependency_note = (
+                f"Cross-subsystem collaboration required for SRs: {', '.join(shared_srs)}."
+                if shared_srs
+                else "Primarily handles SRs within its own boundary."
+            )
+            lines.append(f"- `{sid}` {name}: {desc} Exposed interfaces include {api_summary}. {dependency_note}")
+        return lines or ["- (none)"]
+
+    def _reverse_sr_allocation(self, architecture_design: dict[str, Any]) -> dict[str, list[str]]:
+        sr_to_subsystems: dict[str, list[str]] = {}
+        allocation = architecture_design.get("sr_allocation", {}) if isinstance(architecture_design, dict) else {}
+        for subsystem_id, sr_ids in allocation.items():
+            sid = str(subsystem_id).strip()
+            for sr_id in sr_ids if isinstance(sr_ids, list) else []:
+                sr = str(sr_id).strip()
+                if not sr:
+                    continue
+                sr_to_subsystems.setdefault(sr, [])
+                if sid not in sr_to_subsystems[sr]:
+                    sr_to_subsystems[sr].append(sid)
+        return sr_to_subsystems
+
+    def _build_cross_subsystem_sr_sequence_diagram(
+        self,
+        *,
+        sr_id: str,
+        subsystem_ids: list[str],
+        subsystem_names: dict[str, str],
+    ) -> str:
+        lines = ["sequenceDiagram", "  autonumber", "  actor User as User"]
+        for sid in subsystem_ids:
+            alias = self._slugify(sid) or "subsystem"
+            label = subsystem_names.get(sid, sid).replace('"', "'")
+            lines.append(f"  participant {alias} as {label}")
+        if subsystem_ids:
+            first = self._slugify(subsystem_ids[0]) or "subsystem"
+            lines.append(f"  User->>{first}: Trigger {sr_id}")
+            for left, right in zip(subsystem_ids, subsystem_ids[1:]):
+                left_alias = self._slugify(left) or "left"
+                right_alias = self._slugify(right) or "right"
+                lines.append(f"  {left_alias}->>{right_alias}: Request capability for {sr_id}")
+                lines.append(f"  {right_alias}-->>{left_alias}: Return result/status")
+            lines.append(f"  {first}-->>User: Aggregate response for {sr_id}")
+        return "\n".join(lines)
+
+    def _build_subsystem_component_c4_diagram(
+        self,
+        *,
+        subsystem: dict[str, Any],
+        module_designs: list[dict[str, Any]],
+    ) -> str:
+        subsystem_name = str(subsystem.get("name", subsystem.get("id", "Subsystem"))).replace('"', "'")
+        lines = ["C4Component", f"title {subsystem_name} Subsystem (C4 Component View)"]
+        lines.append('Container_Boundary(subsys, "Subsystem") {')
+        alias_by_module: dict[str, str] = {}
+        for idx, module in enumerate(module_designs, start=1):
+            if not isinstance(module, dict):
+                continue
+            module_name = str(module.get("module_name", f"module_{idx}")).strip() or f"module_{idx}"
+            alias = f"m{idx}"
+            alias_by_module[module_name] = alias
+            file_name = str(module.get("file_name", f"{module_name}.py"))
+            responsibilities = (
+                ", ".join([str(x) for x in module.get("responsibilities", [])[:2]])
+                if isinstance(module.get("responsibilities"), list)
+                else ""
+            )
+            desc = (responsibilities or "Module responsibilities").replace('"', "'")
+            lines.append(f'  Component({alias}, "{module_name}", "{file_name}", "{desc}")')
+        lines.append("}")
+        for module in module_designs:
+            if not isinstance(module, dict):
+                continue
+            src_name = str(module.get("module_name", "")).strip()
+            src_alias = alias_by_module.get(src_name)
+            if not src_alias:
+                continue
+            for dep in (
+                module.get("depends_on_modules", []) if isinstance(module.get("depends_on_modules"), list) else []
+            ):
+                dep_alias = alias_by_module.get(str(dep).strip())
+                if dep_alias and dep_alias != src_alias:
+                    lines.append(f'Rel({src_alias}, {dep_alias}, "depends on")')
+        return "\n".join(lines)
+
+    def _build_module_api_rows(self, module: dict[str, Any]) -> list[str]:
+        rows: list[str] = []
+        classes = module.get("classes", []) if isinstance(module.get("classes"), list) else []
+        for cls in classes:
+            if not isinstance(cls, dict):
+                continue
+            class_name = str(cls.get("class_name", "")).strip() or "Class"
+            methods = cls.get("methods", []) if isinstance(cls.get("methods"), list) else []
+            for method in methods:
+                if not isinstance(method, dict):
+                    continue
+                params = method.get("params", [])
+                param_text = ""
+                if isinstance(params, list) and params:
+                    param_text = ", ".join(
+                        f"{str(p.get('name', 'arg'))}: {str(p.get('type', 'Any'))}"
+                        for p in params
+                        if isinstance(p, dict)
+                    )
+                rows.append(
+                    f"- `{class_name}.{method.get('name', 'method')}({param_text}) -> {method.get('returns', 'Any')}`: "
+                    f"{method.get('description', '')}"
+                )
+        return rows or ["- (none)"]
+
+    def _build_subsystem_sr_sequence_diagram(
+        self,
+        *,
+        subsystem_slug: str,
+        sr_id: str,
+        functions: list[dict[str, Any]],
+    ) -> str:
+        participants: list[str] = []
+        for fn in functions:
+            if not isinstance(fn, dict):
+                continue
+            mod = str(fn.get("module", fn.get("component", ""))).strip()
+            if mod and mod not in participants:
+                participants.append(mod)
+        if not participants:
+            participants = ["orchestrator"]
+        lines = ["sequenceDiagram", "  autonumber", "  actor Caller"]
+        aliases: dict[str, str] = {}
+        for idx, name in enumerate(participants, start=1):
+            alias = f"m{idx}"
+            aliases[name] = alias
+            lines.append(f"  participant {alias} as {name}")
+        first_alias = aliases[participants[0]]
+        lines.append(f"  Caller->>{first_alias}: Trigger {sr_id}")
+        for left, right in zip(participants, participants[1:]):
+            lines.append(f"  {aliases[left]}->>{aliases[right]}: Collaborate for {sr_id}")
+            lines.append(f"  {aliases[right]}-->>{aliases[left]}: Return module result")
+        lines.append(f"  {first_alias}-->>Caller: Compose SR result")
+        return "\n".join(lines)
+
     def _find_primary_subsystem_for_sr(
         self,
         sr_id: str,
@@ -1999,6 +2735,13 @@ class DeepArchitectureWorkflowSkill(Skill):
         rounds: list[dict[str, Any]],
         assignments: dict[str, dict[str, Any]],
     ) -> str:
+        sr_items = self._normalize_requirements(system_requirements.get("requirements", []))
+        sr_to_subsystems = self._reverse_sr_allocation(architecture_design)
+        subsystem_names = {
+            str(s.get("id", "")): str(s.get("name", s.get("id", "")))
+            for s in architecture_design.get("subsystems", [])
+            if isinstance(s, dict)
+        }
         lines = [
             "# system-architecture.md",
             "",
@@ -2021,15 +2764,36 @@ class DeepArchitectureWorkflowSkill(Skill):
             "## Overall Architecture",
             "",
             f"- Overview: {architecture_design.get('architecture_overview', '')}",
-            f"- Diagram: {architecture_design.get('architecture_diagram', '')}",
-            "",
-            "## Layered Expansion",
-            "",
-            *[f"- {layer}" for layer in architecture_design.get("layering", [])],
-            "",
-            "## Subsystems",
             "",
         ]
+        lines.extend(self._render_mermaid_block(self._build_overall_architecture_c4_diagram(architecture_design)))
+        lines.extend(
+            [
+                "",
+                "### Subsystem Responsibilities, Dependencies, and Interactions",
+                "",
+                *self._describe_subsystem_dependencies(architecture_design),
+                "",
+                f"- Diagram: {architecture_design.get('architecture_diagram', '')}",
+                "",
+            ]
+        )
+        raw_arch_diagram = str(architecture_design.get("architecture_diagram", "")).strip()
+        if raw_arch_diagram and any(
+            raw_arch_diagram.startswith(prefix) for prefix in ("flowchart", "graph", "sequenceDiagram", "C4")
+        ):
+            lines.extend(self._render_mermaid_block(raw_arch_diagram))
+            lines.append("")
+        lines.extend(
+            [
+                "## Layered Expansion",
+                "",
+                *[f"- {layer}" for layer in architecture_design.get("layering", [])],
+                "",
+                "## Subsystems",
+                "",
+            ]
+        )
 
         for subsystem in architecture_design.get("subsystems", []):
             subsystem_id = str(subsystem.get("id", ""))
@@ -2062,17 +2826,68 @@ class DeepArchitectureWorkflowSkill(Skill):
                 ]
             )
 
-        lines.extend(["## Task Split (Step 3)", ""])
-        for subsystem_id, assignment in assignments.items():
+        lines.extend(["## Requirements Split", ""])
+        for sr in sr_items:
+            sr_id = str(sr.get("id", ""))
+            sr_title = str(sr.get("title", sr.get("requirement_overview", ""))).strip()
+            subsystem_ids = sr_to_subsystems.get(sr_id, [])
             lines.extend(
                 [
-                    f"- {subsystem_id}:",
-                    f"  - Subsystem Architect: {assignment.get('subsystem_architect', '')}",
-                    f"  - Architecture Reviewer: {assignment.get('architecture_reviewer', '')}",
-                    f"  - SR IDs: {', '.join(assignment.get('assigned_sr_ids', [])) or '(none)'}",
+                    f"### {sr_id} - {sr_title}",
+                    f"- Requirement Overview: {sr.get('requirement_overview', '')}",
+                    f"- Scenario: {sr.get('scenario', '')}",
+                    f"- Assigned Subsystems: {', '.join(subsystem_ids) if subsystem_ids else '(none)'}",
                 ]
             )
-        lines.append("")
+            if subsystem_ids:
+                impl_lines: list[str] = []
+                for sid in subsystem_ids:
+                    assignment = assignments.get(sid, {})
+                    impl_lines.append(
+                        f"{sid} ({subsystem_names.get(sid, sid)}): "
+                        f"implemented by subsystem architect {assignment.get('subsystem_architect', '')} "
+                        f"through subsystem APIs/components mapped to this SR."
+                    )
+                lines.extend(["- Implementation by Subsystem:", *[f"  - {x}" for x in impl_lines]])
+            else:
+                lines.extend(["- Implementation by Subsystem:", "  - (none)"])
+            if len(subsystem_ids) > 1:
+                lines.extend(
+                    [
+                        "- Cross-Subsystem Interaction Sequence:",
+                        "",
+                    ]
+                )
+                lines.extend(
+                    self._render_mermaid_block(
+                        self._build_cross_subsystem_sr_sequence_diagram(
+                            sr_id=sr_id,
+                            subsystem_ids=subsystem_ids,
+                            subsystem_names=subsystem_names,
+                        )
+                    )
+                )
+                lines.extend(
+                    [
+                        "",
+                        "- Cross-Subsystem Description:",
+                        (
+                            "  - "
+                            f"{subsystem_names.get(subsystem_ids[0], subsystem_ids[0])} "
+                            "receives the SR entry request and orchestrates the flow."
+                        ),
+                        *[
+                            (
+                                f"  - {subsystem_names.get(left, left)} calls "
+                                f"{subsystem_names.get(right, right)} to complete "
+                                f"delegated capability for {sr_id}."
+                            )
+                            for left, right in zip(subsystem_ids, subsystem_ids[1:])
+                        ],
+                        "  - Responses are composed and returned to the caller with SR-level status.",
+                    ]
+                )
+            lines.append("")
 
         lines.extend(["## Revision History", ""])
         for item in rounds:
@@ -2108,8 +2923,9 @@ class DeepArchitectureWorkflowSkill(Skill):
         detail_design: dict[str, Any],
         rounds: list[dict[str, Any]],
     ) -> str:
+        subsystem_slug = self._subsystem_slug(subsystem, fallback=str(subsystem.get("id", "subsystem")))
         lines = [
-            f"# {subsystem.get('name', subsystem.get('id', 'subsystem'))}-detail-design.md",
+            f"# subsystem-{subsystem_slug}-design.md",
             "",
             f"Generated at: {self._now_iso()}",
             f"Project: {project_name}",
@@ -2128,16 +2944,192 @@ class DeepArchitectureWorkflowSkill(Skill):
             "",
             *[f"- {item}" for item in detail_design.get("design_strategy", [])],
             "",
-            "## Components / Services",
+            "## Logical Architecture Views",
             "",
         ]
 
+        logic_views = detail_design.get("logic_architecture_views", [])
+        if isinstance(logic_views, list) and logic_views:
+            for view in logic_views:
+                if not isinstance(view, dict):
+                    continue
+                lines.extend(
+                    [
+                        f"### {view.get('view_name', view.get('view_id', 'view'))}",
+                        f"- View Type: {view.get('view_type', '')}",
+                    ]
+                )
+                description = str(view.get("description", "")).strip()
+                if description:
+                    lines.append(f"- Description: {description}")
+                lines.append("")
+                lines.extend(self._render_mermaid_block(str(view.get("mermaid", ""))))
+                lines.append("")
+        else:
+            lines.extend(["- (none)", ""])
+
+        module_designs = detail_design.get("module_designs", [])
+        lines.extend(["## Subsystem Architecture (C4 Component View)", ""])
+        if isinstance(module_designs, list) and module_designs:
+            lines.extend(
+                self._render_mermaid_block(
+                    self._build_subsystem_component_c4_diagram(
+                        subsystem=subsystem,
+                        module_designs=module_designs,
+                    )
+                )
+            )
+            lines.extend(["", "### Component Responsibilities and Dependencies", ""])
+            for module in module_designs:
+                if not isinstance(module, dict):
+                    continue
+                module_name = str(module.get("module_name", "")).strip() or "module"
+                deps = [str(x).strip() for x in (module.get("depends_on_modules", []) or []) if str(x).strip()]
+                responsibilities = (
+                    "; ".join([str(x) for x in module.get("responsibilities", [])])
+                    if isinstance(module.get("responsibilities"), list)
+                    else ""
+                )
+                lines.append(
+                    f"- `{module_name}` (`{module.get('file_name', '')}`): "
+                    f"{responsibilities or 'Module responsibilities TBD'} "
+                    f"Dependencies: {', '.join(deps) if deps else '(none)'}."
+                )
+            lines.append("")
+        else:
+            lines.extend(["- (none)", ""])
+        lines.extend(["## Module Logical Architecture", ""])
+        if isinstance(module_designs, list) and module_designs:
+            for module in module_designs:
+                if not isinstance(module, dict):
+                    continue
+                module_name = str(module.get("module_name", "")).strip() or "module"
+                deps = [str(x).strip() for x in (module.get("depends_on_modules", []) or []) if str(x).strip()]
+                lines.extend(
+                    [
+                        f"### {module_name}",
+                        f"- File: `{module.get('file_name', '')}`",
+                        "- Responsibilities:",
+                        *self._bullet_or_default(module.get("responsibilities", []), default="(none)"),
+                        f"- Depends On Modules: {', '.join(deps) if deps else '(none)'}",
+                        "",
+                    ]
+                )
+        else:
+            lines.extend(["- (none)", ""])
+
+        lines.extend(["### Module Dependency Rules", ""])
+        lines.extend(self._bullet_or_default(detail_design.get("module_dependency_rules", []), default="(none)"))
+        lines.append("")
+        lines.extend(["### Integration Flow Notes", ""])
+        lines.extend(self._bullet_or_default(detail_design.get("integration_flow_notes", []), default="(none)"))
+        lines.extend(["", "## Module Class Designs", ""])
+
+        if isinstance(module_designs, list) and module_designs:
+            for module in module_designs:
+                if not isinstance(module, dict):
+                    continue
+                module_name = str(module.get("module_name", "")).strip() or "module"
+                lines.extend(
+                    [
+                        f"### {module_name}",
+                        f"- File: `{module.get('file_name', '')}`",
+                        "- Responsibilities:",
+                        *self._bullet_or_default(module.get("responsibilities", []), default="(none)"),
+                        "",
+                    ]
+                )
+                classes = module.get("classes", [])
+                if isinstance(classes, list) and classes:
+                    for cls in classes:
+                        if not isinstance(cls, dict):
+                            continue
+                        lines.extend(
+                            [
+                                f"#### Class `{cls.get('class_name', '')}`",
+                                f"- Kind: {cls.get('class_kind', 'class')}",
+                                f"- Purpose: {cls.get('purpose', '')}",
+                                "- Attributes:",
+                            ]
+                        )
+                        attributes = cls.get("attributes", [])
+                        if isinstance(attributes, list) and attributes:
+                            for attr in attributes:
+                                if not isinstance(attr, dict):
+                                    continue
+                                lines.append(
+                                    "  - "
+                                    f"{attr.get('visibility', 'private')} {attr.get('name', '')}: "
+                                    f"{attr.get('type', 'Any')} - {attr.get('description', '')}"
+                                )
+                        else:
+                            lines.append("  - (none)")
+                        lines.append("- Methods:")
+                        methods = cls.get("methods", [])
+                        if isinstance(methods, list) and methods:
+                            for method in methods:
+                                if not isinstance(method, dict):
+                                    continue
+                                params = method.get("params", [])
+                                param_text = ""
+                                if isinstance(params, list) and params:
+                                    param_text = ", ".join(
+                                        f"{str(p.get('name', 'arg'))}: {str(p.get('type', 'Any'))}"
+                                        for p in params
+                                        if isinstance(p, dict)
+                                    )
+                                lines.append(
+                                    "  - "
+                                    f"{method.get('visibility', 'public')} {method.get('name', '')}"
+                                    f"({param_text}) -> {method.get('returns', 'Any')}: "
+                                    f"{method.get('description', '')}"
+                                )
+                        else:
+                            lines.append("  - (none)")
+                        inherits = [str(x).strip() for x in (cls.get("inherits", []) or []) if str(x).strip()]
+                        uses = [str(x).strip() for x in (cls.get("uses_classes", []) or []) if str(x).strip()]
+                        lines.append(f"- Inherits: {', '.join(inherits) if inherits else '(none)'}")
+                        lines.append(f"- Uses Classes: {', '.join(uses) if uses else '(none)'}")
+                        lines.append("")
+                lines.extend(self._render_mermaid_block(str(module.get("class_diagram_mermaid", ""))))
+                lines.append("")
+        else:
+            lines.extend(["- (none)", ""])
+
+        lines.extend(["## Module APIs", ""])
+        if isinstance(module_designs, list) and module_designs:
+            for module in module_designs:
+                if not isinstance(module, dict):
+                    continue
+                module_name = str(module.get("module_name", "")).strip() or "module"
+                lines.extend(
+                    [
+                        f"### {module_name}",
+                        f"- File: `{module.get('file_name', '')}`",
+                        "- API Surface:",
+                        *self._build_module_api_rows(module),
+                        "",
+                    ]
+                )
+        else:
+            lines.extend(["- (none)", ""])
+
+        lines.extend(
+            [
+                "## Components / Services",
+                "",
+            ]
+        )
+
         for component in detail_design.get("components", []):
+            responsibility_text = str(component.get("responsibility", "")).strip() or ", ".join(
+                component.get("responsibilities", [])
+            )
             lines.extend(
                 [
                     f"### {component.get('id', '')} - {component.get('name', '')}",
                     f"- Type: {component.get('type', '')}",
-                    f"- Responsibility: {component.get('responsibility', '')}",
+                    f"- Responsibility: {responsibility_text}",
                     "",
                 ]
             )
@@ -2162,6 +3154,26 @@ class DeepArchitectureWorkflowSkill(Skill):
             lines.extend(
                 [
                     f"### {sr_item.get('sr_id', '')} - {sr_item.get('title', '')}",
+                    "- Module Collaboration Sequence:",
+                    "",
+                ]
+            )
+            lines.extend(
+                self._render_mermaid_block(
+                    self._build_subsystem_sr_sequence_diagram(
+                        subsystem_slug=subsystem_slug,
+                        sr_id=str(sr_item.get("sr_id", "")),
+                        functions=sr_item.get("functions", []) if isinstance(sr_item.get("functions"), list) else [],
+                    )
+                )
+            )
+            lines.extend(
+                [
+                    "",
+                    "- Module Collaboration Description:",
+                    "  - The first module receives the SR trigger and coordinates downstream module calls.",
+                    "  - Each module in this SR contributes one FN and collaborates through module APIs and imports.",
+                    "  - Results are composed to satisfy the SR end-to-end behavior.",
                     "- Functions:",
                 ]
             )
@@ -2169,7 +3181,8 @@ class DeepArchitectureWorkflowSkill(Skill):
                 lines.extend(
                     [
                         f"  - {fn.get('id', '')}",
-                        f"    - Component: {fn.get('component', '')}",
+                        f"    - Module: {fn.get('module', fn.get('component', ''))}",
+                        f"    - File: {fn.get('file_name', '')}",
                         f"    - Description: {fn.get('description', '')}",
                         f"    - Spec: {fn.get('spec', '')}",
                     ]
@@ -2249,7 +3262,7 @@ class DeepArchitectureWorkflowSkill(Skill):
         cleaned = []
         prev_dash = False
         for ch in text.lower().strip():
-            if ch.isalnum():
+            if ch.isascii() and ch.isalnum():
                 cleaned.append(ch)
                 prev_dash = False
             else:
@@ -2260,6 +3273,25 @@ class DeepArchitectureWorkflowSkill(Skill):
         if len(value) > 48:
             value = value[:48].rstrip("_")
         return value or "subsystem"
+
+    def _resolve_review_round_bounds(self, *, input_data: dict[str, Any], context: SkillContext) -> tuple[int, int]:
+        limits = input_data.get("_review_round_limits")
+        if not isinstance(limits, dict):
+            limits = context.parameters.get("workflow_review_round_limits")
+        min_rounds = int((limits or {}).get("min_rounds", 2) or 2)
+        max_rounds = int((limits or {}).get("max_rounds", 3) or 3)
+        min_rounds = max(1, min_rounds)
+        max_rounds = max(1, max_rounds)
+        if min_rounds > max_rounds:
+            min_rounds, max_rounds = max_rounds, min_rounds
+        return min_rounds, max_rounds
+
+    def _clamp_review_rounds(self, *, min_rounds: int, max_rounds: int) -> int:
+        low = max(1, int(min_rounds or 1))
+        high = max(1, int(max_rounds or low))
+        if low > high:
+            low, high = high, low
+        return low
 
     def _purpose_token(self, text: str) -> str:
         token = self._slugify(text)
@@ -2347,14 +3379,17 @@ class DeepArchitectureWorkflowSkill(Skill):
         doc_refs: list[dict[str, Any]] = []
         for hint in input_hints:
             if hint == "subsystem_detail_design_doc":
-                matches = sorted(docs_dir.glob("*-detail-design.md")) if docs_dir.exists() else []
+                matches: list[Path] = []
+                if docs_dir.exists():
+                    matches.extend(sorted(docs_dir.glob("subsystem-*-design.md")))
+                    matches.extend(sorted(docs_dir.glob("*-detail-design.md")))
                 doc_refs.append(
                     {
                         "role": hint,
                         "path": "docs",
                         "name": "docs",
                         "exists": bool(matches),
-                        "glob": "*-detail-design.md",
+                        "glob": "subsystem-*-design.md|*-detail-design.md",
                     }
                 )
                 continue
@@ -2420,9 +3455,21 @@ class DeepArchitectureWorkflowSkill(Skill):
     ) -> dict[str, Any]:
         if context.llm_client is None:
             raise RuntimeError("LLM client is required for deep_architecture_workflow")
+        json_contract = (
+            "\n\nOutput contract:\n"
+            "- Return exactly one JSON object only.\n"
+            "- Do not return markdown fences, comments, or explanatory prose.\n"
+            "- Do not wrap the object under extra keys such as "
+            "data/result/output/payload unless explicitly requested.\n"
+            "- Use exact key names and nested key names specified in the prompt schema (no translation/synonyms).\n"
+            "- Use exact enum/keyword literals specified in the prompt "
+            "(for example approve/revise, layer names, etc.).\n"
+            "- Match the expected value types in the schema "
+            "(string/list/object/boolean), do not stringify nested JSON.\n"
+        )
         response = context.llm_client.complete(
             [
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": system_prompt + json_contract},
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},

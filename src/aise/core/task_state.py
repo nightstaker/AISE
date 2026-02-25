@@ -245,6 +245,37 @@ class RunTaskStateStore:
         item = tasks.get(f"{phase_key}::{task_key}")
         return item if isinstance(item, dict) else None
 
+    def fail_running_attempts(self, error: str) -> dict[str, Any]:
+        """Mark any orphaned running attempts as failed."""
+
+        normalized_error = str(error or "").strip() or "execution interrupted unexpectedly"
+
+        def _apply(payload: dict[str, Any]) -> dict[str, Any]:
+            tasks = payload.get("tasks", {})
+            if not isinstance(tasks, dict):
+                return payload
+            for record in tasks.values():
+                if not isinstance(record, dict):
+                    continue
+                attempts = record.get("attempts", [])
+                if not isinstance(attempts, list):
+                    continue
+                for attempt in attempts:
+                    if not isinstance(attempt, dict):
+                        continue
+                    if str(attempt.get("status", "")).lower() != "running":
+                        continue
+                    attempt["status"] = "failed"
+                    attempt["completed_at"] = attempt.get("completed_at") or utc_now_iso()
+                    if not str(attempt.get("error", "")).strip():
+                        attempt["error"] = normalized_error
+                latest_attempt = attempts[-1] if attempts and isinstance(attempts[-1], dict) else None
+                if isinstance(latest_attempt, dict):
+                    record["latest_status"] = str(latest_attempt.get("status", record.get("latest_status", "")))
+            return payload
+
+        return self.update(_apply)
+
     def _empty(self) -> dict[str, Any]:
         return {
             "version": 1,

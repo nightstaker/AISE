@@ -66,6 +66,8 @@ class APIDesignSkill(Skill):
             '"endpoints":[{"method":"GET|POST|PUT|DELETE","path":"string","description":"string","status_codes":{"200":"string"}}],'
             '"schemas":{"schema_name":{"type":"object","properties":{}}}'
             "}"
+            "。键名必须与上述完全一致；method 枚举值必须使用 GET|POST|PUT|DELETE；"
+            "不得翻译或改名；不得包裹在 data/result/output/payload 下。"
         )
         user_prompt = "服务列表:\n" + "\n".join(service_lines)
 

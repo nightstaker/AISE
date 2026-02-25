@@ -264,15 +264,22 @@ def make_agent_node(
                     "error": None,
                 }
             except Exception as exc:
+                error_text = str(exc)
                 logger.warning(
                     "Agent node direct-playbook error: agent=%s phase=%s error=%s",
                     _agent_name,
                     phase,
                     exc,
                 )
+                non_retryable = _is_non_retryable_direct_playbook_error(
+                    agent_name=_agent_name,
+                    phase=phase,
+                    error_text=error_text,
+                )
                 return {
                     "messages": [AIMessage(content=f"[{_agent_name}] Error: {exc}")],
-                    "error": str(exc),
+                    "error": error_text,
+                    "error_retryable": False if non_retryable else True,
                 }
 
         task_prompt = _build_task_prompt(
@@ -305,6 +312,7 @@ def make_agent_node(
             }
 
         except Exception as exc:
+            error_text = str(exc)
             logger.warning(
                 "Agent node error: agent=%s phase=%s error=%s",
                 _agent_name,
@@ -313,7 +321,8 @@ def make_agent_node(
             )
             return {
                 "messages": [AIMessage(content=f"[{_agent_name}] Error: {exc}")],
-                "error": str(exc),
+                "error": error_text,
+                "error_retryable": True,
             }
 
     agent_node.__name__ = _agent_name
@@ -448,7 +457,20 @@ def _build_skill_input(skill_name: str, defaults: dict[str, Any]) -> dict[str, A
     payload: dict[str, Any] = {key: defaults[key] for key in hints if key in defaults}
     if "raw_requirements" in defaults:
         payload.setdefault("raw_requirements", defaults["raw_requirements"])
+    for key, value in defaults.items():
+        if str(key).startswith("_") and key not in payload:
+            payload[key] = value
     return payload
+
+
+def _is_non_retryable_direct_playbook_error(*, agent_name: str, phase: str, error_text: str) -> bool:
+    text = str(error_text or "").strip().lower()
+    if not text:
+        return False
+    # Deep developer workflow already performs local SR-group retries; retrying the whole phase causes re-execution.
+    if agent_name == "developer" and phase == "implementation" and "sr task group failed after" in text:
+        return True
+    return False
 
 
 def _build_default_input_data(

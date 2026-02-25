@@ -11,6 +11,9 @@ from typing import Any
 
 from ....core.artifact import Artifact, ArtifactType
 from ....core.skill import Skill, SkillContext
+from ....utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class DeepDeveloperWorkflowSkill(Skill):
@@ -55,7 +58,12 @@ class DeepDeveloperWorkflowSkill(Skill):
         all_test_files: list[str] = []
         review_records: list[dict[str, Any]] = []
         merged_fn_ids: list[str] = []
-        subsystem_rounds = max(2, min(3, int(input_data.get("subsystem_review_rounds", 3) or 3)))
+        review_min_rounds, review_max_rounds = self._resolve_review_round_bounds(input_data=input_data, context=context)
+        requested_subsystem_rounds = int(
+            input_data.get("subsystem_review_rounds", review_max_rounds) or review_max_rounds
+        )
+        subsystem_rounds = max(review_min_rounds, min(review_max_rounds, requested_subsystem_rounds))
+        sr_group_retry_attempts = self._resolve_sr_group_retry_attempts(input_data=input_data, context=context)
         subsystem_parallel_workers = max(
             1,
             int(input_data.get("subsystem_parallel_workers", input_data.get("fn_parallel_workers", 4)) or 4),
@@ -113,6 +121,26 @@ class DeepDeveloperWorkflowSkill(Skill):
         _start("developer.deep_developer_workflow.step2.revision")
         _start("developer.deep_developer_workflow.step2.merge")
 
+        sr_allocation = architecture.get("sr_allocation", {}) if isinstance(architecture, dict) else {}
+        subsystem_cards = []
+        for subsystem_id, assign_item in assignments.items():
+            item = assign_item if isinstance(assign_item, dict) else {}
+            subsystem_slug = self._subsystem_slug_from_assignment(assign=item, subsystem_key=str(subsystem_id))
+            subsystem_fn_items = fn_by_subsystem.get(subsystem_id, [])
+            sr_groups_preview = self._build_sr_groups_summary_from_fn_items(subsystem_fn_items)
+            subsystem_cards.append(
+                {
+                    "subsystem_id": str(subsystem_id),
+                    "subsystem_name": str(item.get("subsystem", subsystem_id)),
+                    "subsystem_slug": subsystem_slug,
+                    "subsystem_english_name": str(item.get("subsystem_english_name", "")).strip() or subsystem_slug,
+                    "assigned_sr_ids": [str(x) for x in sr_allocation.get(str(subsystem_id), [])]
+                    if isinstance(sr_allocation.get(str(subsystem_id), []), list)
+                    else [],
+                    "srs": sr_groups_preview,
+                }
+            )
+
         # Step 1: task split and per-subsystem pairing.
         try:
             subsystem_jobs: list[tuple[str, list[dict[str, Any]], dict[str, Any]]] = []
@@ -123,6 +151,19 @@ class DeepDeveloperWorkflowSkill(Skill):
                     "subsystem": subsystem_key,
                 }
                 subsystem_jobs.append((str(subsystem_key), list(fn_items), dict(assign)))
+
+            _end(
+                "developer.deep_developer_workflow.step1",
+                status="completed",
+                outputs={
+                    "assignment_count": len(assignments),
+                    "workflow_summary": {
+                        "workflow": "deep_developer_workflow",
+                        "subsystems": subsystem_cards,
+                        "rounds": {"step2": subsystem_rounds},
+                    },
+                },
+            )
 
             subsystem_results: dict[str, dict[str, Any]] = {}
             if len(subsystem_jobs) > 1 and subsystem_parallel_workers > 1:
@@ -140,6 +181,7 @@ class DeepDeveloperWorkflowSkill(Skill):
                             fn_items=fn_items,
                             assign=assign,
                             subsystem_rounds=subsystem_rounds,
+                            sr_group_retry_attempts=sr_group_retry_attempts,
                         ): subsystem_key
                         for subsystem_key, fn_items, assign in subsystem_jobs
                     }
@@ -156,6 +198,7 @@ class DeepDeveloperWorkflowSkill(Skill):
                         fn_items=fn_items,
                         assign=assign,
                         subsystem_rounds=subsystem_rounds,
+                        sr_group_retry_attempts=sr_group_retry_attempts,
                     )
 
             for subsystem_key, _, _ in subsystem_jobs:
@@ -178,35 +221,6 @@ class DeepDeveloperWorkflowSkill(Skill):
                 _end(key, status="failed", error=str(exc))
             raise
 
-        sr_allocation = architecture.get("sr_allocation", {}) if isinstance(architecture, dict) else {}
-        subsystem_cards = []
-        for subsystem_id, assign_item in assignments.items():
-            item = assign_item if isinstance(assign_item, dict) else {}
-            subsystem_slug = self._subsystem_slug_from_assignment(assign=item, subsystem_key=str(subsystem_id))
-            subsystem_cards.append(
-                {
-                    "subsystem_id": str(subsystem_id),
-                    "subsystem_name": str(item.get("subsystem", subsystem_id)),
-                    "subsystem_slug": subsystem_slug,
-                    "subsystem_english_name": str(item.get("subsystem_english_name", "")).strip() or subsystem_slug,
-                    "assigned_sr_ids": [str(x) for x in sr_allocation.get(str(subsystem_id), [])]
-                    if isinstance(sr_allocation.get(str(subsystem_id), []), list)
-                    else [],
-                }
-            )
-
-        _end(
-            "developer.deep_developer_workflow.step1",
-            status="completed",
-            outputs={
-                "assignment_count": len(assignments),
-                "workflow_summary": {
-                    "workflow": "deep_developer_workflow",
-                    "subsystems": subsystem_cards,
-                    "rounds": {"step2": subsystem_rounds},
-                },
-            },
-        )
         for key in (
             "developer.deep_developer_workflow.step2.develop",
             "developer.deep_developer_workflow.step2.review",
@@ -382,85 +396,337 @@ class DeepDeveloperWorkflowSkill(Skill):
             }
         return assignments
 
-    def _generate_python_fn_with_llm(
+    def _load_subsystem_design_doc_text(self, *, project_root: Path, subsystem_slug: str) -> str:
+        docs_dir = project_root / "docs"
+        candidates = [
+            docs_dir / f"subsystem-{subsystem_slug}-design.md",
+            docs_dir / f"{subsystem_slug}-detail-design.md",
+        ]
+        for path in candidates:
+            if path.exists():
+                try:
+                    return path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+        return ""
+
+    def _clip_file_context(
+        self,
+        *,
+        paths: list[Path],
+        preferred_stems: set[str],
+        total_limit: int,
+        per_file_limit: int = 8000,
+    ) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        candidates: list[tuple[int, float, str, Path]] = []
+        for path in paths:
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+                mtime = float(stat.st_mtime)
+            except OSError:
+                mtime = 0.0
+            stem = path.stem
+            # test files use test_<subsystem>_<module>, prefer matching module stem suffix.
+            preferred = 1 if (stem in preferred_stems or any(stem.endswith(f"_{s}") for s in preferred_stems)) else 0
+            candidates.append((-preferred, -mtime, str(path), path))
+        candidates.sort()
+
+        used = 0
+        for _, _, _, path in candidates:
+            if used >= total_limit:
+                break
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            clipped = text
+            if len(clipped) > per_file_limit:
+                clipped = clipped[:per_file_limit].rstrip() + "\n# ...(truncated)\n"
+            remaining = total_limit - used
+            if remaining <= 0:
+                break
+            if len(clipped) > remaining:
+                clipped = clipped[:remaining].rstrip() + "\n# ...(truncated)\n"
+            if not clipped.strip():
+                continue
+            rows.append({"path": str(path), "content": clipped})
+            used += len(clipped)
+        return rows
+
+    def _load_subsystem_existing_source_context(
+        self,
+        *,
+        src_subsystem_dir: Path,
+        tests_subsystem_dir: Path,
+        preferred_module_names: set[str],
+    ) -> dict[str, list[dict[str, str]]]:
+        source_paths = sorted(p for p in src_subsystem_dir.glob("*.py") if p.name != "revision.md")
+        test_paths = sorted(p for p in tests_subsystem_dir.glob("*.py") if p.name != "revision.md")
+        return {
+            "source_files": self._clip_file_context(
+                paths=source_paths,
+                preferred_stems=preferred_module_names,
+                total_limit=40000,
+                per_file_limit=8000,
+            ),
+            "test_files": self._clip_file_context(
+                paths=test_paths,
+                preferred_stems=preferred_module_names,
+                total_limit=40000,
+                per_file_limit=8000,
+            ),
+        }
+
+    def _serialize_subsystem_context_for_prompt(self, payload: dict[str, Any]) -> str:
+        source_files = payload.get("source_files", []) if isinstance(payload, dict) else []
+        test_files = payload.get("test_files", []) if isinstance(payload, dict) else []
+        normalized = {
+            "source_files": source_files if isinstance(source_files, list) else [],
+            "test_files": test_files if isinstance(test_files, list) else [],
+        }
+        return self._compact_json(normalized)
+
+    def _parse_sr_group_generation_items(
+        self,
+        *,
+        payload: dict[str, Any],
+        plans: list[dict[str, Any]],
+        sr_key: str,
+        required_content_key: str,
+    ) -> dict[str, dict[str, str]]:
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            raise RuntimeError(f"Invalid SR group payload for {sr_key}: items must be a list")
+        by_fn: dict[str, dict[str, str]] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            fn_id = str(item.get("fn_id", "")).strip()
+            module_name = str(item.get("module_name", "")).strip()
+            content = str(item.get(required_content_key, ""))
+            if not fn_id or not module_name:
+                continue
+            by_fn[fn_id] = {"module_name": module_name, required_content_key: content}
+        expected_fn_ids = [str(plan.get("fn_id", "")).strip() for plan in plans]
+        expected_set = {x for x in expected_fn_ids if x}
+        missing = [fn_id for fn_id in expected_fn_ids if fn_id and fn_id not in by_fn]
+        extra = [fn_id for fn_id in by_fn.keys() if fn_id not in expected_set]
+        if missing or extra:
+            raise RuntimeError(
+                f"Invalid SR group payload for {sr_key}: missing_fn_ids={missing or []} extra_fn_ids={extra or []}"
+            )
+        return by_fn
+
+    def _generate_python_sr_group_tests_with_llm(
         self,
         *,
         context: SkillContext,
         subsystem_slug: str,
-        module_name: str,
-        fn_id: str,
-        fn_description: str,
-        fn_spec: str,
+        sr_key: str,
+        plans: list[dict[str, Any]],
         round_index: int,
-        reviewer_comments: list[str],
-    ) -> dict[str, str]:
-        comments = "\n".join(f"- {item}" for item in reviewer_comments[:8]) or "- (none)"
-        base_prompt = (
-            f"Subsystem: {subsystem_slug}\n"
-            f"Module: {module_name}\n"
-            f"FN: {fn_id}\n"
-            f"Description: {fn_description}\n"
-            f"Spec: {fn_spec}\n"
-            f"Round: {round_index}\n"
-            f"Reviewer comments:\n{comments}\n"
-        )
-        purpose_suffix = (
-            f" fn:{self._purpose_token(fn_id)}"
-            f" subsystem:{self._purpose_token(subsystem_slug)}"
-            f" module:{self._purpose_token(module_name)}"
-            f" round:{round_index}"
-        )
-
-        code_payload = self._run_llm_json_segment(
-            context=context,
-            purpose=f"subagent:programmer step:fn_code_generation{purpose_suffix}",
-            system_prompt=(
-                "You are a senior software engineer. Generate Python module code in JSON.\n"
-                "Return JSON object only with key: code_content.\n"
-                "Rules:\n"
-                "- code_content must define implement_<module_name>(input_data: dict | None = None)\n"
-                "- function returns a business-oriented dict with keys: status, data, errors, meta\n"
-                "- do not echo FN ids or prompt descriptions in runtime response payloads\n"
-                "- never include FN identifiers (e.g. FN-SR-001-01) in logs, exceptions, "
-                "comments, docstrings, constants, or strings\n"
-                "- include input validation, observable metrics/logging, and retry/error handling when reasonable\n"
-                "- no markdown fences"
-            ),
-            user_prompt=base_prompt,
-            required_keys=["code_content"],
-            module_name=module_name,
-            subsystem_slug=subsystem_slug,
-        )
-        code_content = str(code_payload.get("code_content", "")) if isinstance(code_payload, dict) else ""
-
-        test_payload = self._run_llm_json_segment(
-            context=context,
-            purpose=f"subagent:programmer step:fn_test_generation{purpose_suffix}",
-            system_prompt=(
-                "You are a senior software engineer. Generate pytest tests in JSON.\n"
-                "Return JSON object only with key: test_content.\n"
-                "Rules:\n"
-                "- test_content must import from src.<subsystem>.<module> import implement_<module>\n"
-                "- include at least 2 pytest test functions\n"
-                "- keep tests deterministic (avoid flaky randomness)\n"
-                "- do not assert FN ids or prompt descriptions in runtime results\n"
-                "- no markdown fences"
-            ),
-            user_prompt=(
-                base_prompt
-                + (f"Exact import path: from src.{subsystem_slug}.{module_name} import implement_{module_name}\n")
-                + "Implementation summary (optional context, may be partial):\n"
-                + code_content[:3000]
-                + ("\n...(truncated)\n" if len(code_content) > 3000 else "\n")
-            ),
-            required_keys=["test_content"],
-            module_name=module_name,
-            subsystem_slug=subsystem_slug,
-        )
-        return {
-            "code_content": code_content,
-            "test_content": str(test_payload.get("test_content", "")) if isinstance(test_payload, dict) else "",
+        subsystem_architecture_design_doc: str,
+        existing_source_context: dict[str, Any],
+        existing_test_context: dict[str, Any],
+    ) -> dict[str, dict[str, str]]:
+        if not plans:
+            return {}
+        if context.llm_client is None:
+            raise RuntimeError("LLM client is required for SR-group test generation")
+        source_context_payload = {
+            "source_files": existing_source_context.get("source_files", []),
+            "test_files": [],
         }
+        test_context_payload = {
+            "source_files": [],
+            "test_files": existing_test_context.get("test_files", []),
+        }
+
+        fn_items = []
+        for plan in plans:
+            module_contract = plan.get("module_contract", {}) if isinstance(plan.get("module_contract"), dict) else {}
+            fn_items.append(
+                {
+                    "fn_id": str(plan.get("fn_id", "")),
+                    "module_name": str(plan.get("module_name", "")),
+                    "description": str(plan.get("fn_description", "")),
+                    "spec": str(plan.get("fn_spec", "")),
+                    "test_path": str(plan.get("test_path", "")),
+                    "code_path": str(plan.get("code_path", "")),
+                    "implementation_style": str(module_contract.get("style", "function")),
+                    "existing_class_names": list(module_contract.get("class_names", []))
+                    if isinstance(module_contract.get("class_names"), list)
+                    else [],
+                    "reviewer_comments": [str(x) for x in list(plan.get("comments", []))[:8]],
+                }
+            )
+
+        try:
+            payload = self._run_llm_json_segment(
+                context=context,
+                purpose=(
+                    "subagent:programmer step:sr_group_test_generation "
+                    f"subsystem:{self._purpose_token(subsystem_slug)} "
+                    f"sr:{self._purpose_token(sr_key)} round:{round_index} fns:{len(fn_items)}"
+                ),
+                system_prompt=(
+                    "You are a senior software engineer writing pytest tests first for one SR group.\n"
+                    "Return JSON only with key: items.\n"
+                    "Schema:\n"
+                    "- items: list[object]\n"
+                    "- each item must include keys: fn_id, module_name, test_content\n"
+                    "Rules:\n"
+                    "- Return exactly one item for each FN in the input list (no extras, no omissions).\n"
+                    "- fn_id and module_name must exactly match the provided values.\n"
+                    "- test_content must import from src.<subsystem>.<module>.\n"
+                    "- Preserve and test the existing public API style inferred "
+                    "from current source files (class-based or function-based).\n"
+                    "- If existing_class_names is non-empty, preserve and test "
+                    "those classes/methods; do not replace the module with a "
+                    "different public API style.\n"
+                    "- If implementation_style=open, infer a suitable public API "
+                    "from subsystem design doc + existing source/test context "
+                    "and keep imports consistent.\n"
+                    "- include at least 2 pytest test functions per item\n"
+                    "- keep tests deterministic (avoid flaky randomness)\n"
+                    "- use subsystem architecture design doc module/class constraints and cross-module interactions\n"
+                    "- prioritize tests around class/module interactions and SR behavior, not placeholder-only tests\n"
+                    "- do not echo FN ids in runtime payloads, logs, comments, constants, or exceptions\n"
+                    "- no markdown fences"
+                ),
+                user_prompt=(
+                    f"Subsystem: {subsystem_slug}\n"
+                    f"SR group: {sr_key}\n"
+                    f"Round: {round_index}\n"
+                    "Generate pytest tests for all FN items below in one batch LLM response.\n"
+                    "The output must contain the exact keys fn_id/module_name/test_content per item.\n\n"
+                    "subsystem_architecture_design_doc:\n"
+                    f"{self._truncate_text_for_prompt(subsystem_architecture_design_doc, 60000, '(missing)')}\n\n"
+                    "existing_source_code:\n"
+                    f"{self._serialize_subsystem_context_for_prompt(source_context_payload)}\n\n"
+                    "existing_test_code:\n"
+                    f"{self._serialize_subsystem_context_for_prompt(test_context_payload)}\n\n"
+                    f"FN items:\n{self._compact_json(fn_items)}\n"
+                ),
+                required_keys=["items"],
+                module_name="sr_group_tests",
+                subsystem_slug=subsystem_slug,
+            )
+        except Exception:
+            return self._build_fallback_sr_group_tests_batch(subsystem_slug=subsystem_slug, plans=plans)
+        return self._parse_sr_group_generation_items(
+            payload=payload,
+            plans=plans,
+            sr_key=sr_key,
+            required_content_key="test_content",
+        )
+
+    def _generate_python_sr_group_code_with_llm(
+        self,
+        *,
+        context: SkillContext,
+        subsystem_slug: str,
+        sr_key: str,
+        plans: list[dict[str, Any]],
+        round_index: int,
+        subsystem_architecture_design_doc: str,
+        existing_source_context: dict[str, Any],
+        existing_test_context: dict[str, Any],
+        generated_tests_for_current_sr: list[dict[str, str]],
+    ) -> dict[str, dict[str, str]]:
+        if not plans:
+            return {}
+        if context.llm_client is None:
+            raise RuntimeError("LLM client is required for SR-group code generation")
+        source_context_payload = {
+            "source_files": existing_source_context.get("source_files", []),
+            "test_files": [],
+        }
+        test_context_payload = {
+            "source_files": [],
+            "test_files": existing_test_context.get("test_files", []),
+        }
+        fn_items = []
+        for plan in plans:
+            module_contract = plan.get("module_contract", {}) if isinstance(plan.get("module_contract"), dict) else {}
+            fn_items.append(
+                {
+                    "fn_id": str(plan.get("fn_id", "")),
+                    "module_name": str(plan.get("module_name", "")),
+                    "description": str(plan.get("fn_description", "")),
+                    "spec": str(plan.get("fn_spec", "")),
+                    "code_path": str(plan.get("code_path", "")),
+                    "test_path": str(plan.get("test_path", "")),
+                    "implementation_style": str(module_contract.get("style", "function")),
+                    "existing_class_names": list(module_contract.get("class_names", []))
+                    if isinstance(module_contract.get("class_names"), list)
+                    else [],
+                    "reviewer_comments": [str(x) for x in list(plan.get("comments", []))[:8]],
+                }
+            )
+        try:
+            payload = self._run_llm_json_segment(
+                context=context,
+                purpose=(
+                    "subagent:programmer step:sr_group_code_generation "
+                    f"subsystem:{self._purpose_token(subsystem_slug)} "
+                    f"sr:{self._purpose_token(sr_key)} round:{round_index} fns:{len(fn_items)}"
+                ),
+                system_prompt=(
+                    "You are a senior software engineer implementing code for one SR group after tests are written.\n"
+                    "Return JSON only with key: items.\n"
+                    "Schema:\n"
+                    "- items: list[object]\n"
+                    "- each item must include keys: fn_id, module_name, code_content\n"
+                    "Rules:\n"
+                    "- Return exactly one item for each FN in the input list (no extras, no omissions).\n"
+                    "- fn_id and module_name must exactly match the provided values.\n"
+                    "- Preserve the module's existing public API style inferred "
+                    "from current source files (class-based or function-based).\n"
+                    "- If existing_class_names is non-empty, preserve those "
+                    "class names and extend/implement methods in class-based "
+                    "structure.\n"
+                    "- If implementation_style=open, infer a suitable public API "
+                    "from subsystem design doc + generated tests for current SR.\n"
+                    "- Reuse/extend existing subsystem source skeletons and preserve import relationships.\n"
+                    "- Use subsystem architecture design doc module/class "
+                    "constraints and generated tests for current SR.\n"
+                    "- Implement inter-module calls where required by module dependencies and SR behavior.\n"
+                    "- Do not arbitrarily rename modules/classes.\n"
+                    "- do not echo FN ids in runtime payloads, logs, comments, constants, or exceptions\n"
+                    "- no markdown fences"
+                ),
+                user_prompt=(
+                    f"Subsystem: {subsystem_slug}\n"
+                    f"SR group: {sr_key}\n"
+                    f"Round: {round_index}\n"
+                    "Generate source code for all FN items below in one batch LLM response.\n"
+                    "The output must contain the exact keys fn_id/module_name/code_content per item.\n\n"
+                    "subsystem_architecture_design_doc:\n"
+                    f"{self._truncate_text_for_prompt(subsystem_architecture_design_doc, 60000, '(missing)')}\n\n"
+                    "existing_source_code:\n"
+                    f"{self._serialize_subsystem_context_for_prompt(source_context_payload)}\n\n"
+                    "existing_test_code:\n"
+                    f"{self._serialize_subsystem_context_for_prompt(test_context_payload)}\n\n"
+                    "generated_tests_for_current_sr:\n"
+                    f"{self._compact_json(generated_tests_for_current_sr)}\n\n"
+                    f"FN items:\n{self._compact_json(fn_items)}\n"
+                ),
+                required_keys=["items"],
+                module_name="sr_group_code",
+                subsystem_slug=subsystem_slug,
+            )
+        except Exception:
+            return self._build_fallback_sr_group_code_batch(subsystem_slug=subsystem_slug, plans=plans)
+        return self._parse_sr_group_generation_items(
+            payload=payload,
+            plans=plans,
+            sr_key=sr_key,
+            required_content_key="code_content",
+        )
 
     def _purpose_token(self, value: str) -> str:
         token = self._slugify(str(value))
@@ -521,13 +787,15 @@ class DeepDeveloperWorkflowSkill(Skill):
                     "You are a senior software engineer planning subsystem source files.\n"
                     "Return JSON only with keys: module_files, fn_to_module_map.\n"
                     "Rules:\n"
-                    "- module_files: list[str] of Python filenames under src/<subsystem>/ (e.g. order_command.py)\n"
+                    "- module_files: list[str] of implementation module filenames under src/<subsystem>/.\n"
                     "- ASCII lowercase snake_case filenames only, suffix .py, no directories.\n"
                     "- fn_to_module_map: object mapping each FN id to one filename from module_files.\n"
                     "- Every FN id must be mapped exactly once.\n"
                     "- Use one dedicated module per FN for now (do not map multiple FN ids to the same file).\n"
                     "- Plan a stable file list first; later implementation rounds will only modify these files.\n"
                     "- Prefer domain-meaningful names; avoid generic file names like module.py/service.py/handler.py.\n"
+                    "- Do not assume files named api.py, service.py, or schemas.py are required.\n"
+                    "- Only include api-like/contract files when explicitly needed by FN responsibilities.\n"
                 ),
                 user_prompt=(
                     f"Subsystem key: {subsystem_key}\n"
@@ -674,22 +942,22 @@ class DeepDeveloperWorkflowSkill(Skill):
     def _placeholder_source_content(self, *, subsystem_slug: str, module_name: str) -> str:
         return (
             "from __future__ import annotations\n\n"
-            f"def implement_{module_name}(input_data: dict | None = None) -> dict[str, object]:\n"
-            "    payload = input_data or {}\n"
-            "    return {\n"
-            "        'status': 'ok',\n"
-            "        'data': {'placeholder': True, 'input_keys': sorted(payload.keys())},\n"
-            "        'errors': [],\n"
-            f"        'meta': {{'subsystem': '{subsystem_slug}', 'operation': '{module_name}'}},\n"
-            "    }\n"
+            f'"""Placeholder module for {subsystem_slug}.{module_name}.\n\n'
+            "LLM implementation should infer and preserve an appropriate public API\n"
+            "based on subsystem design docs and existing source code context.\n"
+            '"""\n\n'
+            "# TODO: replace placeholder with LLM-generated implementation.\n"
         )
 
     def _placeholder_test_content(self, *, subsystem_slug: str, module_name: str) -> str:
         return (
-            f"from src.{subsystem_slug}.{module_name} import implement_{module_name}\n\n\n"
+            f"from src.{subsystem_slug}.{module_name} import *\n"
+            "import pytest\n\n\n"
             f"def test_{module_name}_placeholder() -> None:\n"
-            f"    result = implement_{module_name}()\n"
-            "    assert isinstance(result, dict)\n"
+            "    pytest.skip(\n"
+            f"        'Placeholder test for {subsystem_slug}.{module_name}; "
+            "replaced during SR implementation'\n"
+            "    )\n"
         )
 
     def _fallback_test_content(
@@ -699,19 +967,50 @@ class DeepDeveloperWorkflowSkill(Skill):
         module_name: str,
         fn_id: str,
         fn_description: str,
+        module_contract: dict[str, Any] | None = None,
     ) -> str:
+        contract = module_contract if isinstance(module_contract, dict) else {}
+        class_names = (
+            [str(x).strip() for x in contract.get("class_names", [])]
+            if isinstance(contract.get("class_names"), list)
+            else []
+        )
+        function_names = (
+            [str(x).strip() for x in contract.get("function_names", [])]
+            if isinstance(contract.get("function_names"), list)
+            else []
+        )
+        if class_names:
+            class_name = class_names[0]
+            return (
+                f"from src.{subsystem_slug}.{module_name} import {class_name}\n"
+                "import pytest\n\n\n"
+                f"def test_{module_name}_class_import_available() -> None:\n"
+                f"    assert {class_name} is not None\n\n"
+                f"def test_{module_name}_fallback_placeholder() -> None:\n"
+                "    pytest.skip('Fallback class-based test template; replace during SR implementation')\n"
+            )
+        if function_names:
+            func_name = function_names[0]
+            return (
+                f"from src.{subsystem_slug}.{module_name} import {func_name}\n"
+                "import pytest\n\n\n"
+                f"def test_{module_name}_function_import_available() -> None:\n"
+                f"    assert callable({func_name})\n\n"
+                f"def test_{module_name}_fallback_placeholder() -> None:\n"
+                "    pytest.skip('Fallback function-based test template; replace during SR implementation')\n"
+            )
         return (
-            f"from src.{subsystem_slug}.{module_name} import implement_{module_name}\n\n\n"
-            f"def test_{module_name}_returns_standard_response_shape() -> None:\n"
-            f"    result = implement_{module_name}({{'round': 1}})\n"
-            "    assert isinstance(result, dict)\n"
-            "    assert result.get('status') in {'ok', 'error'}\n"
-            "    assert 'data' in result\n"
-            "    assert 'errors' in result\n"
-            "    assert isinstance(result.get('meta'), dict)\n\n"
-            f"def test_{module_name}_meta_contains_operation() -> None:\n"
-            f"    result = implement_{module_name}()\n"
-            f"    assert result.get('meta', {{}}).get('operation') == '{module_name}'\n"
+            f"from src.{subsystem_slug}.{module_name} import *\n"
+            "import pytest\n\n\n"
+            f"def test_{module_name}_module_importable() -> None:\n"
+            f"    module = __import__('src.{subsystem_slug}.{module_name}', fromlist=['*'])\n"
+            "    assert module is not None\n\n"
+            f"def test_{module_name}_fallback_placeholder() -> None:\n"
+            "    pytest.skip(\n"
+            "        'Fallback test template; LLM should generate concrete tests "
+            "from design and code context'\n"
+            "    )\n"
         )
 
     def _fallback_code_content(
@@ -722,77 +1021,108 @@ class DeepDeveloperWorkflowSkill(Skill):
         fn_id: str,
         fn_description: str,
         fn_spec: str,
+        module_contract: dict[str, Any] | None = None,
     ) -> str:
-        safe_spec = fn_spec.replace("'", "\\'")
+        contract = module_contract if isinstance(module_contract, dict) else {}
+        class_names = (
+            [str(x).strip() for x in contract.get("class_names", [])]
+            if isinstance(contract.get("class_names"), list)
+            else []
+        )
+        function_names = (
+            [str(x).strip() for x in contract.get("function_names", [])]
+            if isinstance(contract.get("function_names"), list)
+            else []
+        )
+        if class_names:
+            class_name = class_names[0]
+            return (
+                "from __future__ import annotations\n\n"
+                f"class {class_name}:\n"
+                '    """Fallback class implementation generated when LLM output is unavailable."""\n\n'
+                "    def run(self, payload: dict | None = None) -> dict:\n"
+                "        return {\n"
+                "            'status': 'fallback',\n"
+                "            'data': payload or {},\n"
+                "            'errors': [],\n"
+                "            'meta': {'fallback': True},\n"
+                "        }\n"
+            )
+        if function_names:
+            func_name = function_names[0]
+            return (
+                "from __future__ import annotations\n\n"
+                f"def {func_name}(payload: dict | None = None) -> dict:\n"
+                "    return {'status': 'fallback', 'data': payload or {}, 'errors': [], 'meta': {'fallback': True}}\n"
+            )
         return (
             "from __future__ import annotations\n\n"
-            f'"""Business operation implementation for subsystem {subsystem_slug}."""\n\n'
-            f"def implement_{module_name}(input_data: dict | None = None) -> dict[str, object]:\n"
-            "    payload = input_data or {}\n"
-            "    result = {'processed': True, 'input_keys': sorted(payload.keys())}\n"
-            "    return {\n"
-            "        'status': 'ok',\n"
-            "        'data': result,\n"
-            "        'errors': [],\n"
-            "        'meta': {\n"
-            f"            'subsystem': '{subsystem_slug}',\n"
-            f"            'operation': '{module_name}',\n"
-            f"            'spec_hint': '{safe_spec}',\n"
-            "        },\n"
-            "    }\n"
+            f"def execute(payload: dict | None = None) -> dict:\n"
+            "    return {'status': 'fallback', 'data': payload or {}, 'errors': [], 'meta': {'module': "
+            f"'{module_name}', 'subsystem': '{subsystem_slug}', 'fallback': True}}\n"
         )
 
-    def _develop_single_fn_round(
+    def _build_fallback_sr_group_tests_batch(
         self,
         *,
-        context: SkillContext,
         subsystem_slug: str,
-        plan: dict[str, Any],
-        round_index: int,
-    ) -> dict[str, Any]:
-        fn_id = str(plan["fn_id"])
-        fn_description = str(plan["fn_description"])
-        fn_spec = str(plan["fn_spec"])
-        module_name = str(plan["module_name"])
-        code_path = Path(plan["code_path"])
-        test_path = Path(plan["test_path"])
-        comments = list(plan.get("comments", []))
-        if not code_path.exists() or not test_path.exists():
-            raise RuntimeError(
-                f"Planned files must exist before FN development: code={code_path.exists()} test={test_path.exists()}"
+        plans: list[dict[str, Any]],
+    ) -> dict[str, dict[str, str]]:
+        out: dict[str, dict[str, str]] = {}
+        for plan in plans:
+            fn_id = str(plan.get("fn_id", "")).strip()
+            module_name = str(plan.get("module_name", "")).strip()
+            if not fn_id or not module_name:
+                continue
+            contract = plan.get("module_contract", {}) if isinstance(plan.get("module_contract"), dict) else {}
+            out[fn_id] = {
+                "module_name": module_name,
+                "test_content": self._fallback_test_content(
+                    subsystem_slug=subsystem_slug,
+                    module_name=module_name,
+                    fn_id=fn_id,
+                    fn_description=str(plan.get("fn_description", "")),
+                    module_contract=contract,
+                ),
+            }
+        return out
+
+    def _build_fallback_sr_group_code_batch(
+        self,
+        *,
+        subsystem_slug: str,
+        plans: list[dict[str, Any]],
+    ) -> dict[str, dict[str, str]]:
+        out: dict[str, dict[str, str]] = {}
+        for plan in plans:
+            fn_id = str(plan.get("fn_id", "")).strip()
+            module_name = str(plan.get("module_name", "")).strip()
+            if not fn_id or not module_name:
+                continue
+            code_path = Path(plan.get("code_path")) if plan.get("code_path") else None
+            existing_text = ""
+            if code_path is not None and code_path.exists():
+                try:
+                    existing_text = code_path.read_text(encoding="utf-8")
+                except OSError:
+                    existing_text = ""
+            is_placeholder = "Placeholder module for" in existing_text and "TODO: replace placeholder" in existing_text
+            code_content = (
+                existing_text
+                if existing_text.strip() and not is_placeholder
+                else self._fallback_code_content(
+                    subsystem_slug=subsystem_slug,
+                    module_name=module_name,
+                    fn_id=fn_id,
+                    fn_description=str(plan.get("fn_description", "")),
+                    fn_spec=str(plan.get("fn_spec", "")),
+                    module_contract=plan.get("module_contract", {})
+                    if isinstance(plan.get("module_contract"), dict)
+                    else {},
+                )
             )
-
-        generated = self._generate_python_fn_with_llm(
-            context=context,
-            subsystem_slug=subsystem_slug,
-            module_name=module_name,
-            fn_id=fn_id,
-            fn_description=fn_description,
-            fn_spec=fn_spec,
-            round_index=round_index,
-            reviewer_comments=comments,
-        )
-        raw_test_content = str(generated.get("test_content", ""))
-        raw_code_content = str(generated.get("code_content", ""))
-        if not self._is_valid_generated_test_content(
-            test_content=raw_test_content,
-            subsystem_slug=subsystem_slug,
-            module_name=module_name,
-        ):
-            raise RuntimeError(f"Invalid LLM-generated pytest content for {subsystem_slug}.{module_name} ({fn_id})")
-        if not self._is_valid_generated_code_content(raw_code_content, module_name=module_name):
-            raise RuntimeError(f"Invalid LLM-generated code content for {subsystem_slug}.{module_name} ({fn_id})")
-        test_content = raw_test_content
-        code_content = raw_code_content
-
-        # Strip design-time FN identifiers from generated source/tests before writing.
-        test_content = self._sanitize_generated_runtime_text(test_content)
-        code_content = self._sanitize_generated_runtime_text(code_content)
-
-        test_path.write_text(test_content, encoding="utf-8")
-        code_path.write_text(code_content, encoding="utf-8")
-        check_result = self._run_static_and_unit_checks(code_path, test_path)
-        return {"check_result": check_result}
+            out[fn_id] = {"module_name": module_name, "code_content": code_content}
+        return out
 
     def _develop_single_sr_group_round(
         self,
@@ -803,17 +1133,183 @@ class DeepDeveloperWorkflowSkill(Skill):
         plans: list[dict[str, Any]],
         round_index: int,
     ) -> dict[str, Any]:
+        if not plans:
+            return {"sr_group": sr_key, "fn_count": 0, "results": []}
+        first_code_path = Path(plans[0]["code_path"])
+        src_subsystem_dir = first_code_path.parent
+        project_root = src_subsystem_dir.parent.parent
+        tests_subsystem_dir = Path(plans[0]["test_path"]).parent
+        preferred_modules = {
+            str(plan.get("module_name", "")).strip() for plan in plans if str(plan.get("module_name", "")).strip()
+        }
+        for plan in plans:
+            code_path = Path(plan["code_path"])
+            contract = self._infer_python_module_contract(
+                code_path=code_path, module_name=str(plan.get("module_name", ""))
+            )
+            plan["module_contract"] = contract
+        subsystem_design_doc = self._load_subsystem_design_doc_text(
+            project_root=project_root, subsystem_slug=subsystem_slug
+        )
+        existing_ctx_before = self._load_subsystem_existing_source_context(
+            src_subsystem_dir=src_subsystem_dir,
+            tests_subsystem_dir=tests_subsystem_dir,
+            preferred_module_names=preferred_modules,
+        )
+        generated_tests_batch = self._generate_python_sr_group_tests_with_llm(
+            context=context,
+            subsystem_slug=subsystem_slug,
+            sr_key=sr_key,
+            plans=plans,
+            round_index=round_index,
+            subsystem_architecture_design_doc=subsystem_design_doc,
+            existing_source_context={"source_files": existing_ctx_before.get("source_files", [])},
+            existing_test_context={"test_files": existing_ctx_before.get("test_files", [])},
+        )
+        generated_tests_for_current_sr: list[dict[str, str]] = []
+        for plan in plans:
+            fn_id = str(plan["fn_id"])
+            module_name = str(plan["module_name"])
+            test_path = Path(plan["test_path"])
+            generated = generated_tests_batch.get(fn_id) or {}
+            if str(generated.get("module_name", "")).strip() != module_name:
+                raise RuntimeError(
+                    f"Invalid SR test batch module mapping for {sr_key}/{fn_id}: expected {module_name}, "
+                    f"got {generated.get('module_name', '')}"
+                )
+            raw_test_content = str(generated.get("test_content", ""))
+            module_contract = plan.get("module_contract", {}) if isinstance(plan.get("module_contract"), dict) else {}
+            test_ok, test_reason = self._validate_generated_test_content(
+                test_content=raw_test_content,
+                subsystem_slug=subsystem_slug,
+                module_name=module_name,
+                module_contract=module_contract,
+            )
+            if not test_ok:
+                logger.warning(
+                    (
+                        "Developer SR generation invalid content: kind=pytest "
+                        "subsystem=%s sr_group=%s round=%s fn_id=%s "
+                        "module=%s reason=%s preview=%r"
+                    ),
+                    subsystem_slug,
+                    sr_key,
+                    round_index,
+                    fn_id,
+                    module_name,
+                    test_reason,
+                    self._preview_for_log(raw_test_content),
+                )
+                raise RuntimeError(f"Invalid LLM-generated pytest content for {subsystem_slug}.{module_name} ({fn_id})")
+            test_content = self._sanitize_generated_runtime_text(raw_test_content)
+            test_path.write_text(test_content, encoding="utf-8")
+            generated_tests_for_current_sr.append(
+                {"fn_id": fn_id, "module_name": module_name, "test_path": str(test_path), "test_content": test_content}
+            )
+
+        existing_ctx_after_tests = self._load_subsystem_existing_source_context(
+            src_subsystem_dir=src_subsystem_dir,
+            tests_subsystem_dir=tests_subsystem_dir,
+            preferred_module_names=preferred_modules,
+        )
+        generated_code_batch = self._generate_python_sr_group_code_with_llm(
+            context=context,
+            subsystem_slug=subsystem_slug,
+            sr_key=sr_key,
+            plans=plans,
+            round_index=round_index,
+            subsystem_architecture_design_doc=subsystem_design_doc,
+            existing_source_context={"source_files": existing_ctx_after_tests.get("source_files", [])},
+            existing_test_context={"test_files": existing_ctx_after_tests.get("test_files", [])},
+            generated_tests_for_current_sr=generated_tests_for_current_sr,
+        )
         group_results: list[dict[str, Any]] = []
         for plan in plans:
-            result = self._develop_single_fn_round(
-                context=context,
-                subsystem_slug=subsystem_slug,
-                plan=plan,
-                round_index=round_index,
+            fn_id = str(plan["fn_id"])
+            module_name = str(plan["module_name"])
+            code_path = Path(plan["code_path"])
+            test_path = Path(plan["test_path"])
+            generated_code = generated_code_batch.get(fn_id) or {}
+            if str(generated_code.get("module_name", "")).strip() != module_name:
+                raise RuntimeError(
+                    f"Invalid SR code batch module mapping for {sr_key}/{fn_id}: expected {module_name}, "
+                    f"got {generated_code.get('module_name', '')}"
+                )
+            raw_code_content = str(generated_code.get("code_content", ""))
+            module_contract = plan.get("module_contract", {}) if isinstance(plan.get("module_contract"), dict) else {}
+            code_ok, code_reason = self._validate_generated_code_content(
+                raw_code_content,
+                module_name=module_name,
+                module_contract=module_contract,
             )
+            if not code_ok:
+                logger.warning(
+                    (
+                        "Developer SR generation invalid content: kind=code "
+                        "subsystem=%s sr_group=%s round=%s fn_id=%s "
+                        "module=%s reason=%s preview=%r"
+                    ),
+                    subsystem_slug,
+                    sr_key,
+                    round_index,
+                    fn_id,
+                    module_name,
+                    code_reason,
+                    self._preview_for_log(raw_code_content),
+                )
+                raise RuntimeError(f"Invalid LLM-generated code content for {subsystem_slug}.{module_name} ({fn_id})")
+
+            code_content = self._sanitize_generated_runtime_text(raw_code_content)
+            code_path.write_text(code_content, encoding="utf-8")
+            result = {"check_result": self._run_static_and_unit_checks(code_path, test_path)}
             plan["check_result"] = result.get("check_result", {})
             group_results.append(result)
         return {"sr_group": sr_key, "fn_count": len(plans), "results": group_results}
+
+    def _develop_single_sr_group_round_with_retry(
+        self,
+        *,
+        context: SkillContext,
+        subsystem_slug: str,
+        sr_key: str,
+        plans: list[dict[str, Any]],
+        round_index: int,
+        max_attempts: int = 2,
+    ) -> dict[str, Any]:
+        attempts = max(1, int(max_attempts or 1))
+        last_error: Exception | None = None
+        attempt_errors: list[str] = []
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._develop_single_sr_group_round(
+                    context=context,
+                    subsystem_slug=subsystem_slug,
+                    sr_key=sr_key,
+                    plans=plans,
+                    round_index=round_index,
+                )
+            except Exception as exc:
+                last_error = exc
+                detail = f"attempt={attempt} cause={exc.__class__.__name__}: {exc}"
+                attempt_errors.append(detail[:500])
+                logger.warning(
+                    "Developer SR group attempt failed: subsystem=%s sr_group=%s round=%s attempt=%s/%s cause=%s",
+                    subsystem_slug,
+                    sr_key,
+                    round_index,
+                    attempt,
+                    attempts,
+                    detail,
+                )
+                if attempt >= attempts:
+                    break
+        message = (
+            f"SR task group failed after {attempts} attempts: subsystem={subsystem_slug} "
+            f"sr_group={sr_key} round={round_index}"
+        )
+        if attempt_errors:
+            message += f"; details={attempt_errors}"
+        raise RuntimeError(message) from last_error
 
     def _process_single_subsystem_batch_rounds(
         self,
@@ -825,10 +1321,11 @@ class DeepDeveloperWorkflowSkill(Skill):
         fn_items: list[dict[str, Any]],
         assign: dict[str, Any],
         subsystem_rounds: int,
+        sr_group_retry_attempts: int,
     ) -> dict[str, Any]:
         subsystem_slug = self._subsystem_slug_from_assignment(assign=assign, subsystem_key=subsystem_key)
         src_subsystem_dir = src_dir / subsystem_slug
-        tests_subsystem_dir = tests_dir / "services" / subsystem_slug
+        tests_subsystem_dir = tests_dir / subsystem_slug
         src_subsystem_dir.mkdir(parents=True, exist_ok=True)
         tests_subsystem_dir.mkdir(parents=True, exist_ok=True)
 
@@ -926,12 +1423,13 @@ class DeepDeveloperWorkflowSkill(Skill):
             round_reviews: list[dict[str, Any]] = []
             # Within one subsystem, SR groups execute serially to maximize file/code reuse continuity.
             for sr_key, group_plans in sr_groups.items():
-                _ = self._develop_single_sr_group_round(
+                _ = self._develop_single_sr_group_round_with_retry(
                     context=context,
                     subsystem_slug=subsystem_slug,
                     sr_key=sr_key,
                     plans=group_plans,
                     round_index=round_index,
+                    max_attempts=sr_group_retry_attempts,
                 )
 
             for plan in fn_plans:
@@ -1030,6 +1528,25 @@ class DeepDeveloperWorkflowSkill(Skill):
             grouped.setdefault(sr_key, []).append(plan)
         return grouped
 
+    def _build_sr_groups_summary_from_fn_items(self, fn_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[str, list[str]] = {}
+        for item in fn_items:
+            if not isinstance(item, dict):
+                continue
+            fn_id = str(item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"
+            sr_key = self._sr_group_key_from_fn_id(fn_id)
+            grouped.setdefault(sr_key, []).append(fn_id)
+        rows: list[dict[str, Any]] = []
+        for sr_key, fn_ids in grouped.items():
+            rows.append(
+                {
+                    "sr_id": sr_key,
+                    "fn_ids": [str(x) for x in fn_ids],
+                    "fn_count": len(fn_ids),
+                }
+            )
+        return rows
+
     def _sr_group_key_from_fn_id(self, fn_id: str) -> str:
         text = str(fn_id or "").strip().upper()
         match = re.search(r"FN-(SR-\d+)-\d+", text)
@@ -1043,19 +1560,176 @@ class DeepDeveloperWorkflowSkill(Skill):
     def _run_static_and_unit_checks(self, code_path: Path, test_path: Path) -> dict[str, str]:
         code_text = code_path.read_text(encoding="utf-8")
         test_text = test_path.read_text(encoding="utf-8")
-        static_ok = "passed" if "implement_" in code_text and "return" in code_text else "failed"
+        has_callable_impl = "implement_" in code_text or ("class " in code_text and "def " in code_text)
+        static_ok = "passed" if has_callable_impl and "return" in code_text else "failed"
         unit_ok = "passed" if "def test_" in test_text else "failed"
         return {"static_check": static_ok, "unit_test": unit_ok}
 
-    def _is_valid_generated_code_content(self, code_content: str, *, module_name: str) -> bool:
+    def _extract_python_top_level_class_names(self, code_text: str) -> list[str]:
+        names: list[str] = []
+        for line in str(code_text or "").splitlines():
+            if line.startswith((" ", "\t")):
+                continue
+            match = re.match(r"class\s+([A-Za-z_][A-Za-z0-9_]*)\b", line)
+            if not match:
+                continue
+            name = str(match.group(1))
+            if name not in names:
+                names.append(name)
+        return names
+
+    def _extract_python_top_level_function_names(self, code_text: str) -> list[str]:
+        names: list[str] = []
+        for line in str(code_text or "").splitlines():
+            if line.startswith((" ", "\t")):
+                continue
+            match = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\b", line)
+            if not match:
+                continue
+            name = str(match.group(1))
+            if name not in names:
+                names.append(name)
+        return names
+
+    def _infer_python_module_contract(self, *, code_path: Path, module_name: str) -> dict[str, Any]:
+        if not code_path.exists():
+            return {"style": "open", "entrypoint": "", "class_names": [], "function_names": []}
+        try:
+            code_text = code_path.read_text(encoding="utf-8")
+        except OSError:
+            return {"style": "open", "entrypoint": "", "class_names": [], "function_names": []}
+        class_names = self._extract_python_top_level_class_names(code_text)
+        if class_names:
+            return {
+                "style": "class",
+                "entrypoint": "",
+                "class_names": class_names,
+                "function_names": self._extract_python_top_level_function_names(code_text),
+                "preserve_class_names": class_names[:4],
+            }
+        function_names = self._extract_python_top_level_function_names(code_text)
+        if function_names:
+            preferred = (
+                f"implement_{module_name}" if f"implement_{module_name}" in function_names else function_names[0]
+            )
+            return {"style": "function", "entrypoint": preferred, "class_names": [], "function_names": function_names}
+        return {"style": "open", "entrypoint": "", "class_names": [], "function_names": []}
+
+    def _preview_for_log(self, text: str, *, limit: int = 600) -> str:
+        raw = str(text or "")
+        if len(raw) <= limit:
+            return raw
+        return raw[:limit].rstrip() + "...(truncated)"
+
+    def _truncate_text_for_prompt(self, text: str, limit: int, default: str) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return default
+        return raw[:limit]
+
+    def _validate_generated_code_content(
+        self,
+        code_content: str,
+        *,
+        module_name: str,
+        module_contract: dict[str, Any] | None = None,
+    ) -> tuple[bool, str]:
+        contract = module_contract if isinstance(module_contract, dict) else {}
+        style = str(contract.get("style", "")).strip().lower() or "function"
+        class_names = (
+            [str(x).strip() for x in contract.get("class_names", [])]
+            if isinstance(contract.get("class_names"), list)
+            else []
+        )
         if not code_content.strip():
-            return False
-        expected_signature = f"def implement_{module_name}("
-        if expected_signature not in code_content:
-            return False
+            return False, "empty_content"
+        if self._looks_truncated_text(code_content):
+            return False, "truncated_text"
+        if style == "class" and class_names:
+            if not any(re.search(rf"\bclass\s+{re.escape(name)}\b", code_content) for name in class_names):
+                return False, "class_skeleton_lost"
+            if "def " not in code_content:
+                return False, "method_missing"
+        elif style == "function":
+            entrypoint = str(contract.get("entrypoint", "")).strip()
+            if entrypoint:
+                if f"def {entrypoint}(" not in code_content:
+                    return False, "function_signature_missing"
+            elif not re.search(r"\bdef\s+[A-Za-z_][A-Za-z0-9_]*\(", code_content):
+                return False, "function_missing"
+        else:
+            if not (
+                re.search(r"\bclass\s+[A-Za-z_][A-Za-z0-9_]*\b", code_content)
+                or re.search(r"\bdef\s+[A-Za-z_][A-Za-z0-9_]*\(", code_content)
+            ):
+                return False, "no_public_api_detected"
         if re.search(r"\[?FN-[A-Z0-9-]+\]?", code_content):
-            return False
-        return True
+            return False, "contains_fn_id_token"
+        return True, ""
+
+    def _is_valid_generated_code_content(self, code_content: str, *, module_name: str) -> bool:
+        ok, _ = self._validate_generated_code_content(code_content, module_name=module_name)
+        return ok
+
+    def _validate_generated_test_content(
+        self,
+        *,
+        test_content: str,
+        subsystem_slug: str,
+        module_name: str,
+        module_contract: dict[str, Any] | None = None,
+    ) -> tuple[bool, str]:
+        contract = module_contract if isinstance(module_contract, dict) else {}
+        style = str(contract.get("style", "")).strip().lower() or "function"
+        class_names = (
+            [str(x).strip() for x in contract.get("class_names", [])]
+            if isinstance(contract.get("class_names"), list)
+            else []
+        )
+        function_names = (
+            [str(x).strip() for x in contract.get("function_names", [])]
+            if isinstance(contract.get("function_names"), list)
+            else []
+        )
+        if not test_content.strip():
+            return False, "empty_content"
+        if self._looks_truncated_text(test_content):
+            return False, "truncated_text"
+        if "from your_module import" in test_content:
+            return False, "placeholder_import"
+        expected_import_prefix = f"from src.{subsystem_slug}.{module_name} import "
+        if style == "class" and class_names:
+            class_import_ok = any(f"{expected_import_prefix}{class_name}" in test_content for class_name in class_names)
+            if not class_import_ok and expected_import_prefix not in test_content:
+                return False, "expected_class_or_function_import_missing"
+        elif style == "function":
+            entrypoint = str(contract.get("entrypoint", "")).strip()
+            if entrypoint:
+                if (
+                    f"{expected_import_prefix}{entrypoint}" not in test_content
+                    and expected_import_prefix not in test_content
+                ):
+                    return False, "expected_function_import_missing"
+            elif expected_import_prefix not in test_content:
+                return False, "expected_module_import_missing"
+        else:
+            if expected_import_prefix not in test_content:
+                return False, "expected_import_missing"
+        if re.search(r"\[?FN-[A-Z0-9-]+\]?", test_content):
+            return False, "contains_fn_id_token"
+        if style == "class" and class_names:
+            symbol_ok = any(class_name in test_content for class_name in class_names)
+            if not symbol_ok:
+                return False, "expected_class_or_function_symbol_missing"
+        elif style == "function" and function_names:
+            if not any(name in test_content for name in function_names):
+                return False, "expected_function_symbol_missing"
+        else:
+            if expected_import_prefix not in test_content:
+                return False, "expected_symbol_missing"
+        if test_content.count("def test_") < 2:
+            return False, "test_count_lt_2"
+        return True, ""
 
     def _is_valid_generated_test_content(
         self,
@@ -1064,16 +1738,12 @@ class DeepDeveloperWorkflowSkill(Skill):
         subsystem_slug: str,
         module_name: str,
     ) -> bool:
-        if not test_content.strip():
-            return False
-        if "from your_module import" in test_content:
-            return False
-        expected_import = f"from src.{subsystem_slug}.{module_name} import implement_{module_name}"
-        if expected_import not in test_content:
-            return False
-        if re.search(r"\[?FN-[A-Z0-9-]+\]?", test_content):
-            return False
-        return f"implement_{module_name}" in test_content and "def test_" in test_content
+        ok, _ = self._validate_generated_test_content(
+            test_content=test_content,
+            subsystem_slug=subsystem_slug,
+            module_name=module_name,
+        )
+        return ok
 
     def _sanitize_generated_runtime_text(self, text: str) -> str:
         if not text:
@@ -1297,6 +1967,32 @@ class DeepDeveloperWorkflowSkill(Skill):
             slug = f"fn_{slug}"
         return slug
 
+    def _resolve_review_round_bounds(self, *, input_data: dict[str, Any], context: SkillContext) -> tuple[int, int]:
+        limits = input_data.get("_review_round_limits")
+        if not isinstance(limits, dict):
+            limits = context.parameters.get("workflow_review_round_limits")
+        min_rounds = int((limits or {}).get("min_rounds", 2) or 2)
+        max_rounds = int((limits or {}).get("max_rounds", 3) or 3)
+        min_rounds = max(1, min_rounds)
+        max_rounds = max(1, max_rounds)
+        if min_rounds > max_rounds:
+            min_rounds, max_rounds = max_rounds, min_rounds
+        return min_rounds, max_rounds
+
+    def _resolve_sr_group_retry_attempts(self, *, input_data: dict[str, Any], context: SkillContext) -> int:
+        raw_value = input_data.get("sr_group_retry_attempts")
+        if raw_value is None:
+            raw_value = input_data.get("_developer_sr_task_retry_attempts")
+        if raw_value is None:
+            raw_value = input_data.get("_developer_sr_group_retry_attempts")
+        if raw_value is None:
+            raw_value = context.parameters.get("developer_sr_task_retry_attempts")
+        try:
+            attempts = int(raw_value or 2)
+        except (TypeError, ValueError):
+            attempts = 2
+        return max(1, attempts)
+
     def _normalize_module_candidate(self, raw: str, *, subsystem_slug: str) -> str:
         if not str(raw or "").strip():
             return ""
@@ -1480,16 +2176,48 @@ class DeepDeveloperWorkflowSkill(Skill):
                 )
             except Exception as exc:
                 last_error = exc
+                logger.warning(
+                    (
+                        "Developer LLM segment attempt failed: purpose=%s "
+                        "attempt=%s/%s module=%s subsystem=%s "
+                        "error_type=%s error=%s"
+                    ),
+                    purpose,
+                    attempt,
+                    max(1, max_attempts),
+                    module_name,
+                    subsystem_slug,
+                    exc.__class__.__name__,
+                    str(exc),
+                )
                 continue
             if isinstance(payload, dict):
                 last_partial = payload
-            if self._segment_payload_ok(
+            validation_error = self._segment_payload_validation_error(
                 payload,
                 required_keys=required_keys,
                 module_name=module_name,
                 subsystem_slug=subsystem_slug,
-            ):
+            )
+            if validation_error is None:
                 return payload
+            payload_keys = list(payload.keys()) if isinstance(payload, dict) else []
+            logger.warning(
+                (
+                    "Developer LLM segment invalid payload: purpose=%s "
+                    "attempt=%s/%s module=%s subsystem=%s reason=%s "
+                    "required_keys=%s payload_keys=%s partial_preview=%r"
+                ),
+                purpose,
+                attempt,
+                max(1, max_attempts),
+                module_name,
+                subsystem_slug,
+                validation_error,
+                list(required_keys),
+                payload_keys,
+                self._preview_for_log(self._compact_json(payload) if isinstance(payload, dict) else str(payload)),
+            )
         missing = [key for key in required_keys if key not in last_partial]
         message = (
             f"LLM segment failed for {purpose}: invalid/incomplete JSON after {max(1, max_attempts)} attempts; "
@@ -1509,27 +2237,51 @@ class DeepDeveloperWorkflowSkill(Skill):
         module_name: str,
         subsystem_slug: str,
     ) -> bool:
+        return (
+            self._segment_payload_validation_error(
+                payload,
+                required_keys=required_keys,
+                module_name=module_name,
+                subsystem_slug=subsystem_slug,
+            )
+            is None
+        )
+
+    def _segment_payload_validation_error(
+        self,
+        payload: dict[str, Any],
+        *,
+        required_keys: list[str],
+        module_name: str,
+        subsystem_slug: str,
+    ) -> str | None:
         if not isinstance(payload, dict):
-            return False
+            return "payload_not_object"
         for key in required_keys:
             if key not in payload:
-                return False
+                return f"missing_key:{key}"
         if "code_content" in required_keys:
             code = str(payload.get("code_content", "")).strip()
-            if len(code) < 80 or self._looks_truncated_text(code):
-                return False
-            if f"def implement_{module_name}(" not in code:
-                return False
+            if len(code) < 80:
+                return "code_too_short"
+            if self._looks_truncated_text(code):
+                return "truncated_code_content"
+            if not (
+                re.search(r"\bclass\s+[A-Za-z_][A-Za-z0-9_]*\b", code)
+                or re.search(r"\bdef\s+[A-Za-z_][A-Za-z0-9_]*\(", code)
+            ):
+                return "no_public_api_detected_in_code"
         if "test_content" in required_keys:
             tests = str(payload.get("test_content", "")).strip()
-            if len(tests) < 80 or self._looks_truncated_text(tests):
-                return False
-            expected_import = f"from src.{subsystem_slug}.{module_name} import implement_{module_name}"
-            if expected_import not in tests:
-                return False
+            if len(tests) < 80:
+                return "test_too_short"
+            if self._looks_truncated_text(tests):
+                return "truncated_test_content"
+            if f"from src.{subsystem_slug}." not in tests:
+                return "test_import_mismatch"
             if tests.count("def test_") < 2:
-                return False
-        return True
+                return "test_count_lt_2"
+        return None
 
     def _looks_truncated_text(self, text: str) -> bool:
         if not text:
@@ -1553,9 +2305,21 @@ class DeepDeveloperWorkflowSkill(Skill):
     ) -> dict[str, Any]:
         if context.llm_client is None:
             raise RuntimeError("LLM client is required for deep_developer_workflow")
+        json_contract = (
+            "\n\nOutput contract:\n"
+            "- Return exactly one JSON object only.\n"
+            "- Do not return markdown fences, comments, or explanatory prose.\n"
+            "- Do not wrap the object under extra keys such as "
+            "data/result/output/payload unless explicitly requested.\n"
+            "- Use exact key names and nested key names specified in the prompt schema (no translation/synonyms).\n"
+            "- Use exact enum/keyword literals specified in the prompt "
+            "(for example language names, booleans, status values).\n"
+            "- Match the expected value types in the schema "
+            "(string/list/object/boolean), do not stringify nested JSON.\n"
+        )
         response = context.llm_client.complete(
             [
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": system_prompt + json_contract},
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},

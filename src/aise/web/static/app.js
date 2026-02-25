@@ -655,7 +655,7 @@ function setupRunReact() {
         return taskResult.status === "success" ? "completed" : "failed";
       }
       if (phaseState === "completed") return "completed";
-      if (phaseState === "failed") return "failed";
+      if (phaseState === "failed") return "pending";
       if (phaseState === "running") return "pending";
       return "pending";
     }
@@ -810,10 +810,25 @@ function setupRunReact() {
       if (providerMeta.finish_reason) bullets.push(`- **finish_reason**: ${providerMeta.finish_reason}`);
       if (providerMeta.total_tokens) bullets.push(`- **total_tokens**: ${providerMeta.total_tokens}`);
       if (bullets.length) sections.push(bullets.join("\n"));
+
+      const inputMessages = Array.isArray(details.input_messages) ? details.input_messages : [];
+      const inputKwargs =
+        details.input_kwargs && typeof details.input_kwargs === "object" ? details.input_kwargs : null;
+      if (inputMessages.length) {
+        sections.push("### Input Messages");
+        sections.push(`\`\`\`json\n${JSON.stringify(inputMessages, null, 2)}\n\`\`\``);
+      }
+      if (inputKwargs && Object.keys(inputKwargs).length) {
+        sections.push("### Input Kwargs");
+        sections.push(`\`\`\`json\n${JSON.stringify(inputKwargs, null, 2)}\n\`\`\``);
+      }
+
+      const fullOutput = String(details.output || "").trim();
       const preview = String(details.output_preview || "").trim();
-      if (preview) {
-        sections.push("### Output Preview");
-        sections.push(formatTraceOutputPreviewMarkdown(preview));
+      const outputText = fullOutput || preview;
+      if (outputText) {
+        sections.push(fullOutput ? "### Output" : "### Output Preview");
+        sections.push(formatTraceOutputPreviewMarkdown(outputText));
       }
       return sections.join("\n\n").trim();
     }
@@ -1005,6 +1020,18 @@ function setupRunReact() {
       return meta && meta.subsystem ? String(meta.subsystem) : "";
     }
 
+    function inferLiveSr(task) {
+      const meta =
+        task &&
+        task.liveState &&
+        task.liveState.last_event &&
+        task.liveState.last_event.purpose_meta &&
+        typeof task.liveState.last_event.purpose_meta === "object"
+          ? task.liveState.last_event.purpose_meta
+          : null;
+      return meta && meta.sr ? String(meta.sr) : "";
+    }
+
     function normalizeSubsystemMatchKey(value) {
       return String(value || "")
         .trim()
@@ -1013,9 +1040,48 @@ function setupRunReact() {
         .replace(/^_+|_+$/g, "");
     }
 
-    function subsystemCardState(baseTask, subsystemRef) {
+    function extractDeveloperSrFailureTarget(task) {
+      if (!task || typeof task !== "object") return null;
+      const candidates = [];
+      if (task.taskStateItem && typeof task.taskStateItem === "object") {
+        if (task.taskStateItem.last_error) candidates.push(String(task.taskStateItem.last_error));
+      }
+      if (task.runtimeResult && typeof task.runtimeResult === "object") {
+        ["error", "message", "detail"].forEach((k) => {
+          if (task.runtimeResult[k]) candidates.push(String(task.runtimeResult[k]));
+        });
+      }
+      const text = candidates.find((x) => /sr_group=|subsystem=/.test(String(x))) || candidates[0] || "";
+      if (!text) return null;
+      const subsystemMatch = text.match(/\bsubsystem=([a-zA-Z0-9_.-]+)/);
+      const srGroupMatch = text.match(/\bsr_group=([A-Za-z0-9_-]+)/);
+      const fnMatch = text.match(/\b(FN-[A-Z0-9-]+)\b/);
+      if (!subsystemMatch && !srGroupMatch && !fnMatch) return null;
+      return {
+        subsystem: subsystemMatch ? String(subsystemMatch[1]) : "",
+        srGroup: srGroupMatch ? String(srGroupMatch[1]) : "",
+        fnId: fnMatch ? String(fnMatch[1]) : "",
+        message: text,
+      };
+    }
+
+    function subsystemCardState(baseTask, subsystemRef, options) {
       if (!baseTask) return "pending";
       const baseStatus = String(baseTask.status || "pending");
+      if (baseStatus === "failed") {
+        const failure = extractDeveloperSrFailureTarget(baseTask);
+        if (!failure || !failure.subsystem) return "failed";
+        const failureKey = normalizeSubsystemMatchKey(failure.subsystem);
+        const candidates = [];
+        if (subsystemRef && typeof subsystemRef === "object") {
+          candidates.push(subsystemRef.subsystemSlug, subsystemRef.subsystemId, subsystemRef.subsystemName);
+        } else {
+          candidates.push(subsystemRef);
+        }
+        const matched = candidates.some((item) => normalizeSubsystemMatchKey(item) === failureKey);
+        return matched ? "failed" : "pending";
+      }
+      const preserveRunningForNonLive = !!(options && options.preserveRunningForNonLive);
       const liveSubsystem = inferLiveSubsystem(baseTask);
       if (baseStatus === "running") {
         const liveKey = normalizeSubsystemMatchKey(liveSubsystem);
@@ -1029,9 +1095,58 @@ function setupRunReact() {
           ? candidates.some((item) => normalizeSubsystemMatchKey(item) === liveKey)
           : false;
         if (matched) return "running";
-        return "pending";
+        return preserveRunningForNonLive ? "running" : "pending";
       }
       return baseStatus;
+    }
+
+    function srGroupCardState(baseTask, subsystemRef, srRef) {
+      if (!baseTask) return "pending";
+      const baseStatus = String(baseTask.status || "pending");
+      if (baseStatus === "failed") {
+        const failure = extractDeveloperSrFailureTarget(baseTask);
+        if (!failure || !(failure.subsystem || failure.srGroup)) return "failed";
+        const failureSubsystemKey = normalizeSubsystemMatchKey(failure.subsystem);
+        const failureSrKey = normalizeSubsystemMatchKey(failure.srGroup);
+        const subsystemCandidates = [];
+        if (subsystemRef && typeof subsystemRef === "object") {
+          subsystemCandidates.push(subsystemRef.subsystemSlug, subsystemRef.subsystemId, subsystemRef.subsystemName);
+        } else {
+          subsystemCandidates.push(subsystemRef);
+        }
+        const srCandidates = [];
+        if (srRef && typeof srRef === "object") {
+          srCandidates.push(srRef.srId, srRef.srKey);
+        } else {
+          srCandidates.push(srRef);
+        }
+        const subsystemMatched = failureSubsystemKey
+          ? subsystemCandidates.some((item) => normalizeSubsystemMatchKey(item) === failureSubsystemKey)
+          : true;
+        const srMatched = failureSrKey ? srCandidates.some((item) => normalizeSubsystemMatchKey(item) === failureSrKey) : true;
+        return subsystemMatched && srMatched ? "failed" : "pending";
+      }
+      if (baseStatus !== "running") return baseStatus;
+      const liveSubsystemKey = normalizeSubsystemMatchKey(inferLiveSubsystem(baseTask));
+      const liveSrKey = normalizeSubsystemMatchKey(inferLiveSr(baseTask));
+      const subsystemCandidates = [];
+      if (subsystemRef && typeof subsystemRef === "object") {
+        subsystemCandidates.push(subsystemRef.subsystemSlug, subsystemRef.subsystemId, subsystemRef.subsystemName);
+      } else {
+        subsystemCandidates.push(subsystemRef);
+      }
+      const srCandidates = [];
+      if (srRef && typeof srRef === "object") {
+        srCandidates.push(srRef.srId, srRef.srKey);
+      } else {
+        srCandidates.push(srRef);
+      }
+      const subsystemMatched = liveSubsystemKey
+        ? subsystemCandidates.some((item) => normalizeSubsystemMatchKey(item) === liveSubsystemKey)
+        : false;
+      const srMatched = liveSrKey ? srCandidates.some((item) => normalizeSubsystemMatchKey(item) === liveSrKey) : false;
+      if (subsystemMatched && srMatched) return "running";
+      return "pending";
     }
 
     function buildCompositeTaskCards(phaseKey, agentTasks) {
@@ -1210,18 +1325,41 @@ function setupRunReact() {
                   subsystemId,
                   subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
                   subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
-                }),
+                }, { preserveRunningForNonLive: true }),
                 reviewStatus: subsystemCardState(reviewTask, {
                   subsystemId,
                   subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
                   subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
-                }),
+                }, { preserveRunningForNonLive: true }),
                 designRoundTotal: readRoundCount(devTask || reviewTask, "step2"),
                 reviewRoundTotal: readRoundCount(devTask || reviewTask, "step2"),
                 designRoundCurrent:
                   inferLiveSubsystem(devTask) === subsystemId ? inferLiveRound(devTask) : 0,
                 reviewRoundCurrent:
                   inferLiveSubsystem(reviewTask) === subsystemId ? inferLiveRound(reviewTask) : 0,
+                srGroups: (Array.isArray(sub && (sub.srs || sub.sr_groups)) ? (sub.srs || sub.sr_groups) : []).map((sr) => {
+                  const srId = String((sr && (sr.sr_id || sr.sr_key || sr.id)) || "");
+                  const subsystemRef = {
+                    subsystemId,
+                    subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
+                    subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
+                  };
+                  return {
+                    srId,
+                    fnIds: Array.isArray(sr && sr.fn_ids) ? sr.fn_ids.map((x) => String(x)) : [],
+                    fnCount: Number(sr && sr.fn_count) || 0,
+                    designStatus: srGroupCardState(devTask, subsystemRef, { srId }),
+                    reviewStatus: srGroupCardState(reviewTask, subsystemRef, { srId }),
+                    designRoundTotal: readRoundCount(devTask || reviewTask, "step2"),
+                    reviewRoundTotal: readRoundCount(devTask || reviewTask, "step2"),
+                    designRoundCurrent:
+                      inferLiveSubsystem(devTask) === subsystemId && inferLiveSr(devTask) === srId ? inferLiveRound(devTask) : 0,
+                    reviewRoundCurrent:
+                      inferLiveSubsystem(reviewTask) === subsystemId && inferLiveSr(reviewTask) === srId
+                        ? inferLiveRound(reviewTask)
+                        : 0,
+                  };
+                }),
                 extraStatus: revisionTask ? taskStatusLabel(revisionTask.status) : "",
               };
             }),
@@ -1495,6 +1633,23 @@ function setupRunReact() {
             }),
           }
         );
+        setRun((prev) => {
+          if (!prev || typeof prev !== "object") return prev;
+          return {
+            ...prev,
+            status: "running",
+            error: "",
+            completed_at: "",
+            active_operation: {
+              op_id: String(payload && payload.op_id ? payload.op_id : ""),
+              type: "task_retry",
+              status: "running",
+              phase_key: selectedTaskDetail.phaseKey,
+              task_key: selectedTaskDetail.key,
+              mode: retryMode === "downstream" ? "downstream" : "current",
+            },
+          };
+        });
         setRetryNotice(`已提交重试: ${payload.op_id || ""}`);
       } catch (err) {
         setRetryError(err instanceof Error ? err.message : "任务重试提交失败");
@@ -1728,6 +1883,50 @@ function setupRunReact() {
                                               card.reviewTask.progressText
                                             ? card.reviewTask.progressText
                                             : ""
+                                      )
+                                    : null
+                                  ,
+                                  row.srGroups && row.srGroups.length
+                                    ? h(
+                                        "div",
+                                        { className: "flow-subsystem-sr-list" },
+                                        ...row.srGroups.map((sr, srIdx) =>
+                                          h(
+                                            "div",
+                                            {
+                                              className: `flow-subsystem-sr-item ${String(sr.designStatus || "pending")}`,
+                                              key: `${card.key}-sub-${idx}-sr-${srIdx}-${sr.srId || "na"}`,
+                                            },
+                                            h(
+                                              "div",
+                                              { className: "flow-subsystem-sr-head" },
+                                              h("span", { className: "flow-subsystem-sr-title" }, sr.srId || "SR"),
+                                              h(
+                                                "span",
+                                                { className: `flow-dual-pill design ${String(sr.designStatus || "pending")}` },
+                                                `开 ${taskStatusLabel(String(sr.designStatus || "pending"))}${
+                                                  sr.designRoundCurrent
+                                                    ? ` · R${sr.designRoundCurrent}`
+                                                    : sr.designRoundTotal
+                                                      ? ` · ${sr.designRoundTotal}轮`
+                                                      : ""
+                                                }`
+                                              ),
+                                              h(
+                                                "span",
+                                                { className: `flow-dual-pill review ${String(sr.reviewStatus || "pending")}` },
+                                                `审 ${taskStatusLabel(String(sr.reviewStatus || "pending"))}${
+                                                  sr.reviewRoundCurrent
+                                                    ? ` · R${sr.reviewRoundCurrent}`
+                                                    : sr.reviewRoundTotal
+                                                      ? ` · ${sr.reviewRoundTotal}轮`
+                                                      : ""
+                                                }`
+                                              )
+                                            ),
+                                            null
+                                          )
+                                        )
                                       )
                                     : null
                                 )

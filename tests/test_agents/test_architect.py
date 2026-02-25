@@ -118,6 +118,25 @@ class TestArchitectAgent:
         assert artifact.content["workflow"] == "deep_architecture_workflow"
         assert (tmp_path / "project_0-demo" / "docs" / "system-architecture.md").exists()
         assert (tmp_path / "project_0-demo" / "src" / "main.py").exists()
+        subsystem_design_docs = sorted((tmp_path / "project_0-demo" / "docs").glob("subsystem-*-design.md"))
+        assert subsystem_design_docs
+        assert not list((tmp_path / "project_0-demo" / "docs").glob("*-detail-design.md"))
+        detail_doc_text = subsystem_design_docs[0].read_text(encoding="utf-8")
+        assert "## Logical Architecture Views" in detail_doc_text
+        assert "## Module Class Designs" in detail_doc_text
+        assert "```mermaid" in detail_doc_text
+        assert "classDiagram" in detail_doc_text
+        subsystem_root = tmp_path / "project_0-demo" / "src"
+        module_files = [p for p in subsystem_root.glob("*/*.py") if p.name != "__init__.py"]
+        assert module_files
+        assert all(p.name.isascii() for p in subsystem_root.glob("*/*.py"))
+        sample_module = module_files[0].read_text(encoding="utf-8")
+        assert "class " in sample_module
+        assert "import" in sample_module
+        assert list(subsystem_root.glob("*/__init__.py"))
+        assert not list(subsystem_root.glob("*/schemas.py"))
+        assert not list(subsystem_root.glob("*/service.py"))
+        assert not list(subsystem_root.glob("*/api.py"))
 
     def test_deep_architecture_workflow_generates_generic_subsystem_names(self, tmp_path):
         bus = MessageBus()

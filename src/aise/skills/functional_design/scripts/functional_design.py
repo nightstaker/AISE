@@ -293,6 +293,8 @@ class FunctionalDesignSkill(Skill):
             "{"
             '"functions":[{"source_ar":"AR-...","type":"service|component","name":"string","description":"string","layer":"api|business|data|integration","subsystem":"string","interfaces":[{"method":"GET","path":"/api/v1/x","description":"string"}],"dependencies":["string"],"file_path":"src/...py","estimated_complexity":"low|medium|high"}]'
             "}"
+            "。顶层键必须是 functions；所有键名与枚举值必须按示例精确输出；"
+            "不得翻译或改名；不得包裹在 data/result/output/payload 下。"
         )
         response = context.llm_client.complete(
             [

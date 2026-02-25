@@ -6,6 +6,7 @@
     <a class="{% if section == 'models' %}active{% endif %}" href="/config/global/models">Models</a>
     <a class="{% if section == 'agents' %}active{% endif %}" href="/config/global/agents">Agents</a>
     <a class="{% if section == 'workspace' %}active{% endif %}" href="/config/global/workspace">工作空间</a>
+    <a class="{% if section == 'workflow' %}active{% endif %}" href="/config/global/workflow">工作流</a>
     <a class="{% if section == 'logging' %}active{% endif %}" href="/config/global/logging">日志系统</a>
     <a class="{% if section == 'json' %}active{% endif %}" href="/config/global/json">Raw JSON</a>
   </aside>
@@ -85,6 +86,21 @@
       <input name="artifacts_root" value="{{ config_data.workspace.artifacts_root }}">
       <label><input type="checkbox" name="auto_create_dirs" {% if config_data.workspace.auto_create_dirs %}checked{% endif %}> 自动创建目录</label>
       <button class="btn" type="submit">保存工作空间配置</button>
+    </form>
+    {% endif %}
+
+    {% if section == "workflow" %}
+    <form method="post" action="/config/global/workflow" class="stack">
+      <label>最少 Review 轮次（全局）</label>
+      <input type="number" min="1" step="1" name="review_min_rounds" value="{{ config_data.workflow.review_min_rounds }}">
+      <label>最多 Review 轮次（全局）</label>
+      <input type="number" min="1" step="1" name="review_max_rounds" value="{{ config_data.workflow.review_max_rounds }}">
+      <label>开发阶段 SR 任务重试总尝试次数（全局）</label>
+      <input type="number" min="1" step="1" name="developer_sr_task_retry_attempts" value="{{ config_data.workflow.developer_sr_task_retry_attempts }}">
+      <label>工作流最大评审迭代（兼容旧配置）</label>
+      <input type="number" min="1" step="1" name="max_review_iterations" value="{{ config_data.workflow.max_review_iterations }}">
+      <label><input type="checkbox" name="fail_on_review_rejection" {% if config_data.workflow.fail_on_review_rejection %}checked{% endif %}> 评审拒绝时立即失败</label>
+      <button class="btn" type="submit">保存工作流配置</button>
     </form>
     {% endif %}
 

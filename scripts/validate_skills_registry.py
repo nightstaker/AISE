@@ -232,14 +232,14 @@ def validate_spec(records: list[SkillRecord]) -> list[str]:
         if row.module_path != rec.module_path:
             errors.append(f"Spec module mismatch for {name}: {row.module_path} != {rec.module_path}")
         if tuple(sorted(row.agents)) != tuple(sorted(rec.registered_agents)):
-            errors.append(
-                f"Spec agents mismatch for {name}: {row.agents} != {rec.registered_agents}"
-            )
+            errors.append(f"Spec agents mismatch for {name}: {row.agents} != {rec.registered_agents}")
     return errors
 
 
 def print_inventory(records: list[SkillRecord]) -> None:
-    print("directory_name\truntime_skill_name\tclass_name\tmodule_path\tregistered_agents\thas_skill_md\tscript_entry_path")
+    print(
+        "directory_name\truntime_skill_name\tclass_name\tmodule_path\tregistered_agents\thas_skill_md\tscript_entry_path"
+    )
     for rec in records:
         print(
             "\t".join(

@@ -90,6 +90,8 @@ class WebProjectService:
         self._runs_by_project: dict[str, list[WorkflowRun]] = {}
         self._requirements_by_project: dict[str, list[RequirementEntry]] = {}
         self._lock = RLock()
+        self._active_workflow_runs: set[tuple[str, str]] = set()
+        self._active_retry_ops: set[str] = set()
         self._state_path = self.project_manager._projects_root / "web_state.json"
         self._restore_projects_from_disk()
         self._load_state()
@@ -175,6 +177,7 @@ class WebProjectService:
             project = self.project_manager.get_project(project_id)
             run = self._find_run(project_id, run_id)
             if run is not None:
+                self._recover_stale_run_execution_state_locked(project_id, run_id, run)
                 payload = self._serialize_run(run)
                 payload = self._augment_live_phase_results(project_id, payload, run=run, project=project)
                 task_summary = self.get_run_task_state_summary(project_id, run_id)
@@ -240,6 +243,7 @@ class WebProjectService:
             run = self._find_run(project_id, run_id)
             if project is None or run is None:
                 return None
+            self._recover_stale_run_execution_state_locked(project_id, run_id, run)
             store = self._run_task_state_store(project_id, run_id)
             item = store.get_task(phase_key, task_key)
             summary = store.summary()
@@ -271,6 +275,7 @@ class WebProjectService:
             run = self._find_run(project_id, run_id)
             if project is None or run is None:
                 raise ValueError("Run not found")
+            self._recover_stale_run_execution_state_locked(project_id, run_id, run)
             if str(run.status).lower() in {"pending", "running"}:
                 store_check = self._run_task_state_store(project_id, run_id).load().get("active_operation")
                 if not (isinstance(store_check, dict) and str(store_check.get("status", "")).lower() == "running"):
@@ -302,6 +307,7 @@ class WebProjectService:
                 "started_at": datetime.now(timezone.utc).isoformat(),
             }
             store.set_active_operation(active_op)
+            self._active_retry_ops.add(op_id)
             run.status = "running"
             run.error = ""
             self._save_state()
@@ -362,6 +368,7 @@ class WebProjectService:
                 status="pending",
             )
             self._runs_by_project.setdefault(project_id, []).append(run)
+            self._active_workflow_runs.add((project_id, run_id))
             self._save_state()
             logger.info("Web requirement queued: project_id=%s run_id=%s", project_id, run_id)
 
@@ -405,6 +412,7 @@ class WebProjectService:
             error_message = str(exc)
         finally:
             with self._lock:
+                self._active_retry_ops.discard(op_id)
                 run = self._find_run(project_id, run_id)
                 if run is not None:
                     run.error = error_message
@@ -457,6 +465,18 @@ class WebProjectService:
             recorder = TaskMemoryRecorder(self._run_task_state_store(project_id, run_id))
             retry_input.setdefault("retry_task_key", unit.task_key)
             retry_input.setdefault("retry_mode", mode)
+            if getattr(project, "config", None) is not None:
+                retry_input.setdefault(
+                    "_review_round_limits",
+                    {
+                        "min_rounds": int(getattr(project.config.workflow, "review_min_rounds", 2) or 2),
+                        "max_rounds": int(getattr(project.config.workflow, "review_max_rounds", 3) or 3),
+                    },
+                )
+                retry_input.setdefault(
+                    "_developer_sr_task_retry_attempts",
+                    max(1, int(getattr(project.config.workflow, "developer_sr_task_retry_attempts", 2) or 2)),
+                )
 
             attempt_started = recorder.record_task_attempt_start(
                 phase_key=unit.phase_key,
@@ -554,67 +574,110 @@ class WebProjectService:
     def _execute_workflow_run(self, project_id: str, run_id: str, requirement: str) -> None:
         task_store = self._run_task_state_store(project_id, run_id)
         task_recorder = TaskMemoryRecorder(task_store)
-        with self._lock:
-            run = self._find_run(project_id, run_id)
-            if run is None:
-                return
-            run.status = "running"
-            run.error = ""
-            memory_items = [
-                entry.text for entry in self._requirements_by_project.get(project_id, []) if entry.text.strip()
-            ]
-            self._save_state()
-
         try:
-            results = self.project_manager.run_project_workflow(
-                project_id,
-                {
-                    "raw_requirements": requirement,
-                    "user_memory": memory_items,
-                    "_task_memory_recorder": task_recorder,
-                    "_run_id": run_id,
-                    "_project_id": project_id,
-                },
-            )
-            completed_status = "completed"
-            error_message = ""
-        except Exception as exc:
-            logger.exception("Web requirement failed: project_id=%s run_id=%s", project_id, run_id)
-            results = []
-            completed_status = "failed"
-            error_message = str(exc)
+            with self._lock:
+                run = self._find_run(project_id, run_id)
+                if run is None:
+                    return
+                run.status = "running"
+                run.error = ""
+                memory_items = [
+                    entry.text for entry in self._requirements_by_project.get(project_id, []) if entry.text.strip()
+                ]
+                self._save_state()
 
-        with self._lock:
-            run = self._find_run(project_id, run_id)
-            if run is None:
-                return
-            run.phase_results = results
-            run.status = completed_status
-            run.error = error_message
-            run.completed_at = datetime.now(timezone.utc)
-
-            project = self.project_manager.get_project(project_id)
-            if completed_status == "completed" and project is not None and project.project_root:
-                runs_dir = Path(project.project_root) / "runs"
-                runs_dir.mkdir(parents=True, exist_ok=True)
-                run_path = runs_dir / f"{run_id}.json"
-                run_path.write_text(
-                    json.dumps(self._serialize_run(run), ensure_ascii=False, indent=2),
-                    encoding="utf-8",
+            try:
+                results = self.project_manager.run_project_workflow(
+                    project_id,
+                    {
+                        "raw_requirements": requirement,
+                        "user_memory": memory_items,
+                        "_task_memory_recorder": task_recorder,
+                        "_run_id": run_id,
+                        "_project_id": project_id,
+                    },
                 )
-            self._save_state()
-            logger.info(
-                "Web requirement finished: project_id=%s run_id=%s status=%s",
-                project_id,
-                run_id,
-                completed_status,
-            )
+                completed_status = "completed"
+                error_message = ""
+            except Exception as exc:
+                logger.exception("Web requirement failed: project_id=%s run_id=%s", project_id, run_id)
+                results = []
+                completed_status = "failed"
+                error_message = str(exc)
+
+            with self._lock:
+                run = self._find_run(project_id, run_id)
+                if run is None:
+                    return
+                run.phase_results = results
+                run.status = completed_status
+                run.error = error_message
+                run.completed_at = datetime.now(timezone.utc)
+
+                project = self.project_manager.get_project(project_id)
+                if completed_status == "completed" and project is not None and project.project_root:
+                    runs_dir = Path(project.project_root) / "runs"
+                    runs_dir.mkdir(parents=True, exist_ok=True)
+                    run_path = runs_dir / f"{run_id}.json"
+                    run_path.write_text(
+                        json.dumps(self._serialize_run(run), ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                self._save_state()
+                logger.info(
+                    "Web requirement finished: project_id=%s run_id=%s status=%s",
+                    project_id,
+                    run_id,
+                    completed_status,
+                )
+        finally:
+            with self._lock:
+                self._active_workflow_runs.discard((project_id, run_id))
 
     def _find_run(self, project_id: str, run_id: str) -> WorkflowRun | None:
         for run in self._runs_by_project.get(project_id, []):
             if run.run_id == run_id:
                 return run
         return None
+
+    def _recover_stale_run_execution_state_locked(self, project_id: str, run_id: str, run: WorkflowRun) -> None:
+        store = self._run_task_state_store(project_id, run_id)
+        state = store.load()
+        active = state.get("active_operation")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        dirty_run = False
+
+        if isinstance(active, dict) and str(active.get("status", "")).lower() == "running":
+            op_id = str(active.get("op_id", "")).strip()
+            if not op_id or op_id not in self._active_retry_ops:
+                stale_error = "任务重试异常终止，已自动回收卡住的 running 状态"
+                state["active_operation"] = {
+                    **active,
+                    "status": "failed",
+                    "completed_at": now_iso,
+                    "error": stale_error,
+                }
+                store.save(state)
+                store.fail_running_attempts(stale_error)
+                if str(run.status).lower() in {"pending", "running"}:
+                    run.status = "failed"
+                    run.error = stale_error
+                    run.completed_at = datetime.now(timezone.utc)
+                    dirty_run = True
+
+        active_after = state.get("active_operation")
+        has_retry_running = isinstance(active_after, dict) and str(active_after.get("status", "")).lower() == "running"
+        if str(run.status).lower() in {"pending", "running"} and not has_retry_running:
+            if (project_id, run_id) not in self._active_workflow_runs:
+                stale_error = "任务执行异常终止，已自动回收卡住的 running 状态"
+                run.status = "failed"
+                run.error = stale_error
+                run.completed_at = datetime.now(timezone.utc)
+                dirty_run = True
+                store.fail_running_attempts(stale_error)
+
+        if dirty_run:
+            self._save_state()
 
     def _run_task_state_store(self, project_id: str, run_id: str) -> RunTaskStateStore:
         project = self.project_manager.get_project(project_id)
@@ -828,7 +891,7 @@ class WebProjectService:
             "tests_dir": ("tests", None),
         }
         glob_map: dict[str, tuple[str, str]] = {
-            "subsystem_detail_design_docs": ("docs", "*-detail-design.md"),
+            "subsystem_detail_design_docs": ("docs", "subsystem-*-design.md|*-detail-design.md"),
         }
         seen: set[str] = set()
         for hint in input_hints:
@@ -843,7 +906,11 @@ class WebProjectService:
             elif hint in glob_map:
                 base_rel, pattern = glob_map[hint]
                 base = root / base_rel
-                matches = sorted(base.glob(pattern)) if base.exists() else []
+                patterns = [p for p in pattern.split("|") if p]
+                matches = []
+                if base.exists():
+                    for item_pattern in patterns:
+                        matches.extend(sorted(base.glob(item_pattern)))
                 key = f"{hint}:{base_rel}:{pattern}"
                 if key in seen:
                     continue
@@ -1017,6 +1084,7 @@ class WebProjectService:
         if not assignments:
             return cards
         sr_allocation: dict[str, list[str]] = {}
+        sr_groups_by_subsystem: dict[str, list[dict[str, Any]]] = {}
         try:
             arch_artifact = project.orchestrator.artifact_store.get_latest(ArtifactType.ARCHITECTURE_DESIGN)
             if arch_artifact and isinstance(arch_artifact.content, dict):
@@ -1027,6 +1095,27 @@ class WebProjectService:
                             sr_allocation[str(k)] = [str(x) for x in v if str(x).strip()]
         except Exception:
             sr_allocation = {}
+        try:
+            functional_artifact = project.orchestrator.artifact_store.get_latest(ArtifactType.FUNCTIONAL_DESIGN)
+            if functional_artifact and isinstance(functional_artifact.content, dict):
+                grouped_fn: dict[str, dict[str, list[str]]] = {}
+                for item in functional_artifact.content.get("functions", []):
+                    if not isinstance(item, dict):
+                        continue
+                    subsystem_id = str(item.get("subsystem_id", "")).strip()
+                    fn_id = str(item.get("id", "")).strip()
+                    if not subsystem_id or not fn_id:
+                        continue
+                    sr_match = re.search(r"(SR-\d+)", fn_id.upper())
+                    sr_id = sr_match.group(1) if sr_match else "SR-UNKNOWN"
+                    grouped_fn.setdefault(subsystem_id, {}).setdefault(sr_id, []).append(fn_id)
+                for subsystem_id, sr_map in grouped_fn.items():
+                    sr_rows: list[dict[str, Any]] = []
+                    for sr_id, fn_ids in sr_map.items():
+                        sr_rows.append({"sr_id": sr_id, "fn_ids": list(fn_ids), "fn_count": len(fn_ids)})
+                    sr_groups_by_subsystem[subsystem_id] = sr_rows
+        except Exception:
+            sr_groups_by_subsystem = {}
 
         for subsystem_id, item in assignments.items():
             if not isinstance(item, dict):
@@ -1036,6 +1125,7 @@ class WebProjectService:
                     "subsystem_id": str(subsystem_id),
                     "subsystem_name": str(item.get("subsystem", subsystem_id)),
                     "assigned_sr_ids": list(sr_allocation.get(str(subsystem_id), [])),
+                    "srs": list(sr_groups_by_subsystem.get(str(subsystem_id), [])),
                     "programmer": str(item.get("programmer", "")),
                     "reviewer": str(item.get("code_reviewer", "")),
                 }
@@ -1159,6 +1249,16 @@ class WebProjectService:
             output_text = str(payload.get("output", ""))
             purpose = str(payload.get("purpose", ""))
             provider_meta = payload.get("provider_response_meta")
+            trace_input = payload.get("input")
+            input_messages = None
+            input_kwargs = None
+            if isinstance(trace_input, dict):
+                raw_messages = trace_input.get("messages")
+                raw_kwargs = trace_input.get("kwargs")
+                if isinstance(raw_messages, list):
+                    input_messages = raw_messages
+                if isinstance(raw_kwargs, dict):
+                    input_kwargs = raw_kwargs
             events.append(
                 {
                     "id": f"trace:{str(payload.get('call_id', trace_file.stem))}",
@@ -1174,6 +1274,9 @@ class WebProjectService:
                         "provider": str(payload.get("provider", "")),
                         "purpose_meta": self._parse_purpose_meta(purpose),
                         "provider_response_meta": provider_meta if isinstance(provider_meta, dict) else {},
+                        "input_messages": input_messages if isinstance(input_messages, list) else [],
+                        "input_kwargs": input_kwargs if isinstance(input_kwargs, dict) else {},
+                        "output": output_text,
                         "output_preview": output_text[:1200],
                     },
                 }
@@ -1387,6 +1490,7 @@ class WebProjectService:
                 "project",
                 "round",
                 "subsystem",
+                "sr",
                 "fn",
                 "module",
                 "owner",
@@ -1646,7 +1750,17 @@ class WebProjectService:
                         meta = details.get("purpose_meta")
                         if isinstance(meta, dict) and meta:
                             compact_meta: dict[str, str] = {}
-                            for key in ("subagent", "step", "round", "subsystem", "fn", "module", "reviewer", "owner"):
+                            for key in (
+                                "subagent",
+                                "step",
+                                "round",
+                                "subsystem",
+                                "sr",
+                                "fn",
+                                "module",
+                                "reviewer",
+                                "owner",
+                            ):
                                 value = meta.get(key)
                                 if value:
                                     compact_meta[key] = str(value)
@@ -1790,6 +1904,13 @@ class WebProjectService:
                     "projects_root": cfg.workspace.projects_root,
                     "artifacts_root": cfg.workspace.artifacts_root,
                     "auto_create_dirs": cfg.workspace.auto_create_dirs,
+                },
+                "workflow": {
+                    "max_review_iterations": cfg.workflow.max_review_iterations,
+                    "review_min_rounds": cfg.workflow.review_min_rounds,
+                    "review_max_rounds": cfg.workflow.review_max_rounds,
+                    "developer_sr_task_retry_attempts": cfg.workflow.developer_sr_task_retry_attempts,
+                    "fail_on_review_rejection": cfg.workflow.fail_on_review_rejection,
                 },
                 "logging": {
                     "level": cfg.logging.level,
@@ -1953,6 +2074,14 @@ class WebProjectService:
         with self._lock:
             payload = self.project_manager._global_config.to_dict()
             payload["logging"] = logging_cfg
+            updated = ProjectConfig.from_dict(payload)
+            updated.to_json_file(self.project_manager._global_config_path)
+            self.project_manager._global_config = updated
+
+    def save_global_workflow_data(self, workflow_cfg: dict[str, Any]) -> None:
+        with self._lock:
+            payload = self.project_manager._global_config.to_dict()
+            payload["workflow"] = workflow_cfg
             updated = ProjectConfig.from_dict(payload)
             updated.to_json_file(self.project_manager._global_config_path)
             self.project_manager._global_config = updated
@@ -2673,7 +2802,7 @@ def create_app() -> FastAPI:
     async def global_config_page(request: Request, section: str) -> HTMLResponse:
         user = require_login(request)
         section = section.lower()
-        if section not in {"models", "agents", "workspace", "logging", "json"}:
+        if section not in {"models", "agents", "workspace", "workflow", "logging", "json"}:
             raise HTTPException(status_code=404, detail="Config section not found")
         return templates.TemplateResponse(
             "global_config.html",
@@ -2732,6 +2861,18 @@ def create_app() -> FastAPI:
                         "projects_root": str(form.get("projects_root", "projects")),
                         "artifacts_root": str(form.get("artifacts_root", "artifacts")),
                         "auto_create_dirs": str(form.get("auto_create_dirs", "")) == "on",
+                    }
+                )
+            elif section == "workflow":
+                service.save_global_workflow_data(
+                    {
+                        "max_review_iterations": int(str(form.get("max_review_iterations", "3")) or 3),
+                        "review_min_rounds": int(str(form.get("review_min_rounds", "2")) or 2),
+                        "review_max_rounds": int(str(form.get("review_max_rounds", "3")) or 3),
+                        "developer_sr_task_retry_attempts": int(
+                            str(form.get("developer_sr_task_retry_attempts", "2")) or 2
+                        ),
+                        "fail_on_review_rejection": str(form.get("fail_on_review_rejection", "")) == "on",
                     }
                 )
             elif section == "logging":
@@ -2982,7 +3123,14 @@ def create_app() -> FastAPI:
                 if not isinstance(logging_cfg, dict):
                     raise HTTPException(status_code=400, detail="logging must be an object")
                 service.save_global_logging_data(logging_cfg)
-            if not {"models", "agents", "agent_model_selection", "workspace", "logging"} & set(payload.keys()):
+            if "workflow" in payload:
+                workflow_cfg = payload.get("workflow", {})
+                if not isinstance(workflow_cfg, dict):
+                    raise HTTPException(status_code=400, detail="workflow must be an object")
+                service.save_global_workflow_data(workflow_cfg)
+            if not {"models", "agents", "agent_model_selection", "workspace", "workflow", "logging"} & set(
+                payload.keys()
+            ):
                 # backward compatibility
                 development_mode = str(payload.get("development_mode", "local"))
                 model_catalog = payload.get("model_catalog", [])

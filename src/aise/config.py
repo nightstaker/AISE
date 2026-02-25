@@ -72,6 +72,9 @@ class WorkflowConfig:
     """Configuration for workflow execution."""
 
     max_review_iterations: int = 3
+    review_min_rounds: int = 2
+    review_max_rounds: int = 3
+    developer_sr_task_retry_attempts: int = 2
     fail_on_review_rejection: bool = False
 
 
@@ -497,6 +500,9 @@ class ProjectConfig:
             "agent_counts": self.agent_counts,
             "workflow": {
                 "max_review_iterations": self.workflow.max_review_iterations,
+                "review_min_rounds": self.workflow.review_min_rounds,
+                "review_max_rounds": self.workflow.review_max_rounds,
+                "developer_sr_task_retry_attempts": self.workflow.developer_sr_task_retry_attempts,
                 "fail_on_review_rejection": self.workflow.fail_on_review_rejection,
             },
             "session": {
@@ -678,10 +684,27 @@ class ProjectConfig:
 
         workflow_data = data.get("workflow", {})
         if isinstance(workflow_data, dict):
+            review_min_rounds = int(workflow_data.get("review_min_rounds", config.workflow.review_min_rounds) or 1)
+            review_max_rounds = int(workflow_data.get("review_max_rounds", config.workflow.review_max_rounds) or 1)
+            developer_sr_task_retry_attempts = int(
+                workflow_data.get(
+                    "developer_sr_task_retry_attempts",
+                    config.workflow.developer_sr_task_retry_attempts,
+                )
+                or 1
+            )
+            review_min_rounds = max(1, review_min_rounds)
+            review_max_rounds = max(1, review_max_rounds)
+            developer_sr_task_retry_attempts = max(1, developer_sr_task_retry_attempts)
+            if review_min_rounds > review_max_rounds:
+                review_min_rounds, review_max_rounds = review_max_rounds, review_min_rounds
             config.workflow = WorkflowConfig(
                 max_review_iterations=int(
                     workflow_data.get("max_review_iterations", config.workflow.max_review_iterations)
                 ),
+                review_min_rounds=review_min_rounds,
+                review_max_rounds=review_max_rounds,
+                developer_sr_task_retry_attempts=developer_sr_task_retry_attempts,
                 fail_on_review_rejection=bool(
                     workflow_data.get("fail_on_review_rejection", config.workflow.fail_on_review_rejection)
                 ),
