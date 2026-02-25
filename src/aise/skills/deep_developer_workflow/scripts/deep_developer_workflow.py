@@ -11,7 +11,7 @@ from typing import Any
 
 from ....core.artifact import Artifact, ArtifactType
 from ....core.skill import Skill, SkillContext
-from ....utils.logging import get_logger
+from ....utils.logging import format_inference_result, get_logger
 
 logger = get_logger(__name__)
 
@@ -410,6 +410,57 @@ class DeepDeveloperWorkflowSkill(Skill):
                     continue
         return ""
 
+    def _extract_documented_module_stems_from_subsystem_design_doc(self, text: str) -> list[str]:
+        stems: list[str] = []
+        seen: set[str] = set()
+        for match in re.finditer(r"- File:\s*`([A-Za-z0-9_]+)\.py`", str(text or "")):
+            stem = self._slugify(str(match.group(1)))
+            if not stem or stem == "item" or stem in seen:
+                continue
+            seen.add(stem)
+            stems.append(stem)
+        return stems
+
+    def _match_documented_module_stem_for_fn(
+        self,
+        *,
+        fn_name: str,
+        fn_description: str,
+        documented_module_stems: list[str],
+    ) -> str:
+        if not documented_module_stems:
+            return ""
+        allowed = {str(s).strip() for s in documented_module_stems if str(s).strip()}
+        for text in (str(fn_name or ""), str(fn_description or "")):
+            match = re.search(r"\b([a-z][a-z0-9_]*)\s+module\b", text.lower())
+            if match:
+                candidate = self._slugify(str(match.group(1)))
+                if candidate in allowed:
+                    return candidate
+        return ""
+
+    def _build_doc_based_sr_module_name(self, *, fn_id: str, base_stem: str, used_names: set[str]) -> str:
+        stem = self._slugify(base_stem)
+        fn_token = self._slugify(fn_id)
+        if fn_token.startswith("fn_"):
+            fn_token = fn_token[3:]
+        candidates = [f"{stem}_{fn_token}" if fn_token else stem, stem]
+        for name in candidates:
+            normalized = self._slugify(name)[:48].strip("_")
+            if not normalized:
+                continue
+            if normalized not in used_names:
+                used_names.add(normalized)
+                return normalized
+        i = 2
+        while True:
+            candidate = f"{stem}_{fn_token}_{i}" if fn_token else f"{stem}_{i}"
+            candidate = self._slugify(candidate)[:48].strip("_")
+            if candidate and candidate not in used_names:
+                used_names.add(candidate)
+                return candidate
+            i += 1
+
     def _clip_file_context(
         self,
         *,
@@ -542,7 +593,10 @@ class DeepDeveloperWorkflowSkill(Skill):
         }
         test_context_payload = {
             "source_files": [],
-            "test_files": existing_test_context.get("test_files", []),
+            "test_files": self._filter_test_context_for_plans(
+                test_files=existing_test_context.get("test_files", []),
+                plans=plans,
+            ),
         }
 
         fn_items = []
@@ -590,7 +644,9 @@ class DeepDeveloperWorkflowSkill(Skill):
                     "- If implementation_style=open, infer a suitable public API "
                     "from subsystem design doc + existing source/test context "
                     "and keep imports consistent.\n"
-                    "- include at least 2 pytest test functions per item\n"
+                    "- include at least 2 pytest test functions per item (count `def test_` >= 2)\n"
+                    "- if only one behavior is obvious, still provide a second deterministic test "
+                    "(edge case, invalid input, or interaction assertion)\n"
                     "- keep tests deterministic (avoid flaky randomness)\n"
                     "- use subsystem architecture design doc module/class constraints and cross-module interactions\n"
                     "- prioritize tests around class/module interactions and SR behavior, not placeholder-only tests\n"
@@ -603,6 +659,14 @@ class DeepDeveloperWorkflowSkill(Skill):
                     f"Round: {round_index}\n"
                     "Generate pytest tests for all FN items below in one batch LLM response.\n"
                     "The output must contain the exact keys fn_id/module_name/test_content per item.\n\n"
+                    "Each item's test_content MUST contain at least 2 pytest tests (`def test_...`).\n"
+                    "Minimal pattern example (adapt names/imports to the provided module):\n"
+                    "from src.<subsystem>.<module> import Target\n"
+                    "import pytest\n\n"
+                    "def test_target_happy_path() -> None:\n"
+                    "    ...\n\n"
+                    "def test_target_edge_case() -> None:\n"
+                    "    ...\n\n"
                     "subsystem_architecture_design_doc:\n"
                     f"{self._truncate_text_for_prompt(subsystem_architecture_design_doc, 60000, '(missing)')}\n\n"
                     "existing_source_code:\n"
@@ -755,10 +819,15 @@ class DeepDeveloperWorkflowSkill(Skill):
         subsystem_slug: str,
         assign: dict[str, Any],
         fn_items: list[dict[str, Any]],
+        subsystem_architecture_design_doc: str = "",
     ) -> dict[str, Any]:
+        documented_module_stems = self._extract_documented_module_stems_from_subsystem_design_doc(
+            subsystem_architecture_design_doc
+        )
         fallback = self._build_fallback_subsystem_file_manifest(
             subsystem_slug=subsystem_slug,
             fn_items=fn_items,
+            documented_module_stems=documented_module_stems,
         )
         if context.llm_client is None or not fn_items:
             return fallback
@@ -796,6 +865,11 @@ class DeepDeveloperWorkflowSkill(Skill):
                     "- Prefer domain-meaningful names; avoid generic file names like module.py/service.py/handler.py.\n"
                     "- Do not assume files named api.py, service.py, or schemas.py are required.\n"
                     "- Only include api-like/contract files when explicitly needed by FN responsibilities.\n"
+                    "- The subsystem architecture design doc defines canonical module filenames (base module stems).\n"
+                    "- Prefer those documented base module stems and append FN/SR suffixes "
+                    "for dedicated per-FN files.\n"
+                    "- If an FN description says '<module> module', preserve that documented "
+                    "module stem as the filename prefix.\n"
                 ),
                 user_prompt=(
                     f"Subsystem key: {subsystem_key}\n"
@@ -803,6 +877,10 @@ class DeepDeveloperWorkflowSkill(Skill):
                     f"Subsystem english slug (fixed for directories/imports): {subsystem_slug}\n"
                     f"FN count: {len(fn_summary)}\n"
                     "Generate the complete source module file list first, then map each FN to one existing file.\n\n"
+                    "Documented module file stems from subsystem architecture doc: "
+                    f"{self._compact_json(documented_module_stems)}\n\n"
+                    "subsystem_architecture_design_doc (excerpt):\n"
+                    f"{self._truncate_text_for_prompt(subsystem_architecture_design_doc, 16000, '(missing)')}\n\n"
                     f"FN items:\n{self._compact_json(fn_summary)}\n"
                 ),
                 required_keys=["module_files", "fn_to_module_map"],
@@ -813,6 +891,7 @@ class DeepDeveloperWorkflowSkill(Skill):
                 payload=payload,
                 subsystem_slug=subsystem_slug,
                 fn_items=fn_items,
+                documented_module_stems=documented_module_stems,
             )
         except Exception:
             return fallback
@@ -822,23 +901,36 @@ class DeepDeveloperWorkflowSkill(Skill):
         *,
         subsystem_slug: str,
         fn_items: list[dict[str, Any]],
+        documented_module_stems: list[str] | None = None,
     ) -> dict[str, Any]:
         used_module_names: set[str] = set()
         fn_plans: list[dict[str, str]] = []
         module_files: list[str] = []
         for index, fn_item in enumerate(fn_items, start=1):
             fn_id = str(fn_item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"
-            module_name = self._derive_semantic_module_name(
-                fn_id=fn_id,
+            preferred_doc_stem = self._match_documented_module_stem_for_fn(
                 fn_name=str(fn_item.get("name", "")),
                 fn_description=str(fn_item.get("description", "")),
-                suggested_file_path=str(fn_item.get("file_path", "")),
-                subsystem_slug=subsystem_slug,
-                layer=str(fn_item.get("layer", "")),
-                component_type=str(fn_item.get("type", "")),
-                index=index,
-                used_names=used_module_names,
+                documented_module_stems=documented_module_stems or [],
             )
+            if preferred_doc_stem:
+                module_name = self._build_doc_based_sr_module_name(
+                    fn_id=fn_id,
+                    base_stem=preferred_doc_stem,
+                    used_names=used_module_names,
+                )
+            else:
+                module_name = self._derive_semantic_module_name(
+                    fn_id=fn_id,
+                    fn_name=str(fn_item.get("name", "")),
+                    fn_description=str(fn_item.get("description", "")),
+                    suggested_file_path=str(fn_item.get("file_path", "")),
+                    subsystem_slug=subsystem_slug,
+                    layer=str(fn_item.get("layer", "")),
+                    component_type=str(fn_item.get("type", "")),
+                    index=index,
+                    used_names=used_module_names,
+                )
             module_file = f"{module_name}.py"
             fn_plans.append({"fn_id": fn_id, "module_name": module_name, "module_file": module_file})
             module_files.append(module_file)
@@ -850,6 +942,7 @@ class DeepDeveloperWorkflowSkill(Skill):
         payload: dict[str, Any],
         subsystem_slug: str,
         fn_items: list[dict[str, Any]],
+        documented_module_stems: list[str] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise RuntimeError("Invalid subsystem file manifest payload")
@@ -878,9 +971,12 @@ class DeepDeveloperWorkflowSkill(Skill):
         if not module_files:
             raise RuntimeError("LLM subsystem file manifest produced no valid module files")
 
-        fn_ids = [
-            str(item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN" for item in fn_items if isinstance(item, dict)
-        ]
+        fn_item_map = {
+            (str(item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"): item
+            for item in fn_items
+            if isinstance(item, dict)
+        }
+        fn_ids = list(fn_item_map.keys())
         fn_set = set(fn_ids)
         used_modules: set[str] = set()
         fn_plans: list[dict[str, str]] = []
@@ -895,6 +991,19 @@ class DeepDeveloperWorkflowSkill(Skill):
             if candidate not in seen_files:
                 raise RuntimeError(f"LLM subsystem file manifest mapped {fn_id} to unknown file {candidate}")
             module_name = Path(candidate).stem
+            fn_item = fn_item_map.get(fn_id, {})
+            preferred_doc_stem = self._match_documented_module_stem_for_fn(
+                fn_name=str((fn_item or {}).get("name", "")),
+                fn_description=str((fn_item or {}).get("description", "")),
+                documented_module_stems=documented_module_stems or [],
+            )
+            if preferred_doc_stem and not (
+                module_name == preferred_doc_stem or module_name.startswith(f"{preferred_doc_stem}_")
+            ):
+                raise RuntimeError(
+                    f"LLM subsystem file manifest mapped {fn_id} to {module_name}, "
+                    f"which does not preserve documented module stem {preferred_doc_stem}"
+                )
             if module_name in used_modules:
                 raise RuntimeError("LLM subsystem file manifest must map one FN to one unique module file")
             used_modules.add(module_name)
@@ -908,6 +1017,30 @@ class DeepDeveloperWorkflowSkill(Skill):
         # Keep only files actually referenced by FN mappings to avoid later accidental file creation drift.
         referenced_files = [str(item["module_file"]) for item in fn_plans]
         return {"module_files": referenced_files, "fn_plans": fn_plans}
+
+    def _filter_test_context_for_plans(
+        self,
+        *,
+        test_files: Any,
+        plans: list[dict[str, Any]],
+    ) -> list[dict[str, str]]:
+        rows = test_files if isinstance(test_files, list) else []
+        if not rows:
+            return []
+        allowed_paths = {
+            str(plan.get("test_path", "")).strip() for plan in plans if str(plan.get("test_path", "")).strip()
+        }
+        if not allowed_paths:
+            return []
+        filtered: list[dict[str, str]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            path = str(row.get("path", "")).strip()
+            if path not in allowed_paths:
+                continue
+            filtered.append({"path": path, "content": str(row.get("content", ""))})
+        return filtered
 
     def _initialize_planned_subsystem_files(
         self,
@@ -1342,12 +1475,17 @@ class DeepDeveloperWorkflowSkill(Skill):
                 encoding="utf-8",
             )
 
+        subsystem_design_doc = self._load_subsystem_design_doc_text(
+            project_root=src_dir.parent,
+            subsystem_slug=subsystem_slug,
+        )
         subsystem_file_plan = self._plan_subsystem_file_manifest(
             context=context,
             subsystem_key=subsystem_key,
             subsystem_slug=subsystem_slug,
             assign=assign,
             fn_items=fn_items,
+            subsystem_architecture_design_doc=subsystem_design_doc,
         )
         self._initialize_planned_subsystem_files(
             src_subsystem_dir=src_subsystem_dir,
@@ -1420,19 +1558,47 @@ class DeepDeveloperWorkflowSkill(Skill):
         sr_groups = self._group_fn_plans_by_sr(fn_plans)
         local_review_records: list[dict[str, Any]] = []
         for round_index in range(1, subsystem_rounds + 1):
+            pending_plans = [
+                plan
+                for plan in fn_plans
+                if not (
+                    bool((plan.get("review") or {}).get("approved", False))
+                    or str((plan.get("review") or {}).get("decision", "")).strip().lower() == "approve"
+                )
+            ]
+            if not pending_plans:
+                logger.info(
+                    "Developer subsystem all FN items already approved, "
+                    "stopping remaining rounds: subsystem=%s round=%s/%s",
+                    subsystem_slug,
+                    round_index,
+                    subsystem_rounds,
+                )
+                break
+
             round_reviews: list[dict[str, Any]] = []
             # Within one subsystem, SR groups execute serially to maximize file/code reuse continuity.
             for sr_key, group_plans in sr_groups.items():
+                pending_group_plans = [
+                    plan
+                    for plan in group_plans
+                    if not (
+                        bool((plan.get("review") or {}).get("approved", False))
+                        or str((plan.get("review") or {}).get("decision", "")).strip().lower() == "approve"
+                    )
+                ]
+                if not pending_group_plans:
+                    continue
                 _ = self._develop_single_sr_group_round_with_retry(
                     context=context,
                     subsystem_slug=subsystem_slug,
                     sr_key=sr_key,
-                    plans=group_plans,
+                    plans=pending_group_plans,
                     round_index=round_index,
                     max_attempts=sr_group_retry_attempts,
                 )
 
-            for plan in fn_plans:
+            for plan in pending_plans:
                 fn_id = str(plan["fn_id"])
                 fn_description = str(plan["fn_description"])
                 check_result = dict(plan.get("check_result", {}))
@@ -1461,7 +1627,7 @@ class DeepDeveloperWorkflowSkill(Skill):
                     }
                 )
 
-            for plan in fn_plans:
+            for plan in pending_plans:
                 fn_id = str(plan["fn_id"])
                 check_result = dict(plan.get("check_result", {}))
                 review = dict(plan.get("review", {}))
@@ -1501,12 +1667,24 @@ class DeepDeveloperWorkflowSkill(Skill):
                 summary=f"Batch review completed for subsystem {subsystem_slug}.",
                 details=[
                     f"SR task groups: {len(sr_groups)}",
-                    f"Reviewed FN count: {len(fn_plans)}",
+                    f"Reviewed FN count: {len(pending_plans)}",
+                    f"Skipped already-approved FN count: {len(fn_plans) - len(pending_plans)}",
                     f"Approved in this round: {sum(1 for item in round_reviews if item.get('approved'))}",
                     "Review sequencing: within-subsystem SR groups serial -> "
                     "review-all -> revise-all; subsystems parallelized.",
                 ],
             )
+            if round_reviews and all(
+                bool(item.get("approved", False)) or str(item.get("decision", "")).strip().lower() == "approve"
+                for item in round_reviews
+            ):
+                logger.info(
+                    "Developer subsystem review approved early, stopping remaining rounds: subsystem=%s round=%s/%s",
+                    subsystem_slug,
+                    round_index,
+                    subsystem_rounds,
+                )
+                break
 
         source_files = [str(plan["code_path"]) for plan in fn_plans] + [str(src_revision)]
         test_files = [str(plan["test_path"]) for plan in fn_plans] + [str(tests_revision)]
@@ -2327,10 +2505,50 @@ class DeepDeveloperWorkflowSkill(Skill):
         )
         parsed = self._parse_json_response(response)
         if parsed is None:
+            try:
+                repaired = self._repair_invalid_json_with_llm(
+                    context=context,
+                    invalid_text=response,
+                    purpose=purpose,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Developer workflow JSON repair attempt failed: purpose=%s error_type=%s error=%s",
+                    purpose or "deep_developer_workflow",
+                    type(exc).__name__,
+                    str(exc),
+                )
+                repaired = None
+            if repaired is not None:
+                logger.warning(
+                    "Developer workflow LLM invalid JSON repaired by LLM: purpose=%s response=%s",
+                    purpose or "deep_developer_workflow",
+                    format_inference_result(response),
+                )
+                return repaired
             if purpose:
                 raise RuntimeError(f"LLM response is not valid JSON object for {purpose}")
             raise RuntimeError("LLM response is not valid JSON object for deep_developer_workflow")
         return parsed
+
+    def _repair_invalid_json_with_llm(
+        self,
+        *,
+        context: SkillContext,
+        invalid_text: str,
+        purpose: str = "",
+    ) -> dict[str, Any] | None:
+        if context.llm_client is None or not str(invalid_text).strip():
+            return None
+        repair_response = context.llm_client.complete(
+            [
+                {"role": "system", "content": "Fix JSON format errors in the following content"},
+                {"role": "user", "content": str(invalid_text)},
+            ],
+            response_format={"type": "json_object"},
+            llm_purpose=(purpose or "deep_developer_workflow") + " step:json_format_repair",
+        )
+        return self._parse_json_response(repair_response)
 
     def _parse_json_response(self, text: str) -> dict[str, Any] | None:
         if not text:
@@ -2399,7 +2617,50 @@ class DeepDeveloperWorkflowSkill(Skill):
     def _repair_common_json_issues(self, text: str) -> str:
         repaired = text.strip()
         repaired = re.sub(r',"\s*\n\s*([A-Za-z_][A-Za-z0-9_]*)"', r',\n"\1"', repaired)
+        repaired = self._escape_unescaped_control_chars_in_json_strings(repaired)
         return repaired
+
+    def _escape_unescaped_control_chars_in_json_strings(self, text: str) -> str:
+        out: list[str] = []
+        in_string = False
+        escape = False
+
+        for ch in text:
+            if in_string:
+                if escape:
+                    out.append(ch)
+                    escape = False
+                    continue
+                if ch == "\\":
+                    out.append(ch)
+                    escape = True
+                    continue
+                if ch == '"':
+                    out.append(ch)
+                    in_string = False
+                    continue
+                if ord(ch) < 0x20:
+                    if ch == "\n":
+                        out.append("\\n")
+                    elif ch == "\r":
+                        out.append("\\r")
+                    elif ch == "\t":
+                        out.append("\\t")
+                    elif ch == "\b":
+                        out.append("\\b")
+                    elif ch == "\f":
+                        out.append("\\f")
+                    else:
+                        out.append(f"\\u{ord(ch):04x}")
+                    continue
+                out.append(ch)
+                continue
+
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+
+        return "".join(out)
 
     def _repair_truncated_top_level_object(self, text: str) -> str | None:
         source = text.strip()

@@ -11,6 +11,9 @@ from typing import Any
 
 from ....core.artifact import Artifact, ArtifactType
 from ....core.skill import Skill, SkillContext
+from ....utils.logging import format_inference_result, get_logger
+
+logger = get_logger(__name__)
 
 
 class DeepArchitectureWorkflowSkill(Skill):
@@ -702,6 +705,8 @@ class DeepArchitectureWorkflowSkill(Skill):
             rounds.append({"round": round_index, "architecture_design": design, "review": review})
             previous_design = design
             previous_review = review
+            if bool(review.get("approved", False)) or str(review.get("decision", "")).strip().lower() == "approve":
+                break
         return rounds
 
     def _designer_build_architecture_design(
@@ -1208,6 +1213,8 @@ class DeepArchitectureWorkflowSkill(Skill):
             rounds.append({"round": round_index, "detail_design": detail_design, "review": review})
             previous_design = detail_design
             previous_review = review
+            if bool(review.get("approved", False)) or str(review.get("decision", "")).strip().lower() == "approve":
+                break
         return rounds
 
     def _subsystem_architect_design(
@@ -3477,8 +3484,48 @@ class DeepArchitectureWorkflowSkill(Skill):
         )
         parsed = self._parse_json_response(response)
         if parsed is None:
+            try:
+                repaired = self._repair_invalid_json_with_llm(
+                    context=context,
+                    invalid_text=response,
+                    purpose=purpose,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Architecture workflow JSON repair attempt failed: purpose=%s error_type=%s error=%s",
+                    purpose,
+                    type(exc).__name__,
+                    str(exc),
+                )
+                repaired = None
+            if repaired is not None:
+                logger.warning(
+                    "Architecture workflow LLM invalid JSON repaired by LLM: purpose=%s response=%s",
+                    purpose,
+                    format_inference_result(response),
+                )
+                return repaired
             raise RuntimeError(f"LLM response is not valid JSON object for {purpose}")
         return parsed
+
+    def _repair_invalid_json_with_llm(
+        self,
+        *,
+        context: SkillContext,
+        invalid_text: str,
+        purpose: str,
+    ) -> dict[str, Any] | None:
+        if context.llm_client is None or not str(invalid_text).strip():
+            return None
+        repair_response = context.llm_client.complete(
+            [
+                {"role": "system", "content": "Fix JSON format errors in the following content"},
+                {"role": "user", "content": str(invalid_text)},
+            ],
+            response_format={"type": "json_object"},
+            llm_purpose=f"{purpose} step:json_format_repair",
+        )
+        return self._parse_json_response(repair_response)
 
     def _parse_json_response(self, text: str) -> dict[str, Any] | None:
         if not text:
@@ -3554,7 +3601,51 @@ class DeepArchitectureWorkflowSkill(Skill):
         # Common model formatting error: comma + quote then newline before the next key.
         # Example: `... ],"\nnext_key": ...` -> `... ],\n"next_key": ...`
         repaired = re.sub(r',"\s*\n\s*([A-Za-z_][A-Za-z0-9_]*)"', r',\n"\1"', repaired)
+        repaired = self._escape_unescaped_control_chars_in_json_strings(repaired)
         return repaired
+
+    def _escape_unescaped_control_chars_in_json_strings(self, text: str) -> str:
+        """Escape raw control chars that models sometimes emit inside JSON strings."""
+        out: list[str] = []
+        in_string = False
+        escape = False
+
+        for ch in text:
+            if in_string:
+                if escape:
+                    out.append(ch)
+                    escape = False
+                    continue
+                if ch == "\\":
+                    out.append(ch)
+                    escape = True
+                    continue
+                if ch == '"':
+                    out.append(ch)
+                    in_string = False
+                    continue
+                if ord(ch) < 0x20:
+                    if ch == "\n":
+                        out.append("\\n")
+                    elif ch == "\r":
+                        out.append("\\r")
+                    elif ch == "\t":
+                        out.append("\\t")
+                    elif ch == "\b":
+                        out.append("\\b")
+                    elif ch == "\f":
+                        out.append("\\f")
+                    else:
+                        out.append(f"\\u{ord(ch):04x}")
+                    continue
+                out.append(ch)
+                continue
+
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+
+        return "".join(out)
 
     def _repair_truncated_top_level_object(self, text: str) -> str | None:
         """Drop the last incomplete top-level field when JSON is truncated.
