@@ -10,6 +10,9 @@ from typing import Any
 
 from ....core.artifact import Artifact, ArtifactType
 from ....core.skill import Skill, SkillContext
+from ....utils.logging import format_inference_result, get_logger
+
+logger = get_logger(__name__)
 
 
 class DeepProductWorkflowSkill(Skill):
@@ -601,6 +604,8 @@ class DeepProductWorkflowSkill(Skill):
             rounds.append({"round": round_index, "design": design, "review": review})
             previous_design = design
             previous_review = review
+            if bool(review.get("approved", False)) or str(review.get("decision", "")).strip().lower() == "approve":
+                break
         return rounds
 
     def _run_system_requirement_review_rounds(
@@ -635,6 +640,8 @@ class DeepProductWorkflowSkill(Skill):
             rounds.append({"round": round_index, "system_requirements": req_doc, "review": review})
             previous_req = req_doc
             previous_review = review
+            if bool(review.get("approved", False)) or str(review.get("decision", "")).strip().lower() == "approve":
+                break
         return rounds
 
     def _designer_build_product_design(
@@ -1443,10 +1450,56 @@ class DeepProductWorkflowSkill(Skill):
         )
         parsed = self._parse_json_response(response)
         if parsed is None:
+            try:
+                repaired = self._repair_invalid_json_with_llm(
+                    context=context,
+                    invalid_text=response,
+                    purpose=purpose,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Product workflow JSON repair attempt failed: purpose=%s error_type=%s error=%s",
+                    purpose or "deep_product_workflow",
+                    type(exc).__name__,
+                    str(exc),
+                )
+                repaired = None
+            if repaired is not None:
+                logger.warning(
+                    "Product workflow LLM invalid JSON repaired by LLM: purpose=%s response=%s",
+                    purpose or "deep_product_workflow",
+                    format_inference_result(response),
+                )
+                return repaired
+            logger.warning(
+                ("Product workflow LLM returned invalid JSON object: purpose=%s parse_error=%s response=%s"),
+                purpose or "deep_product_workflow",
+                self._json_parse_error_summary(response),
+                format_inference_result(response),
+            )
             if purpose:
                 raise RuntimeError(f"LLM response is not valid JSON object for {purpose}")
             raise RuntimeError("LLM response is not valid JSON object for deep_product_workflow")
         return parsed
+
+    def _repair_invalid_json_with_llm(
+        self,
+        *,
+        context: SkillContext,
+        invalid_text: str,
+        purpose: str = "",
+    ) -> dict[str, Any] | None:
+        if context.llm_client is None or not str(invalid_text).strip():
+            return None
+        repair_response = context.llm_client.complete(
+            [
+                {"role": "system", "content": "Fix JSON format errors in the following content"},
+                {"role": "user", "content": str(invalid_text)},
+            ],
+            response_format={"type": "json_object"},
+            llm_purpose=(purpose or "deep_product_workflow") + " step:json_format_repair",
+        )
+        return self._parse_json_response(repair_response)
 
     def _purpose_token(self, value: str) -> str:
         token = re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
@@ -1489,6 +1542,32 @@ class DeepProductWorkflowSkill(Skill):
         except json.JSONDecodeError:
             return None
 
+    def _json_parse_error_summary(self, text: str) -> str:
+        if not text:
+            return "empty_response"
+        candidates: list[tuple[str, str]] = [("raw", text)]
+        extracted = self._extract_first_json_object(text)
+        if extracted and extracted != text:
+            candidates.append(("extracted", extracted))
+        repaired = self._repair_common_json_issues(text)
+        if repaired != text:
+            candidates.append(("repaired", repaired))
+        if extracted:
+            repaired_extracted = self._repair_common_json_issues(extracted)
+            if repaired_extracted != extracted:
+                candidates.append(("repaired_extracted", repaired_extracted))
+
+        for label, candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+                if not isinstance(parsed, dict):
+                    return f"{label}:parsed_non_object type={type(parsed).__name__}"
+            except json.JSONDecodeError as exc:
+                return f"{label}:json_decode_error msg={exc.msg!r} line={exc.lineno} col={exc.colno} pos={exc.pos}"
+            except Exception as exc:  # pragma: no cover - defensive
+                return f"{label}:parse_exception type={type(exc).__name__} error={exc}"
+        return "unknown_parse_failure"
+
     def _extract_first_json_object(self, text: str) -> str | None:
         start = text.find("{")
         if start < 0:
@@ -1521,7 +1600,50 @@ class DeepProductWorkflowSkill(Skill):
     def _repair_common_json_issues(self, text: str) -> str:
         repaired = text.strip()
         repaired = re.sub(r',"\s*\n\s*([A-Za-z_][A-Za-z0-9_]*)"', r',\n"\1"', repaired)
+        repaired = self._escape_unescaped_control_chars_in_json_strings(repaired)
         return repaired
+
+    def _escape_unescaped_control_chars_in_json_strings(self, text: str) -> str:
+        out: list[str] = []
+        in_string = False
+        escape = False
+
+        for ch in text:
+            if in_string:
+                if escape:
+                    out.append(ch)
+                    escape = False
+                    continue
+                if ch == "\\":
+                    out.append(ch)
+                    escape = True
+                    continue
+                if ch == '"':
+                    out.append(ch)
+                    in_string = False
+                    continue
+                if ord(ch) < 0x20:
+                    if ch == "\n":
+                        out.append("\\n")
+                    elif ch == "\r":
+                        out.append("\\r")
+                    elif ch == "\t":
+                        out.append("\\t")
+                    elif ch == "\b":
+                        out.append("\\b")
+                    elif ch == "\f":
+                        out.append("\\f")
+                    else:
+                        out.append(f"\\u{ord(ch):04x}")
+                    continue
+                out.append(ch)
+                continue
+
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+
+        return "".join(out)
 
     def _repair_truncated_top_level_object(self, text: str) -> str | None:
         source = text.strip()
