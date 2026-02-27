@@ -3,7 +3,7 @@
 - name: Sequential Waterfall Lifecycle
 - work_type: structured_development
 - keywords: waterfall, sequential, design-first, documentation, milestone
-- summary: A linear and sequential approach to software development where each phase must be completed before the next begins.
+- summary: A linear and sequential approach to software development where each phase must be completed before the next begins, you should choose this for most scenarioes
 
 ## Global Agent Requirements
 ### architect_agent
@@ -33,5 +33,5 @@
 - description: Full-scale implementation based strictly on the frozen design documents.
 
 ### phase_4_verification: Integration & Testing
-- agents: qa
+- agents: qa_engineer
 - description: Formal testing phase to ensure the entire system meets the initial SRS.

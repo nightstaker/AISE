@@ -3,20 +3,24 @@
 - Agent Name: `qa_engineer`
 - Role: `QA_ENGINEER`
 - Runtime Usage: `Primary SDLC` (testing phase owner)
-- Source Class: `aise.agents.qa_engineer.QAEngineerAgent`
 - Primary Skills: `test_plan_design`, `test_case_design`, `test_automation`, `test_review`
 
 ## Runtime Role
 
 Owns the testing phase. Designs the test strategy, produces test cases, generates automation, and performs test review/coverage checks.
 
-## Current Skills (from Python class)
+## Current Skills
 
 - `test_plan_design`
 - `test_case_design`
 - `test_automation`
 - `test_review`
 - `pr_review`
+
+## Runtime Logic (Merged from Former Python Agent Class)
+
+- Register all skills listed in `Current Skills` during agent initialization.
+- No extra role-specific message override beyond base `Agent.handle_message`.
 
 ## Usage in Current LangChain Workflow
 

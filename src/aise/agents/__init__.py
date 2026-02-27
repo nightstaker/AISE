@@ -1,19 +1,15 @@
-"""Agent implementations."""
+"""Markdown-driven agent factory exports."""
 
-from .architect import ArchitectAgent
-from .developer import DeveloperAgent
-from .product_manager import ProductManagerAgent
-from .project_manager import ProjectManagerAgent
-from .qa_engineer import QAEngineerAgent
-from .rd_director import RDDirectorAgent
-from .reviewer import ReviewerAgent
+from .markdown_agent import (
+    AgentMarkdownSpec,
+    MarkdownConfiguredAgent,
+    create_agent_from_markdown,
+    parse_agent_markdown_spec,
+)
 
 __all__ = [
-    "ArchitectAgent",
-    "DeveloperAgent",
-    "ProductManagerAgent",
-    "ProjectManagerAgent",
-    "QAEngineerAgent",
-    "RDDirectorAgent",
-    "ReviewerAgent",
+    "AgentMarkdownSpec",
+    "MarkdownConfiguredAgent",
+    "create_agent_from_markdown",
+    "parse_agent_markdown_spec",
 ]

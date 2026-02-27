@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import traceback
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
@@ -45,7 +46,7 @@ class LLMClient:
 
     def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, str]] | str,
         **kwargs: Any,
     ) -> str:
         """Send a chat-completion request and return the assistant text.
@@ -54,6 +55,7 @@ class LLMClient:
         implementation returns a placeholder so the deterministic skills
         keep working without an API key.
         """
+        normalized_messages = self._coerce_messages(messages)
         call_id = uuid4().hex
         self._active_call_id = call_id
         self._last_response_meta = {}
@@ -63,7 +65,7 @@ class LLMClient:
             call_id=call_id,
             started_at=started_at,
             purpose=purpose,
-            messages=messages,
+            messages=normalized_messages,
             kwargs=kwargs,
         )
         logger.info(
@@ -79,38 +81,32 @@ class LLMClient:
             "Inference request: provider=%s model=%s messages=%d extra_keys=%s",
             self.provider,
             self.model,
-            len(messages),
+            len(normalized_messages),
             sorted(kwargs.keys()),
         )
         try:
-            result, attempts = self._complete_with_provider_failover(messages, **kwargs)
+            result, attempts = self._complete_with_provider_failover(normalized_messages, **kwargs)
             self._write_trace_file(
                 trace_meta
                 | {
-                    "output": result,
+                    "output": self._normalize_trace_output(result),
                     "attempts": attempts,
                     "provider_response_meta": self._safe_json(self._last_response_meta),
                 }
             )
             logger.info(
-                "Inference response: call_id=%s provider=%s model=%s result=%s",
+                "LLM call completed: call_id=%s provider=%s model=%s result=%s",
                 call_id,
                 self.provider,
                 self.model,
                 format_inference_result(result),
-            )
-            logger.info(
-                "LLM call completed: call_id=%s provider=%s model=%s",
-                call_id,
-                self.provider,
-                self.model,
             )
             return result
         except Exception as exc:
             self._write_trace_file(
                 trace_meta
                 | {
-                    "output": "",
+                    "output": {"text": ""},
                     "error": {"type": type(exc).__name__, "message": str(exc)},
                     "provider_response_meta": self._safe_json(self._last_response_meta),
                 }
@@ -118,6 +114,24 @@ class LLMClient:
             raise
         finally:
             self._active_call_id = ""
+
+    def _coerce_messages(self, messages: list[dict[str, str]] | str) -> list[dict[str, str]]:
+        """Accept both runtime-style prompt input and chat-style message input."""
+        if isinstance(messages, str):
+            return [{"role": "user", "content": messages}]
+        if not isinstance(messages, list):
+            raise TypeError("messages must be a list[dict[str, str]] or prompt string")
+        normalized: list[dict[str, str]] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                raise TypeError("each message must be a dict")
+            normalized.append(
+                {
+                    "role": str(item.get("role", "user")),
+                    "content": str(item.get("content", "")),
+                }
+            )
+        return normalized
 
     def set_call_context(self, context: dict[str, Any]) -> None:
         self._call_context = dict(context)
@@ -371,6 +385,7 @@ class LLMClient:
     def _write_trace_file(self, payload: dict[str, Any]) -> None:
         trace_dir_raw = str(self._call_context.get("trace_dir", "")).strip()
         if not trace_dir_raw:
+            # Tracing is optional; skip silently when trace_dir is not configured.
             return
         trace_dir = Path(trace_dir_raw)
         trace_dir.mkdir(parents=True, exist_ok=True)
@@ -397,9 +412,21 @@ class LLMClient:
             return [self._safe_json(v) for v in value]
         return str(value)
 
-    def _json_dumps(self, value: Any) -> str:
-        import json
+    def _normalize_trace_output(self, value: Any) -> Any:
+        """Store trace output as JSON-friendly object for easier analysis."""
+        safe = self._safe_json(value)
+        if isinstance(safe, str):
+            text = safe.strip()
+            if text:
+                try:
+                    parsed = json.loads(text)
+                    return self._safe_json(parsed)
+                except Exception:
+                    pass
+            return {"text": safe}
+        return safe
 
+    def _json_dumps(self, value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, indent=2)
 
     def _complete_with_responses(self, client, messages: list[dict[str, str]], **kwargs: Any) -> str:

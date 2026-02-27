@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import time
+from functools import lru_cache
+from pathlib import Path
 from threading import RLock
 from typing import Any
 from uuid import uuid4
 
+import json
+import re
+
+from ..agents.prompts import load_agent_prompt_section, resolve_agent_prompt_md_path
 from ..utils.logging import get_logger
 from .exceptions import CapabilityNotFoundError
 from .interfaces import CapabilityHandler, LanguageWorkerAdapter, LLMClientProtocol
@@ -21,6 +27,33 @@ from .models import (
 from .registry import CapabilityRegistry
 
 logger = get_logger(__name__)
+
+DEFAULT_RUNTIME_AGENT_TYPES: tuple[str, ...] = ("generic_worker",)
+
+
+@lru_cache(maxsize=128)
+def _load_agent_instruction(agent_type: str) -> str:
+    """Load agent instruction text from ``src/aise/agents/<agent>_agent.md``."""
+    name = str(agent_type or "").strip()
+    if not name:
+        return ""
+    try:
+        section = load_agent_prompt_section(name, heading="System Prompt", level=2).strip()
+        if section:
+            return section
+    except Exception:
+        pass
+
+    # Fallback to top slice of markdown for agents without a dedicated System Prompt section.
+    try:
+        path = resolve_agent_prompt_md_path(name)
+        if path is not None and path.exists():
+            text = path.read_text(encoding="utf-8").strip()
+            if text:
+                return text[:2000]
+    except Exception:
+        pass
+    return ""
 
 
 class WorkerAgent(LanguageWorkerAdapter):
@@ -192,7 +225,8 @@ class WorkerAgent(LanguageWorkerAdapter):
         scored.sort(key=lambda item: item[0], reverse=True)
         selected_specs = [spec for score, spec in scored if score > 0]
         if not selected_specs:
-            return []
+            # Fallback to a single default capability so execution remains md-driven.
+            selected_specs = [scored[0][1]] if scored else []
         # Keep a small execution chain to avoid accidental over-execution.
         selected_specs = selected_specs[:3]
         return [
@@ -231,77 +265,254 @@ class WorkerAgent(LanguageWorkerAdapter):
         return f"Node {node.id} executed {len(node_outputs)} capability step(s)"
 
 
-def build_default_worker(*, adapter_id: str = "worker_generic_1", agent_type: str = "generic_worker") -> WorkerAgent:
-    """Create a generic worker with basic built-in skill/tool capabilities."""
+def discover_runtime_agent_types_from_markdown() -> list[str]:
+    """Discover runtime agent types from ``src/aise/agents/*agent.md`` filenames."""
+    agent_dir = Path(__file__).resolve().parents[1] / "agents"
+    discovered: list[str] = []
+    try:
+        files = sorted(agent_dir.glob("*agent.md"))
+    except Exception:
+        files = []
+    for path in files:
+        stem = path.stem.strip().lower()  # e.g. "product_manager_agent"
+        if not stem.endswith("_agent"):
+            continue
+        name = stem[: -len("_agent")].strip().replace("-", "_").replace(" ", "_")
+        if not name:
+            continue
+        discovered.append(name)
+    # Keep deterministic order, unique values, and always include generic fallback.
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in ["generic_worker", *discovered]:
+        if item in seen:
+            continue
+        seen.add(item)
+        ordered.append(item)
+    return ordered
 
-    worker = WorkerAgent(adapter_id=adapter_id, agent_type=agent_type)
 
-    def analyze_capability(input_data: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-        prompt = str(input_data.get("prompt", ""))
-        constraints = dict(input_data.get("constraints", {}))
-        bullets = [
-            line.strip("- ").strip()
-            for line in prompt.replace("。", "\n").replace(".", "\n").splitlines()
-            if line.strip()
-        ]
-        summary = f"提炼需求 {len(bullets)} 条，约束 {len(constraints)} 项"
+def build_default_worker(
+    *,
+    adapter_id: str = "worker_generic_1",
+    agent_type: str = "generic_worker",
+    llm_client: LLMClientProtocol | None = None,
+) -> WorkerAgent:
+    """Create an md-driven worker with a generic execution capability."""
+
+    worker = WorkerAgent(adapter_id=adapter_id, agent_type=agent_type, llm_client=llm_client)
+
+    def _slug(value: str) -> str:
+        text = re.sub(r"[^a-zA-Z0-9]+", "-", str(value).strip().lower()).strip("-")
+        return text or "output"
+
+    def _extract_first_json(text: str) -> Any | None:
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+        m = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw, flags=re.IGNORECASE)
+        if m:
+            candidate = m.group(1).strip()
+            if candidate:
+                try:
+                    return json.loads(candidate)
+                except Exception:
+                    pass
+        start = raw.find("{")
+        if start < 0:
+            return None
+        depth = 0
+        in_string = False
+        escape = False
+        for idx in range(start, len(raw)):
+            ch = raw[idx]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(raw[start : idx + 1])
+                    except Exception:
+                        return None
+        return None
+
+    def _safe_write_files(context: dict[str, Any], node_ctx: dict[str, Any], artifacts: list[dict[str, Any]]) -> list[str]:
+        generated: list[str] = []
+        task_constraints = context.get("task_constraints", {})
+        project_root = (
+            str(task_constraints.get("project_root", "")).strip() if isinstance(task_constraints, dict) else ""
+        )
+        if not project_root:
+            return generated
+        root = Path(project_root).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+
+        for item in artifacts:
+            if not isinstance(item, dict):
+                continue
+            rel = str(item.get("path", "")).strip().replace("\\", "/")
+            content = str(item.get("content", ""))
+            if not rel:
+                continue
+            target = (root / rel).resolve()
+            if root not in target.parents and target != root:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            generated.append(str(target.relative_to(root)))
+
+        if generated:
+            return generated
+
+        # Fallback: always persist one markdown note per executed node.
+        node_id = str(node_ctx.get("id", "")).strip() or "task"
+        node_name = str(node_ctx.get("name", "")).strip() or node_id
+        fallback_rel = f"docs/{worker.agent_type}-{_slug(node_id)}.md"
+        target = (root / fallback_rel).resolve()
+        if root in target.parents or target == root:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                f"# {node_name}\n\n- agent: {worker.agent_type}\n- node_id: {node_id}\n\n"
+                f"Execution output has been recorded in runtime result.\n",
+                encoding="utf-8",
+            )
+            generated.append(fallback_rel)
+        return generated
+
+    def _llm_complete(prompt: str, context: dict[str, Any], fallback: str) -> str:
+        client = worker.llm_client
+        if client is None:
+            return fallback
+        set_ctx = getattr(client, "set_call_context", None)
+        clear_ctx = getattr(client, "clear_call_context", None)
+        try:
+            agent_instruction = _load_agent_instruction(worker.agent_type)
+            effective_prompt = (
+                f"Agent Instruction:\n{agent_instruction}\n\nTask Input:\n{prompt}"
+                if agent_instruction
+                else prompt
+            )
+            if callable(set_ctx):
+                task_constraints = context.get("task_constraints", {})
+                trace_dir = ""
+                project_root = (
+                    str(task_constraints.get("project_root", "")).strip() if isinstance(task_constraints, dict) else ""
+                )
+                if project_root:
+                    trace_dir = str((Path(project_root) / "trace").resolve())
+                else:
+                    project_id = (
+                        str(task_constraints.get("project_id", "")).strip()
+                        if isinstance(task_constraints, dict)
+                        else ""
+                    )
+                    if project_id:
+                        trace_dir = f"projects/{project_id}/trace"
+                set_ctx(
+                    {
+                        "agent": f"runtime_worker:{worker.agent_type}",
+                        "role": worker.agent_type,
+                        "skill": "default_capability",
+                        "project_root": project_root,
+                        "trace_dir": trace_dir,
+                    }
+                )
+            response = str(client.complete(effective_prompt)).strip()
+            return response or fallback
+        except Exception:
+            logger.exception("Default worker LLM fallback triggered: adapter=%s", worker.adapter_id)
+            return fallback
+        finally:
+            if callable(clear_ctx):
+                try:
+                    clear_ctx()
+                except Exception:
+                    pass
+
+    def agent_execute_capability(input_data: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        task_prompt = (
+            str(input_data.get("prompt", "")).strip()
+            or str(input_data.get("task", "")).strip()
+            or str(input_data.get("description", "")).strip()
+        )
+        if not task_prompt:
+            task_prompt = json.dumps(input_data, ensure_ascii=False)
+
+        node_ctx = context.get("node", {}) if isinstance(context.get("node", {}), dict) else {}
+        process_ctx = context.get("process_context", {})
+        step_ctx = context.get("process_step_context", {})
+        requirements = context.get("effective_agent_requirements", [])
+        memory_summary = str(context.get("memory_summary", "")).strip()
+
+        llm_prompt = (
+            "Execute the assigned task according to Agent Instruction.\n"
+            "Return JSON only with keys: summary(string), artifacts(array), result(any).\n"
+            "Each artifact item must include path(relative path under project root) and content(string).\n"
+            "If task requires document/code/test/review outputs, artifacts must contain concrete files.\n\n"
+            f"Task Prompt:\n{task_prompt}\n\n"
+            f"Node Context(JSON):\n{json.dumps(node_ctx, ensure_ascii=False)}\n\n"
+            f"Input Data(JSON):\n{json.dumps(input_data, ensure_ascii=False)}\n\n"
+            f"Process Context(JSON):\n{json.dumps(process_ctx, ensure_ascii=False)}\n\n"
+            f"Process Step Context(JSON):\n{json.dumps(step_ctx, ensure_ascii=False)}\n\n"
+            f"Effective Requirements(JSON):\n{json.dumps(requirements, ensure_ascii=False)}\n\n"
+            f"Memory Summary:\n{memory_summary}"
+        )
+        llm_text = _llm_complete(llm_prompt, context, "")
+        parsed = _extract_first_json(llm_text) if llm_text else None
+        artifacts = parsed.get("artifacts", []) if isinstance(parsed, dict) else []
+        generated_files = _safe_write_files(context, node_ctx, artifacts if isinstance(artifacts, list) else [])
+        summary = ""
+        if isinstance(parsed, dict):
+            summary = str(parsed.get("summary", "")).strip()
+        if not summary:
+            summary = llm_text.splitlines()[0].strip() if llm_text.strip() else f"Executed task: {worker.agent_type}"
         return {
             "summary": summary,
-            "output": {"requirements": bullets[:20], "constraints": constraints},
-        }
-
-    def design_capability(input_data: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-        prompt = str(input_data.get("prompt", ""))
-        return {
-            "summary": "生成结构化设计草案",
-            "output": {
-                "sections": [
-                    "目标与范围",
-                    "总体架构",
-                    "任务规划模型",
-                    "执行与监控",
-                    "异常恢复",
-                ],
-                "note": f"Design draft generated for prompt length={len(prompt)}",
-            },
-        }
-
-    def summarize_capability(input_data: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-        memory_summary = str(context.get("memory_summary", "")).strip()
-        return {
-            "summary": "汇总执行结果",
-            "output": {
-                "final_summary": "任务已完成汇总"
-                + (f"；参考记忆摘要 {len(memory_summary)} 字符" if memory_summary else "")
-            },
+            "output": (
+                {"result": parsed, "result_text": llm_text, "generated_files": generated_files}
+                if parsed is not None
+                else {"result_text": llm_text, "task_prompt": task_prompt, "generated_files": generated_files}
+            ),
         }
 
     def generic_tool(input_data: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return {
-            "summary": "工具执行完成",
+            "summary": "Tool execution completed",
             "output": {"echo": dict(input_data), "worker": context.get("worker", {})},
         }
 
     worker.register_skill(
-        capability_id="skill.generic.analyze",
-        name="analyze_request",
-        description="Extract requirements and constraints from user prompt",
-        func=analyze_capability,
-        tags=["analyze", "requirement", "plan", "generic"],
-    )
-    worker.register_skill(
-        capability_id="skill.generic.design",
-        name="design_output",
-        description="Create a structured design draft",
-        func=design_capability,
-        tags=["design", "architecture", "document", "runtime", "generic"],
-    )
-    worker.register_skill(
-        capability_id="skill.generic.summarize",
-        name="summarize_result",
-        description="Summarize outputs for final response",
-        func=summarize_capability,
-        tags=["summarize", "report", "finalize", "generic"],
+        capability_id=f"skill.{worker.agent_type}.execute",
+        name="agent_execute",
+        description="Execute task strictly guided by the agent markdown prompt",
+        func=agent_execute_capability,
+        tags=[
+            "execute",
+            "agent",
+            "md-driven",
+            "requirement",
+            "design",
+            "implementation",
+            "testing",
+            "review",
+            "generic",
+        ],
     )
     worker.register_tool(
         capability_id="tool.generic.echo",
@@ -313,7 +524,34 @@ def build_default_worker(*, adapter_id: str = "worker_generic_1", agent_type: st
     return worker
 
 
+def build_default_worker_fleet(
+    *,
+    llm_client: LLMClientProtocol | None = None,
+    agent_types: list[str] | None = None,
+) -> list[WorkerAgent]:
+    fleet_types = agent_types or discover_runtime_agent_types_from_markdown() or list(DEFAULT_RUNTIME_AGENT_TYPES)
+    out: list[WorkerAgent] = []
+    for idx, raw_type in enumerate(fleet_types, start=1):
+        agent_type = str(raw_type).strip().lower().replace(" ", "_")
+        if not agent_type:
+            continue
+        out.append(
+            build_default_worker(
+                adapter_id=f"worker_{agent_type}_{idx}",
+                agent_type=agent_type,
+                llm_client=llm_client,
+            )
+        )
+    return out
+
+
 # Backward-compatible re-export while MasterAgent lives in a dedicated module.
 from .master_agent import MasterAgent  # noqa: E402
 
-__all__ = ["WorkerAgent", "build_default_worker", "MasterAgent"]
+__all__ = [
+    "WorkerAgent",
+    "build_default_worker",
+    "build_default_worker_fleet",
+    "discover_runtime_agent_types_from_markdown",
+    "MasterAgent",
+]

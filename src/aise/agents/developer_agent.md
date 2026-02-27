@@ -3,14 +3,13 @@
 - Agent Name: `developer`
 - Role: `DEVELOPER`
 - Runtime Usage: `Primary SDLC` (implementation phase owner)
-- Source Class: `aise.agents.developer.DeveloperAgent`
 - Primary Skills: `deep_developer_workflow`, `code_generation`, `unit_test_writing`, `code_review`, `bug_fix`
 
 ## Runtime Role
 
 Owns the implementation phase. Produces code and tests from architecture outputs, and iterates through review/fix loops when needed.
 
-## Current Skills (from Python class)
+## Current Skills
 
 - `deep_developer_workflow`
 - `code_generation`
@@ -19,6 +18,11 @@ Owns the implementation phase. Produces code and tests from architecture outputs
 - `bug_fix`
 - `tdd_session`
 - `pr_review`
+
+## Runtime Logic (Merged from Former Python Agent Class)
+
+- Register all skills listed in `Current Skills` during agent initialization.
+- No extra role-specific message override beyond base `Agent.handle_message`.
 
 ## Usage in Current LangChain Workflow
 

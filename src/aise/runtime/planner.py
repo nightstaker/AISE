@@ -34,7 +34,17 @@ class HeuristicTaskPlanner:
     def generate_plan(self, task: RuntimeTask, context: PlannerContext) -> TaskPlan:
         override = task.constraints.get("task_plan")
         if isinstance(override, dict):
-            logger.info("Using caller-provided plan override: task_id=%s", task.task_id)
+            constraints = task.constraints if isinstance(task.constraints, dict) else {}
+            logger.info(
+                (
+                    "Using caller-provided plan override: task_id=%s task_name=%s "
+                    "project_id=%s run_id=%s"
+                ),
+                task.task_id,
+                task.task_name or "-",
+                str(constraints.get("project_id", "")).strip() or "-",
+                str(constraints.get("run_id", "")).strip() or "-",
+            )
             validate_task_plan_payload(override)
             return TaskPlan.from_dict(override)
         raise PlanningError("Heuristic fallback planning is forbidden. Master Agent must use LLM-generated task plans.")

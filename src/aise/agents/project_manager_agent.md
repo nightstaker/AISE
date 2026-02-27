@@ -3,14 +3,13 @@
 - Agent Name: `project_manager`
 - Role: `PROJECT_MANAGER`
 - Runtime Usage: `Auxiliary` (cross-cutting, non-default phase owner)
-- Source Class: `aise.agents.project_manager.ProjectManagerAgent`
 - Primary Skills: `progress_tracking`, `team_health`, `conflict_resolution`, `version_release`
 
 ## Runtime Role
 
 Cross-cutting project execution support across all phases. Focuses on tracking status, team health, conflict resolution, and release readiness. Does not own requirements distribution or team formation.
 
-## Current Skills (from Python class)
+## Current Skills
 
 - `conflict_resolution`
 - `progress_tracking`
@@ -18,6 +17,18 @@ Cross-cutting project execution support across all phases. Focuses on tracking s
 - `team_health`
 - `pr_review`
 - `pr_merge`
+
+## Runtime Logic (Merged from Former Python Agent Class)
+
+- Register all skills listed in `Current Skills` during agent initialization.
+- Extend message handling for HA notifications:
+  - When receiving `MessageType.NOTIFICATION` with `event in {"agent_crashed","agent_stuck"}`:
+    - Build recovery directive.
+    - Broadcast `ha_recovery` notification to `broadcast`.
+    - Reply with `status=acknowledged` and selected recovery `action`.
+- Provide compatibility helper `check_agent_health(...)`:
+  - Execute `team_health` with `agent_registry`, `message_history`, `task_statuses`, and `stuck_threshold_seconds`.
+  - Return artifact content.
 
 ## Usage in Current LangChain Workflow
 

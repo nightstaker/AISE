@@ -11,15 +11,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .agents import (
-    ArchitectAgent,
-    DeveloperAgent,
-    ProductManagerAgent,
-    ProjectManagerAgent,
-    QAEngineerAgent,
-    RDDirectorAgent,
-    ReviewerAgent,
-)
+from .agents import create_agent_from_markdown
 from .config import ProjectConfig
 from .core.agent import AgentRole
 from .core.multi_project_session import MultiProjectSession
@@ -30,32 +22,6 @@ from .runtime.models import Principal
 from .utils.logging import configure_logging
 from .whatsapp.client import WhatsAppConfig
 from .whatsapp.session import WhatsAppGroupSession
-
-
-def _get_agent_class(role: AgentRole):
-    """Map AgentRole to agent class constructor.
-
-    Args:
-        role: The agent role
-
-    Returns:
-        Agent class constructor
-
-    Raises:
-        ValueError: If role is unknown
-    """
-    mapping = {
-        AgentRole.PRODUCT_MANAGER: ProductManagerAgent,
-        AgentRole.ARCHITECT: ArchitectAgent,
-        AgentRole.DEVELOPER: DeveloperAgent,
-        AgentRole.QA_ENGINEER: QAEngineerAgent,
-        AgentRole.PROJECT_MANAGER: ProjectManagerAgent,
-        AgentRole.RD_DIRECTOR: RDDirectorAgent,
-        AgentRole.REVIEWER: ReviewerAgent,
-    }
-    if role not in mapping:
-        raise ValueError(f"Unknown agent role: {role}")
-    return mapping[role]
 
 
 def create_team(
@@ -94,8 +60,6 @@ def create_team(
         if count < 1:
             continue  # Skip if count is 0 or negative
 
-        agent_class = _get_agent_class(role)
-
         for i in range(1, count + 1):
             # Generate agent name
             if count == 1:
@@ -105,11 +69,13 @@ def create_team(
                 # Multiple agents: use indexed names
                 agent_name = f"{role.value}_{i}"
 
-            # Create agent instance
-            agent = agent_class(
+            # Create agent instance from markdown metadata.
+            agent = create_agent_from_markdown(
+                agent_name=role.value,
                 message_bus=bus,
                 artifact_store=store,
                 model_config=config.get_model_config(role.value),
+                expected_role=role,
             )
 
             # Override agent name

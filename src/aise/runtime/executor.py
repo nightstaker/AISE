@@ -46,6 +46,15 @@ class ExecutionEngine:
     def execute_node(self, node: TaskNode, context: ExecutionContext) -> ExecutionResult:
         task = context.task
         worker = self._select_worker(node.assigned_agent_type)
+        logger.info(
+            "Node execution started: task_id=%s task_name=%s node_id=%s node_name=%s worker_id=%s worker_type=%s",
+            task.task_id,
+            task.task_name or "-",
+            node.id,
+            node.name,
+            getattr(worker, "adapter_id", None),
+            getattr(worker, "agent_type", None),
+        )
         trace_id = self.observability.new_trace_id()
         self.observability.record_event(
             EventRecord(
@@ -118,6 +127,16 @@ class ExecutionEngine:
 
         if result.status not in {ExecutionStatus.SUCCESS, ExecutionStatus.FAILED, ExecutionStatus.PARTIAL}:
             raise ExecutionError(f"Invalid execution status for node {node.id}: {result.status}")
+
+        logger.info(
+            "Node execution finished: task_id=%s task_name=%s node_id=%s node_name=%s status=%s summary=%s",
+            task.task_id,
+            task.task_name or "-",
+            node.id,
+            node.name,
+            result.status.value,
+            result.summary,
+        )
 
         self.observability.record_execution_result(
             task_id=task.task_id,

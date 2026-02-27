@@ -7,7 +7,7 @@ from threading import RLock
 from typing import Any
 
 from ..utils.logging import get_logger
-from .agents import WorkerAgent, build_default_worker
+from .agents import WorkerAgent, build_default_worker_fleet
 from .executor import ExecutionContext, ExecutionEngine
 from .interfaces import LLMClientProtocol
 from .master_agent import MasterAgent
@@ -75,7 +75,16 @@ class AgentRuntime:
         self._lock = RLock()
 
         if auto_register_default_worker and not self.worker_registry.list_all():
-            self.register_worker(build_default_worker())
+            for worker in build_default_worker_fleet(llm_client=self.master_agent.llm_client):
+                self.register_worker(worker)
+
+    @staticmethod
+    def _task_log_context(task: RuntimeTask) -> str:
+        constraints = task.constraints if isinstance(task.constraints, dict) else {}
+        project_id = str(constraints.get("project_id", "")).strip() or "-"
+        run_id = str(constraints.get("run_id", "")).strip() or "-"
+        task_name = str(task.task_name or "").strip() or "-"
+        return f"task_id={task.task_id} task_name={task_name} project_id={project_id} run_id={run_id}"
 
     # Registration ---------------------------------------------------------
 
@@ -109,7 +118,10 @@ class AgentRuntime:
         with self._lock:
             self._tasks[task.task_id] = task
         logger.info(
-            "Task submitted: task_id=%s tenant=%s user=%s", task.task_id, principal.tenant_id, principal.user_id
+            "Task submitted: %s tenant=%s user=%s",
+            self._task_log_context(task),
+            principal.tenant_id,
+            principal.user_id,
         )
 
         self.observability.record_event(
@@ -210,9 +222,11 @@ class AgentRuntime:
         principal = principal or task.principal
         self.policy_engine.check(principal, "task:retry", task)
         if task.plan is None:
+            logger.error("Retry rejected: task has no plan, task_id=%s node_id=%s", task_id, node_id)
             raise ValueError(f"Task {task_id} has no plan")
         node = self._find_node(task.plan, node_id)
         if node is None:
+            logger.error("Retry rejected: node not found, task_id=%s node_id=%s", task_id, node_id)
             raise ValueError(f"Node not found: {node_id}")
 
         mem_records, memory_summary = self.master_agent.retrieve_relevant_memory(task)
@@ -245,6 +259,13 @@ class AgentRuntime:
         plan = self.master_agent.generate_plan(task)
         validate_task_plan(plan)
         task.plan = plan
+        logger.info(
+            "Task planning completed: %s plan_id=%s plan_task_name=%s top_level_tasks=%d",
+            self._task_log_context(task),
+            plan.plan_id,
+            plan.task_name,
+            len(plan.tasks),
+        )
 
         self.observability.record_event(
             EventRecord(
@@ -262,9 +283,22 @@ class AgentRuntime:
     def _run_plan_cycle(self, task: RuntimeTask, initial_plan: TaskPlan) -> None:
         current_plan = initial_plan
         max_plan_cycles = 2
+        logger.info(
+            "Task execution loop started: %s plan_id=%s plan_task_name=%s max_cycles=%d",
+            self._task_log_context(task),
+            current_plan.plan_id,
+            current_plan.task_name,
+            max_plan_cycles,
+        )
         for cycle in range(max_plan_cycles):
             task.status = RuntimeTaskStatus.RUNNING
             task.touch()
+            logger.info(
+                "Task execution cycle started: %s cycle=%d plan_id=%s",
+                self._task_log_context(task),
+                cycle,
+                current_plan.plan_id,
+            )
 
             mem_records, memory_summary = self.master_agent.retrieve_relevant_memory(task)
             exec_context = ExecutionContext(task=task, memory_summary=memory_summary, memory_details=mem_records)
@@ -277,11 +311,24 @@ class AgentRuntime:
                 return result
 
             outcome: ScheduleOutcome = self.scheduler.execute_plan(current_plan, node_executor)
+            logger.info(
+                "Task execution cycle finished: %s cycle=%d completed=%d failed=%d",
+                self._task_log_context(task),
+                cycle,
+                len(outcome.completed_node_ids),
+                len(outcome.failed_node_ids),
+            )
             if outcome.all_success:
                 task.status = RuntimeTaskStatus.COMPLETED
                 task.final_output = self.master_agent.finalize_task_output(task)
                 task.report = self.report_engine.generate(task, self.observability)
                 task.touch()
+                logger.info(
+                    "Task execution completed: %s cycle=%d plan_id=%s",
+                    self._task_log_context(task),
+                    cycle,
+                    current_plan.plan_id,
+                )
                 self.observability.record_event(
                     EventRecord(
                         trace_id=self.observability.new_trace_id(),
@@ -307,6 +354,13 @@ class AgentRuntime:
                 task.final_output = self.master_agent.finalize_task_output(task)
                 task.report = self.report_engine.generate(task, self.observability)
                 task.touch()
+                logger.error(
+                    "Task execution failed without replan: %s cycle=%d failed_nodes=%s plan_id=%s",
+                    self._task_log_context(task),
+                    cycle,
+                    outcome.failed_node_ids,
+                    current_plan.plan_id,
+                )
                 self.observability.record_event(
                     EventRecord(
                         trace_id=self.observability.new_trace_id(),
@@ -340,6 +394,10 @@ class AgentRuntime:
         task.final_output = self.master_agent.finalize_task_output(task)
         task.report = self.report_engine.generate(task, self.observability)
         task.touch()
+        logger.error(
+            "Task execution failed: %s reason=max_plan_cycles_exceeded",
+            self._task_log_context(task),
+        )
 
     # Helpers --------------------------------------------------------------
 
@@ -347,6 +405,7 @@ class AgentRuntime:
         with self._lock:
             task = self._tasks.get(task_id)
         if task is None:
+            logger.error("Task not found in runtime store: task_id=%s", task_id)
             raise ValueError(f"Task not found: {task_id}")
         return task
 

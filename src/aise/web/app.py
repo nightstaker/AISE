@@ -15,6 +15,7 @@ from threading import RLock, Thread
 from typing import Any
 
 from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -23,15 +24,16 @@ from starlette.status import HTTP_303_SEE_OTHER, HTTP_401_UNAUTHORIZED
 
 from ..config import ProjectConfig
 from ..core.artifact import Artifact, ArtifactType
+from ..core.llm import LLMClient
 from ..core.project import Project, ProjectStatus
 from ..core.project_manager import ProjectManager
+from ..core.runtime_project_context import RuntimeProjectContext
 from ..core.task_state import RunTaskStateStore, TaskDocRef, TaskMemoryRecorder
 from ..core.workflow import WorkflowEngine
 from ..langchain.agent_node import SKILL_INPUT_HINTS, build_retry_skill_input
-from ..main import create_team
 from ..runtime import AgentRuntime, InMemoryMemoryManager, MasterAgent, validate_task_plan_payload
 from ..runtime.exceptions import AuthorizationError as RuntimeAuthorizationError
-from ..runtime.models import Principal
+from ..runtime.models import Principal, RuntimeTask
 from ..runtime.registry import WorkerRegistry
 from ..utils.logging import configure_logging, configure_module_file_logger, get_logger
 
@@ -41,6 +43,22 @@ except Exception:  # pragma: no cover - optional dependency
     OAuth = None
 
 logger = get_logger(__name__)
+
+
+class RuntimeLLMClientAdapter:
+    """Adapter from core LLMClient to runtime LLMClientProtocol."""
+
+    def __init__(self, llm_client: LLMClient) -> None:
+        self._llm_client = llm_client
+
+    def set_call_context(self, context: dict[str, Any]) -> None:
+        self._llm_client.set_call_context(context)
+
+    def clear_call_context(self) -> None:
+        self._llm_client.clear_call_context()
+
+    def complete(self, prompt: str, **kwargs: Any) -> str:
+        return self._llm_client.complete(prompt, **kwargs)
 
 
 @dataclass
@@ -53,6 +71,7 @@ class WorkflowRun:
     status: str = "pending"
     completed_at: datetime | None = None
     error: str = ""
+    runtime_task_id: str = ""
     phase_results: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -96,10 +115,14 @@ class WebProjectService:
         self._lock = RLock()
         self._active_workflow_runs: set[tuple[str, str]] = set()
         self._active_retry_ops: set[str] = set()
+        self._agent_runtime: AgentRuntime | None = None
         self._state_path = self.project_manager._projects_root / "web_state.json"
         self._restore_projects_from_disk()
         self._load_state()
         logger.info("WebProjectService initialized: state_path=%s", self._state_path)
+
+    def bind_runtime(self, runtime: AgentRuntime) -> None:
+        self._agent_runtime = runtime
 
     def list_projects(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -132,6 +155,7 @@ class WebProjectService:
         initial_requirement: str = "",
     ) -> tuple[str, str | None]:
         if not project_name.strip():
+            logger.error("Create project failed: empty project name")
             raise ValueError("Project name cannot be empty")
         logger.info("Web create_project requested: name=%s mode=%s", project_name, development_mode)
         mode = "github" if development_mode == "github" else "local"
@@ -146,9 +170,6 @@ class WebProjectService:
                         config.agents[agent_name].model = config.resolve_model_id(normalized)
         with self._lock:
             project_id = self.project_manager.create_project(project_name, config)
-            project = self.project_manager.get_project(project_id)
-            if project is not None:
-                self._attach_langchain_runtime(project)
             self._runs_by_project.setdefault(project_id, [])
             self._requirements_by_project.setdefault(project_id, [])
             self._save_state()
@@ -187,8 +208,9 @@ class WebProjectService:
                 task_summary = self.get_run_task_state_summary(project_id, run_id)
                 payload["task_state_summary"] = task_summary.get("tasks", {})
                 payload["active_operation"] = task_summary.get("active_operation")
-                payload["retry_supported"] = True
-                payload["retry_modes"] = ["current", "downstream"]
+                is_runtime_run = bool(str(payload.get("runtime_task_id", "")).strip())
+                payload["retry_supported"] = not is_runtime_run
+                payload["retry_modes"] = [] if is_runtime_run else ["current", "downstream"]
                 return payload
         return None
 
@@ -278,16 +300,24 @@ class WebProjectService:
             project = self.project_manager.get_project(project_id)
             run = self._find_run(project_id, run_id)
             if project is None or run is None:
+                logger.error("Retry task failed: run not found project_id=%s run_id=%s", project_id, run_id)
                 raise ValueError("Run not found")
             self._recover_stale_run_execution_state_locked(project_id, run_id, run)
             if str(run.status).lower() in {"pending", "running"}:
                 store_check = self._run_task_state_store(project_id, run_id).load().get("active_operation")
                 if not (isinstance(store_check, dict) and str(store_check.get("status", "")).lower() == "running"):
+                    logger.error("Retry rejected due to running workflow: project_id=%s run_id=%s", project_id, run_id)
                     raise RuntimeError("当前 run 正在执行中，暂不支持并发任务重试")
             store = self._run_task_state_store(project_id, run_id)
             current_state = store.load()
             active = current_state.get("active_operation")
             if isinstance(active, dict) and str(active.get("status", "")).lower() == "running":
+                logger.error(
+                    "Retry rejected due to active retry operation: project_id=%s run_id=%s active=%s",
+                    project_id,
+                    run_id,
+                    active,
+                )
                 raise RuntimeError("当前 run 已有任务正在执行/重试，请稍后再试")
 
             plan = self._build_task_execution_plan(
@@ -298,6 +328,14 @@ class WebProjectService:
                 mode=normalized_mode,
             )
             if not plan:
+                logger.error(
+                    "Retry plan empty: project_id=%s run_id=%s phase_key=%s task_key=%s mode=%s",
+                    project_id,
+                    run_id,
+                    phase_key,
+                    task_key,
+                    normalized_mode,
+                )
                 raise ValueError("未找到可执行任务计划")
 
             op_id = f"retry_{uuid.uuid4().hex[:10]}"
@@ -338,10 +376,12 @@ class WebProjectService:
         with self._lock:
             project = self.project_manager.get_project(project_id)
             if project is None:
+                logger.error("Run requirement failed: project not found project_id=%s", project_id)
                 raise ValueError(f"Project {project_id} not found")
 
             requirement = requirement_text.strip()
             if not requirement:
+                logger.error("Run requirement failed: empty requirement text project_id=%s", project_id)
                 raise ValueError("Requirement text cannot be empty")
             logger.info(
                 "Web requirement dispatch: project_id=%s text_len=%d",
@@ -447,6 +487,7 @@ class WebProjectService:
             project = self.project_manager.get_project(project_id)
             run = self._find_run(project_id, run_id)
             if project is None or run is None:
+                logger.error("Task execution unit failed: run not found project_id=%s run_id=%s", project_id, run_id)
                 raise ValueError("Run not found")
             project_input = {
                 "raw_requirements": run.requirement_text,
@@ -521,6 +562,14 @@ class WebProjectService:
                 status="failed",
                 error=f"agent not found: {unit.agent_name}",
             )
+            logger.error(
+                "Task execution unit failed: agent not found project_id=%s run_id=%s phase=%s task=%s agent=%s",
+                project_id,
+                run_id,
+                unit.phase_key,
+                unit.task_key,
+                unit.agent_name,
+            )
             raise ValueError(f"agent not found: {unit.agent_name}")
 
         parameters = {
@@ -576,8 +625,6 @@ class WebProjectService:
             raise
 
     def _execute_workflow_run(self, project_id: str, run_id: str, requirement: str) -> None:
-        task_store = self._run_task_state_store(project_id, run_id)
-        task_recorder = TaskMemoryRecorder(task_store)
         try:
             with self._lock:
                 run = self._find_run(project_id, run_id)
@@ -591,23 +638,97 @@ class WebProjectService:
                 self._save_state()
 
             try:
-                results = self.project_manager.run_project_workflow(
-                    project_id,
-                    {
-                        "raw_requirements": requirement,
-                        "user_memory": memory_items,
-                        "_task_memory_recorder": task_recorder,
-                        "_run_id": run_id,
-                        "_project_id": project_id,
+                runtime = self._agent_runtime
+                if runtime is None:
+                    logger.error("Workflow execution failed: runtime not bound project_id=%s run_id=%s", project_id, run_id)
+                    raise RuntimeError("Agent runtime not bound")
+                runtime_llm = getattr(runtime.master_agent, "llm_client", None)
+                if isinstance(runtime_llm, RuntimeLLMClientAdapter):
+                    project = self.project_manager.get_project(project_id)
+                    project_root = Path(project.project_root) if project and project.project_root else None
+                    trace_dir = (
+                        project_root / "trace"
+                        if project_root is not None
+                        else (self.project_manager._projects_root / project_id / "trace")
+                    )
+                    trace_dir.mkdir(parents=True, exist_ok=True)
+                    runtime_llm.set_call_context(
+                        {
+                            "agent": "runtime_master",
+                            "role": "master_agent",
+                            "skill": "planning",
+                            "project_name": project.config.project_name if project and project.config else "",
+                            "project_root": str(project_root) if project_root is not None else "",
+                            "trace_dir": str(trace_dir),
+                        }
+                    )
+                principal = Principal(
+                    user_id=f"web-project-{project_id}",
+                    tenant_id="web-default",
+                    roles=["Admin"],
+                    attributes={
+                        "source": "web_project_requirement",
+                        "project_id": project_id,
+                        "run_id": run_id,
                     },
                 )
-                completed_status = "completed"
-                error_message = ""
+                planning_task = RuntimeTask(
+                    principal=principal,
+                    prompt=requirement,
+                    task_name=f"project_{project_id}_run_{run_id}",
+                    constraints={
+                        "project_id": project_id,
+                        "run_id": run_id,
+                        "project_root": str(project_root) if project_root is not None else "",
+                        "user_memory": memory_items,
+                    },
+                    metadata={
+                        "source": "web_project_requirement",
+                        "project_id": project_id,
+                        "run_id": run_id,
+                        "project_root": str(project_root) if project_root is not None else "",
+                        "stage": "planning",
+                    },
+                )
+                generated_plan = runtime.master_agent.generate_plan(planning_task)
+                self._save_plan_for_project(project_id, self._plan_payload_from_llm_response(generated_plan))
+                task_id = runtime.submit_task(
+                    prompt=requirement,
+                    principal=principal,
+                    task_name=f"project_{project_id}_run_{run_id}",
+                    constraints={
+                        "project_id": project_id,
+                        "run_id": run_id,
+                        "project_root": str(project_root) if project_root is not None else "",
+                        "user_memory": memory_items,
+                        "task_plan": generated_plan.to_dict(),
+                    },
+                    metadata={
+                        "source": "web_project_requirement",
+                        "project_id": project_id,
+                        "run_id": run_id,
+                        "project_root": str(project_root) if project_root is not None else "",
+                        "stage": "execution_from_generated_plan",
+                    },
+                    run_sync=True,
+                )
+                task_payload = runtime.get_task(task_id, principal=principal)
+                results = self._runtime_task_to_phase_results(task_payload)
+                runtime_status = str(task_payload.get("status", "")).strip().lower()
+                completed_status = "completed" if runtime_status == "completed" else "failed"
+                errors = task_payload.get("errors", [])
+                error_message = "; ".join(str(item) for item in errors if str(item).strip())
             except Exception as exc:
                 logger.exception("Web requirement failed: project_id=%s run_id=%s", project_id, run_id)
+                task_id = ""
                 results = []
                 completed_status = "failed"
                 error_message = str(exc)
+            finally:
+                runtime = self._agent_runtime
+                runtime_llm = getattr(getattr(runtime, "master_agent", None), "llm_client", None)
+                if isinstance(runtime_llm, RuntimeLLMClientAdapter):
+                    runtime_llm.clear_call_context()
 
             with self._lock:
                 run = self._find_run(project_id, run_id)
@@ -616,6 +737,7 @@ class WebProjectService:
                 run.phase_results = results
                 run.status = completed_status
                 run.error = error_message
+                run.runtime_task_id = task_id
                 run.completed_at = datetime.now(timezone.utc)
 
                 project = self.project_manager.get_project(project_id)
@@ -637,6 +759,119 @@ class WebProjectService:
         finally:
             with self._lock:
                 self._active_workflow_runs.discard((project_id, run_id))
+
+    def _runtime_task_to_phase_results(self, task_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        if not isinstance(task_payload, dict):
+            return []
+
+        plan = task_payload.get("plan")
+        plan_tasks = plan.get("tasks", []) if isinstance(plan, dict) else []
+        node_results = task_payload.get("node_results")
+        node_results = node_results if isinstance(node_results, dict) else {}
+
+        collected_nodes: list[dict[str, Any]] = []
+
+        def _walk(nodes: list[dict[str, Any]]) -> None:
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                collected_nodes.append(node)
+                children = node.get("children")
+                if isinstance(children, list):
+                    _walk(children)
+
+        if isinstance(plan_tasks, list):
+            _walk(plan_tasks)
+
+        tasks: dict[str, Any] = {}
+        for node in collected_nodes:
+            node_id = str(node.get("id", "")).strip()
+            if not node_id:
+                continue
+            result = node_results.get(node_id, {})
+            if not isinstance(result, dict):
+                result = {}
+            result_status = str(result.get("status", "")).strip().lower()
+            task_status = "completed" if result_status == "success" else ("failed" if result_status else "pending")
+            task_key = node_id
+            agent_type = str(node.get("assigned_agent_type", "")).strip()
+            if agent_type:
+                task_key = f"{agent_type}.{node_id}"
+            tasks[task_key] = {
+                "status": task_status,
+                "artifact_id": "",
+                "summary": str(result.get("summary", "")),
+                "output": result.get("output", {}),
+                "errors": result.get("errors", []),
+            }
+
+        run_status = str(task_payload.get("status", "")).strip().lower()
+        phase_status = "completed" if run_status == "completed" else "failed"
+        return [
+            {
+                "phase": "master_runtime",
+                "status": phase_status,
+                "tasks": tasks,
+                "runtime_task_id": str(task_payload.get("task_id", "")),
+                "plan_id": str((plan or {}).get("plan_id", "")) if isinstance(plan, dict) else "",
+            }
+        ]
+
+    def _save_plan_for_project(self, project_id: str, plan_payload: dict[str, Any]) -> Path:
+        project = self.project_manager.get_project(project_id)
+        if project is not None and project.project_root:
+            project_root = Path(project.project_root)
+        else:
+            project_root = self.project_manager._projects_root / project_id
+        project_root.mkdir(parents=True, exist_ok=True)
+        plan_path = project_root / "plan.json"
+        plan_path.write_text(json.dumps(plan_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("Runtime plan saved: project_id=%s plan_path=%s", project_id, plan_path)
+        return plan_path
+
+    def _plan_payload_from_llm_response(self, generated_plan: Any) -> dict[str, Any]:
+        """Prefer raw LLM-produced plan payload when saving plan.json."""
+        if not hasattr(generated_plan, "metadata") or not hasattr(generated_plan, "to_dict"):
+            return {}
+        metadata = getattr(generated_plan, "metadata", {}) or {}
+        planning = metadata.get("planning_inference", {}) if isinstance(metadata, dict) else {}
+        response_text = ""
+        if isinstance(planning, dict):
+            response_text = str(planning.get("response", "") or "").strip()
+        if response_text:
+            try:
+                payload = json.loads(response_text)
+                if isinstance(payload, dict):
+                    task_plan = payload.get("task_plan")
+                    if isinstance(task_plan, dict):
+                        return self._inject_selected_process_info(task_plan, metadata)
+                    plan = payload.get("plan")
+                    if isinstance(plan, dict):
+                        return self._inject_selected_process_info(plan, metadata)
+                    if isinstance(payload.get("tasks"), list):
+                        return self._inject_selected_process_info(payload, metadata)
+            except Exception:
+                logger.warning("Failed to parse planning_inference response as JSON; fallback to normalized plan")
+        normalized = generated_plan.to_dict()
+        if isinstance(normalized, dict):
+            return self._inject_selected_process_info(normalized, metadata)
+        return {}
+
+    def _inject_selected_process_info(self, plan_payload: dict[str, Any], runtime_meta: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(plan_payload, dict):
+            return {}
+        out = dict(plan_payload)
+        # plan.json should remain clean and not persist runtime metadata internals.
+        out.pop("metadata", None)
+
+        process_match = runtime_meta.get("process_match") if isinstance(runtime_meta, dict) else None
+        process_context = runtime_meta.get("process_context") if isinstance(runtime_meta, dict) else None
+        if process_match is not None:
+            out["selected_process"] = process_match
+        if process_context is not None:
+            out["selected_process_context"] = process_context
+
+        return out
 
     def _find_run(self, project_id: str, run_id: str) -> WorkflowRun | None:
         for run in self._runs_by_project.get(project_id, []):
@@ -1250,7 +1485,11 @@ class WebProjectService:
                 if called_at is not None
                 else str(payload.get("called_at_iso", "") or payload.get("timestamp", ""))
             )
-            output_text = str(payload.get("output", ""))
+            trace_output = payload.get("output")
+            if isinstance(trace_output, (dict, list)):
+                output_text = json.dumps(trace_output, ensure_ascii=False, indent=2)
+            else:
+                output_text = str(trace_output or "")
             purpose = str(payload.get("purpose", ""))
             provider_meta = payload.get("provider_response_meta")
             trace_input = payload.get("input")
@@ -2118,14 +2357,13 @@ class WebProjectService:
                 continue
             try:
                 config = ProjectConfig.from_json_file(config_path)
-                orchestrator = create_team(config, project_root=str(project_dir))
+                orchestrator = RuntimeProjectContext(project_root=str(project_dir))
                 project = Project(
                     project_id=project_id,
                     config=config,
                     orchestrator=orchestrator,
                     project_root=str(project_dir),
                 )
-                self._attach_langchain_runtime(project)
                 self.project_manager._projects[project_id] = project
                 counter = int(project_id.split("_", 1)[1])
                 max_counter = max(max_counter, counter)
@@ -2177,6 +2415,7 @@ class WebProjectService:
                             status=status,
                             completed_at=completed,
                             error=str(item.get("error", "")),
+                            runtime_task_id=str(item.get("runtime_task_id", "")),
                             phase_results=list(item.get("phase_results", [])),
                         )
                     )
@@ -2259,6 +2498,7 @@ class WebProjectService:
             "status": run.status,
             "completed_at": run.completed_at.isoformat() if run.completed_at else None,
             "error": run.error,
+            "runtime_task_id": run.runtime_task_id,
             "phase_results": run.phase_results,
         }
 
@@ -2271,56 +2511,8 @@ class WebProjectService:
             "source": item.source,
         }
 
-    def _attach_langchain_runtime(self, project: Project) -> None:
-        """Wrap project orchestrator with DeepOrchestrator for web workflows."""
-        from ..langchain.deep_orchestrator import DeepOrchestrator
-
-        if project.project_root and getattr(project.orchestrator, "project_root", None) != project.project_root:
-            project.orchestrator.project_root = project.project_root  # type: ignore[assignment]
-
-        if isinstance(project.orchestrator, DeepOrchestrator):
-            wrapped = getattr(project.orchestrator, "orchestrator", None)
-            if (
-                project.project_root
-                and wrapped is not None
-                and getattr(wrapped, "project_root", None) != project.project_root
-            ):
-                wrapped.project_root = project.project_root
-            return
-        project.orchestrator = DeepOrchestrator.from_orchestrator(  # type: ignore[assignment]
-            project.orchestrator,
-            config=project.config,
-        )
-
     def _build_workflow_nodes(self, project: Project) -> list[dict[str, Any]]:
-        """Build workflow node metadata for UI based on active runtime."""
-        from ..langchain.agent_node import PHASE_SKILL_PLAYBOOK, SKILL_INPUT_HINTS
-        from ..langchain.deep_orchestrator import DeepOrchestrator
-        from ..langchain.state import PHASE_AGENT_MAP, WORKFLOW_PHASES
-
-        if isinstance(project.orchestrator, DeepOrchestrator):
-            available_agents = set(project.orchestrator.agents.keys())
-            nodes: list[dict[str, Any]] = []
-            for phase in WORKFLOW_PHASES:
-                agent_name = PHASE_AGENT_MAP.get(phase, "")
-                phase_skills = PHASE_SKILL_PLAYBOOK.get(agent_name, {}).get(phase, [])
-                if agent_name not in available_agents:
-                    tasks: list[str] = []
-                else:
-                    registered = set(project.orchestrator.agents[agent_name].skills.keys())
-                    tasks = [f"{agent_name}.{skill}" for skill in phase_skills if skill in registered]
-                agent_tasks = self._group_tasks_by_agent(tasks, SKILL_INPUT_HINTS)
-                agent_tasks = self._expand_phase_subagents(phase, tasks, agent_tasks)
-                nodes.append(
-                    {
-                        "name": phase,
-                        "tasks": tasks,
-                        "agent_tasks": agent_tasks,
-                        "review_gate": None,
-                    }
-                )
-            return nodes
-
+        """Build workflow node metadata for UI."""
         default_workflow = WorkflowEngine.create_default_workflow()
         return [
             {
@@ -2547,9 +2739,11 @@ def create_app() -> FastAPI:
     app.state.web_service = service
     runtime_worker_registry = WorkerRegistry()
     runtime_memory_manager = InMemoryMemoryManager()
+    runtime_llm_client = RuntimeLLMClientAdapter(LLMClient(service.project_manager._global_config.default_model))
     runtime_master_agent = MasterAgent(
         worker_registry=runtime_worker_registry,
         memory_manager=runtime_memory_manager,
+        llm_client=runtime_llm_client,
     )
     app.state.master_agent = runtime_master_agent
     app.state.agent_runtime = AgentRuntime(
@@ -2557,6 +2751,7 @@ def create_app() -> FastAPI:
         worker_registry=runtime_worker_registry,
         memory_manager=runtime_memory_manager,
     )
+    service.bind_runtime(app.state.agent_runtime)
     oauth = _build_oauth()
     dev_login_enabled = os.environ.get("AISE_WEB_ENABLE_DEV_LOGIN", "").lower() in {"1", "true", "yes"}
     local_admin_username = os.environ.get("AISE_ADMIN_USERNAME", "admin")
@@ -2583,6 +2778,17 @@ def create_app() -> FastAPI:
             request.url.path,
         )
         return response
+
+    @app.exception_handler(HTTPException)
+    async def log_http_exception(request: Request, exc: HTTPException):
+        logger.error(
+            "HTTP exception: method=%s path=%s status=%s detail=%s",
+            request.method,
+            request.url.path,
+            exc.status_code,
+            exc.detail,
+        )
+        return await http_exception_handler(request, exc)
 
     def require_login(request: Request) -> dict[str, Any]:
         user = request.session.get("user")

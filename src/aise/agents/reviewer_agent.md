@@ -3,18 +3,22 @@
 - Agent Name: `reviewer`
 - Role: `REVIEWER`
 - Runtime Usage: `GitHub-only` (auxiliary reviewer session / PR handling)
-- Source Class: `aise.agents.reviewer.ReviewerAgent`
 - Primary Skills: `code_review`, `pr_review`, `pr_merge`
 
 ## Runtime Role
 
 Dedicated reviewer for GitHub mode. Reviews pull requests, posts review decisions/feedback, and merges PRs when appropriate.
 
-## Current Skills (from Python class)
+## Current Skills
 
 - `code_review`
 - `pr_review`
 - `pr_merge`
+
+## Runtime Logic (Merged from Former Python Agent Class)
+
+- Register all skills listed in `Current Skills` during agent initialization.
+- No extra role-specific message override beyond base `Agent.handle_message`.
 
 ## Usage in Current LangChain Workflow
 

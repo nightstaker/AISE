@@ -34,7 +34,7 @@ class CapabilityRegistry:
         with self._lock:
             self._specs[handler.spec.capability_id] = handler.spec
             self._handlers[handler.spec.capability_id] = handler
-        logger.info(
+        logger.debug(
             "Capability registered: id=%s kind=%s name=%s",
             handler.spec.capability_id,
             handler.spec.kind.value,
@@ -124,7 +124,7 @@ class WorkerRegistry:
     def register(self, worker: LanguageWorkerAdapter) -> None:
         with self._lock:
             self._workers[worker.adapter_id] = worker
-        logger.info(
+        logger.debug(
             "Worker registered: id=%s type=%s language=%s",
             worker.adapter_id,
             worker.agent_type,

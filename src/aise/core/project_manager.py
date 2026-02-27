@@ -9,6 +9,7 @@ from ..config import ProjectConfig
 from ..core.agent import AgentRole
 from ..utils.logging import get_logger
 from .project import Project, ProjectStatus
+from .runtime_project_context import RuntimeProjectContext
 
 if TYPE_CHECKING:
     pass
@@ -56,7 +57,7 @@ class ProjectManager:
         config: ProjectConfig | None = None,
         agent_counts: dict[AgentRole, int] | None = None,
     ) -> str:
-        """Create a new project with its own agent team.
+        """Create a new project container without eagerly creating an agent team.
 
         Args:
             project_name: Human-readable project name
@@ -90,12 +91,15 @@ class ProjectManager:
         project_root = self._prepare_project_root(project_id, project_name)
         config.to_json_file(project_root / "project_config.json")
 
-        # Create isolated orchestrator with agents
-        # Import locally to avoid circular dependency
-        from ..main import create_team
-
-        orchestrator = create_team(config, agent_counts)
-        orchestrator.project_root = str(project_root)
+        # Create isolated orchestrator shell only.
+        # Team/agents are initialized lazily by runtime execution path when needed.
+        if agent_counts is not None:
+            logger.info(
+                "Project create ignored eager agent_counts (runtime-lazy mode): project=%s agent_counts=%s",
+                project_name,
+                agent_counts,
+            )
+        orchestrator = RuntimeProjectContext(project_root=str(project_root))
 
         # Create project container
         project = Project(
