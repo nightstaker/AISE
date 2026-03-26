@@ -117,13 +117,16 @@ class WorkflowEngine:
         if phase is None:
             return {"status": "complete", "message": "Workflow is complete"}
 
+        # Validate and resolve task dependencies before execution
+        ordered_tasks = self._topological_sort_tasks(phase.tasks)
+
         phase.status = PhaseStatus.IN_PROGRESS
         results = {}
         logger.info(
-            "Phase execution started: workflow=%s phase=%s tasks=%d", workflow.name, phase.name, len(phase.tasks)
+            "Phase execution started: workflow=%s phase=%s tasks=%d", workflow.name, phase.name, len(ordered_tasks)
         )
 
-        for task in phase.tasks:
+        for task in ordered_tasks:
             task.status = PhaseStatus.IN_PROGRESS
             logger.debug("Phase task started: task=%s", task.key)
             try:
@@ -148,6 +151,78 @@ class WorkflowEngine:
 
         logger.info("Phase execution finished: phase=%s status=%s", phase.name, phase.status.value)
         return {"phase": phase.name, "status": phase.status.value, "tasks": results}
+
+
+    def _topological_sort_tasks(self, tasks: list[Task]) -> list[Task]:
+        """Sort tasks topologically based on their dependencies.
+
+        Uses Kahn's algorithm for topological sorting with cycle detection.
+
+        Args:
+            tasks: List of tasks to sort
+
+        Returns:
+            Tasks sorted in execution order respecting dependencies
+
+        Raises:
+            ValueError: If circular dependency or missing dependency is detected
+        """
+        if not tasks:
+            return []
+
+        # Build task key to task mapping and validate dependencies
+        task_map = {task.key: task for task in tasks}
+
+        # Validate all dependencies exist
+        self._validate_dependencies_exist(tasks, task_map)
+
+        # Build adjacency list and in-degree count
+        graph: dict[str, list[str]] = {task.key: [] for task in tasks}
+        in_degree: dict[str, int] = {task.key: 0 for task in tasks}
+
+        for task in tasks:
+            for dep_key in task.depends_on:
+                graph[dep_key].append(task.key)
+                in_degree[task.key] += 1
+
+        # Kahn's algorithm
+        queue = [key for key, degree in in_degree.items() if degree == 0]
+        sorted_tasks: list[Task] = []
+
+        while queue:
+            queue.sort()
+            current_key = queue.pop(0)
+            current_task = task_map[current_key]
+            sorted_tasks.append(current_task)
+
+            for dependent_key in graph[current_key]:
+                in_degree[dependent_key] -= 1
+                if in_degree[dependent_key] == 0:
+                    queue.append(dependent_key)
+
+        if len(sorted_tasks) != len(tasks):
+            cycle_tasks = [key for key, degree in in_degree.items() if degree > 0]
+            raise ValueError(
+                f"Circular dependency detected in tasks: {', '.join(sorted(cycle_tasks))}. "
+                "A task cannot depend on itself directly or indirectly."
+            )
+
+        logger.debug(
+            "Tasks sorted topologically: phase_tasks=%d execution_order=%s",
+            len(tasks),
+            " -> ".join(t.key for t in sorted_tasks),
+        )
+        return sorted_tasks
+
+    def _validate_dependencies_exist(self, tasks: list[Task], task_map: dict[str, Task]) -> None:
+        """Validate that all declared dependencies reference existing tasks."""
+        for task in tasks:
+            for dep_key in task.depends_on:
+                if dep_key not in task_map:
+                    raise ValueError(
+                        f"Task '{task.key}' has a missing dependency '{dep_key}'. "
+                        f"Available tasks: {', '.join(sorted(task_map.keys()))}"
+                    )
 
     def run_review(self, workflow: Workflow, executor) -> dict[str, Any]:
         """Run the review gate for the current phase.
