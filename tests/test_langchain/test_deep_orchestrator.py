@@ -155,10 +155,17 @@ def _patch_llm():
             {"phase": "implementation", "agent": "developer"},
             {"phase": "testing", "agent": "qa_engineer"},
         ]
-        with patch("aise.langchain.agent_node.create_runtime_agent") as mock_runtime:
+        # Patch create_runtime_agent in all modules that import it
+        with (
+            patch("aise.langchain.agent_node.create_runtime_agent") as mock_runtime_node,
+            patch("aise.langchain.supervisor.create_runtime_agent") as mock_runtime_sup,
+            patch("aise.langchain.deep_agent_adapter.create_runtime_agent") as mock_runtime_adapter,
+        ):
             mock_agent = MagicMock()
             mock_agent.invoke.return_value = {"messages": [AIMessage(content="done")]}
-            mock_runtime.return_value = mock_agent
+            mock_runtime_node.return_value = mock_agent
+            mock_runtime_sup.return_value = mock_agent
+            mock_runtime_adapter.return_value = mock_agent
             yield
 
 

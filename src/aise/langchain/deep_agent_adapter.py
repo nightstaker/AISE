@@ -53,9 +53,17 @@ def _create_deep_runtime(
     except Exception as exc:
         error = exc
 
-    # Second attempt: positional calling for old/unknown signatures.
+    # Second attempt: keyword-only system_prompt (DeepAgents requires it as keyword arg).
     try:
-        candidate = factory(llm, tools, system_prompt)
+        candidate = factory(llm, tools, system_prompt=system_prompt)
+        if hasattr(candidate, "invoke"):
+            return candidate
+    except Exception as exc:
+        error = exc
+
+    # Third attempt: fully keyword-based for maximum compatibility.
+    try:
+        candidate = factory(model=llm, tools=tools, system_prompt=system_prompt)
         if hasattr(candidate, "invoke"):
             return candidate
     except Exception as exc:
