@@ -4,7 +4,6 @@ Tests for the feature that ensures tasks execute in correct order
 based on their declared dependencies.
 """
 
-
 import pytest
 
 from aise.core.workflow import Phase, Task, Workflow, WorkflowEngine

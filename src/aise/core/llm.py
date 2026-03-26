@@ -264,7 +264,6 @@ class LLMClient:
             ) from last_error
         raise RuntimeError("All LLM providers failed with unknown errors")
 
-
     def _calculate_backoff_delay(self, attempt: int) -> float:
         """Calculate exponential backoff delay with jitter.
 
@@ -294,16 +293,26 @@ class LLMClient:
         error_msg = str(exc).lower()
 
         transient_types = {
-            "connectionerror", "connectionreseterror", "connecttimeout",
-            "readtimeout", "timeouterror", "temporaryfailure"
+            "connectionerror",
+            "connectionreseterror",
+            "connecttimeout",
+            "readtimeout",
+            "timeouterror",
+            "temporaryfailure",
         }
         if error_type in transient_types:
             return True
 
         transient_patterns = {
-            "connection error", "timed out", "connection reset",
-            "network is unreachable", "temporary failure", "try again later",
-            "rate limit", "too many requests", "quota exceeded"
+            "connection error",
+            "timed out",
+            "connection reset",
+            "network is unreachable",
+            "temporary failure",
+            "try again later",
+            "rate limit",
+            "too many requests",
+            "quota exceeded",
         }
         return any(pattern in error_msg for pattern in transient_patterns)
 
