@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import random
 import re
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -233,6 +235,18 @@ class LLMClient:
                     )
                     last_error = exc
 
+                    # Apply exponential backoff with jitter before retrying
+                    if attempt_index < max_attempts_per_provider:
+                        delay = self._calculate_backoff_delay(attempt_index)
+                        logger.debug(
+                            "LLM retry backoff: call_id=%s sleeping=%.2fs (attempt %d/%d)",
+                            self._active_call_id,
+                            delay,
+                            attempt_index,
+                            max_attempts_per_provider,
+                        )
+                        time.sleep(delay)
+
             if cfg_index < len(provider_chain):
                 logger.warning(
                     "Switching LLM provider after retries exhausted: call_id=%s from=%s/%s to=%s/%s",
@@ -249,6 +263,49 @@ class LLMClient:
                 f"All LLM providers failed for model={original_config.model} provider={original_config.provider}"
             ) from last_error
         raise RuntimeError("All LLM providers failed with unknown errors")
+
+
+    def _calculate_backoff_delay(self, attempt: int) -> float:
+        """Calculate exponential backoff delay with jitter.
+
+        Uses exponential backoff: delay = base_delay * 2^(attempt-1) + random jitter
+        Jitter is uniform random between 0 and 0.1 * calculated_delay to prevent thundering herd.
+
+        Args:
+            attempt: Current attempt number (1-indexed)
+
+        Returns:
+            Delay in seconds to wait before retry
+        """
+        base_delay = 1.0  # seconds
+        max_delay = 30.0  # seconds
+
+        # Exponential backoff: 1s, 2s, 4s, 8s, ...
+        exponential_delay = base_delay * (2 ** (attempt - 1))
+        # Cap at max_delay
+        capped_delay = min(exponential_delay, max_delay)
+        # Add jitter (0-10% of delay) to prevent thundering herd
+        jitter = random.uniform(0, capped_delay * 0.1)
+        return capped_delay + jitter
+
+    def _is_transient_error(self, exc: Exception) -> bool:
+        """Check if an error is likely transient and worth retrying."""
+        error_type = type(exc).__name__.lower()
+        error_msg = str(exc).lower()
+
+        transient_types = {
+            "connectionerror", "connectionreseterror", "connecttimeout",
+            "readtimeout", "timeouterror", "temporaryfailure"
+        }
+        if error_type in transient_types:
+            return True
+
+        transient_patterns = {
+            "connection error", "timed out", "connection reset",
+            "network is unreachable", "temporary failure", "try again later",
+            "rate limit", "too many requests", "quota exceeded"
+        }
+        return any(pattern in error_msg for pattern in transient_patterns)
 
     def _build_attempt_client(self, cfg: ModelConfig) -> LLMClient:
         attempt_client = self.__class__(cfg)
