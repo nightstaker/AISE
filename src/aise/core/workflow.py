@@ -152,7 +152,6 @@ class WorkflowEngine:
         logger.info("Phase execution finished: phase=%s status=%s", phase.name, phase.status.value)
         return {"phase": phase.name, "status": phase.status.value, "tasks": results}
 
-
     def _topological_sort_tasks(self, tasks: list[Task]) -> list[Task]:
         """Sort tasks topologically based on their dependencies.
 
