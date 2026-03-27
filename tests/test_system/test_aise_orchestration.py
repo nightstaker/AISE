@@ -293,7 +293,7 @@ def divide(a: int, b: int) -> float:
     return a / b
 '''
 
-    artifact = developer.execute_skill(
+    _ = developer.execute_skill(
         "write_artifact",
         {
             "content": source_code.strip(),
@@ -312,7 +312,7 @@ A simple calculator module with basic arithmetic operations.
 ## Functions
 
 - `add(a, b)` - Add two numbers
-- `subtract(a, b)` - Subtract b from a  
+- `subtract(a, b)` - Subtract b from a
 - `multiply(a, b)` - Multiply two numbers
 - `divide(a, b)` - Divide a by b
 
@@ -328,7 +328,7 @@ from calculator import add, subtract, multiply, divide
 result = add(2, 3)  # 5
 ```"""
 
-    artifact = developer.execute_skill(
+    _ = developer.execute_skill(
         "write_artifact",
         {
             "content": readme.strip(),
@@ -341,7 +341,7 @@ result = add(2, 3)  # 5
 
     # Generate requirements.txt
     reqs = "pytest>=7.0.0\n"
-    artifact = developer.execute_skill(
+    _ = developer.execute_skill(
         "write_artifact",
         {
             "content": reqs,
@@ -443,7 +443,7 @@ class TestEdgeCases:
         assert divide(0, 5) == 0.0
 '''
 
-    artifact = qa_engineer.execute_skill(
+    _ = qa_engineer.execute_skill(
         "write_artifact",
         {
             "content": test_code.strip(),
@@ -639,7 +639,7 @@ class TestAISESystemOrchestration:
 
             # Phase 3: QA Engineer
             qa_engineer = agents["qa_engineer"]
-            test_files = run_qa_phase(qa_engineer, str(project_dir), created_files)
+            _ = run_qa_phase(qa_engineer, str(project_dir), created_files)
 
             # Phase 4: Verification
             results = verify_project(project_dir)

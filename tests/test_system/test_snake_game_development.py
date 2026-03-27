@@ -105,7 +105,7 @@ def requirements_phase(project_dir: Path) -> str:
 - Functional Requirements (3.1.1, 3.1.2, ...)
 
 ### 3.2 Feature 2: User Interface
-- Description  
+- Description
 - Priority
 - Functional Requirements
 
@@ -365,7 +365,7 @@ For each module specified in the architecture, provide:
 #### 2. Classes and Functions
 
 ##### Class: [ClassName]
-**Purpose**: 
+**Purpose**:
 
 **Attributes**:
 - `attr1: type` - description
