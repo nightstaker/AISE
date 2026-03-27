@@ -18,6 +18,7 @@ F = type(Callable[..., Any])
 @dataclass
 class ExecutionMetrics:
     """执行指标"""
+
     total_calls: int = 0
     successful_calls: int = 0
     failed_calls: int = 0
@@ -80,29 +81,13 @@ class ReliabilityWrapper:
         self.on_success = on_success
         self.on_error = on_error
 
-        self.circuit_breaker = circuit_breaker or CircuitBreaker(
-            failure_threshold=5,
-            recovery_timeout=30.0
-        )
-        self.retry_policy = retry_policy or RetryPolicy(
-            max_retries=3,
-            initial_delay=1.0,
-            max_delay=10.0
-        )
-        self.timeout_handler = timeout_handler or TimeoutHandler(
-            default_timeout=30.0,
-            max_timeout=300.0
-        )
+        self.circuit_breaker = circuit_breaker or CircuitBreaker(failure_threshold=5, recovery_timeout=30.0)
+        self.retry_policy = retry_policy or RetryPolicy(max_retries=3, initial_delay=1.0, max_delay=10.0)
+        self.timeout_handler = timeout_handler or TimeoutHandler(default_timeout=30.0, max_timeout=300.0)
 
         self.metrics = ExecutionMetrics()
 
-    def execute(
-        self,
-        func: Callable[..., Any],
-        *args,
-        timeout: Optional[float] = None,
-        **kwargs
-    ) -> Any:
+    def execute(self, func: Callable[..., Any], *args, timeout: Optional[float] = None, **kwargs) -> Any:
         """执行函数，应用所有可靠性机制
 
         Args:
@@ -139,11 +124,10 @@ class ReliabilityWrapper:
                 recovery_time = max(
                     0,
                     self.circuit_breaker.recovery_timeout
-                    - (time.time() - (self.circuit_breaker._last_failure_time or time.time()))
+                    - (time.time() - (self.circuit_breaker._last_failure_time or time.time())),
                 )
                 raise CircuitOpenError(
-                    f"Circuit breaker is OPEN. Recovery in {recovery_time:.2f}s",
-                    recovery_time=recovery_time
+                    f"Circuit breaker is OPEN. Recovery in {recovery_time:.2f}s", recovery_time=recovery_time
                 )
 
         # Define the actual execution function with timeout
@@ -218,17 +202,10 @@ def reliability_guard(
         ```
     """
     wrapper = ReliabilityWrapper(
-        circuit_breaker=CircuitBreaker(
-            failure_threshold=failure_threshold,
-            recovery_timeout=recovery_timeout
-        ),
-        retry_policy=RetryPolicy(
-            max_retries=max_retries,
-            initial_delay=initial_delay,
-            max_delay=max_delay
-        ),
+        circuit_breaker=CircuitBreaker(failure_threshold=failure_threshold, recovery_timeout=recovery_timeout),
+        retry_policy=RetryPolicy(max_retries=max_retries, initial_delay=initial_delay, max_delay=max_delay),
         timeout_handler=TimeoutHandler(default_timeout=default_timeout),
-        enabled=enabled
+        enabled=enabled,
     )
 
     def decorator(func: F) -> F:
