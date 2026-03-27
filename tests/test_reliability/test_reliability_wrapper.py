@@ -33,7 +33,7 @@ class TestReliabilityWrapper:
         wrapper = ReliabilityWrapper(
             circuit_breaker=CircuitBreaker(failure_threshold=3),
             retry_policy=RetryPolicy(max_retries=2),
-            timeout_handler=TimeoutHandler(default_timeout=10.0)
+            timeout_handler=TimeoutHandler(default_timeout=10.0),
         )
 
         assert wrapper.circuit_breaker.failure_threshold == 3
@@ -93,7 +93,7 @@ class TestReliabilityWrapperRetry:
 
         wrapper = ReliabilityWrapper(
             retry_policy=RetryPolicy(max_retries=3, initial_delay=0.01),
-            circuit_breaker=CircuitBreaker(failure_threshold=10)
+            circuit_breaker=CircuitBreaker(failure_threshold=10),
         )
 
         call_count = 0
@@ -116,7 +116,7 @@ class TestReliabilityWrapperRetry:
 
         wrapper = ReliabilityWrapper(
             retry_policy=RetryPolicy(max_retries=2, initial_delay=0.01),
-            circuit_breaker=CircuitBreaker(failure_threshold=10)
+            circuit_breaker=CircuitBreaker(failure_threshold=10),
         )
 
         def always_fail_func():
@@ -136,7 +136,7 @@ class TestReliabilityWrapperTimeout:
         wrapper = ReliabilityWrapper(
             timeout_handler=TimeoutHandler(default_timeout=0.1),
             retry_policy=RetryPolicy(max_retries=0),  # Disable retry
-            circuit_breaker=CircuitBreaker(failure_threshold=10)  # High threshold
+            circuit_breaker=CircuitBreaker(failure_threshold=10),  # High threshold
         )
 
         def slow_func():
@@ -187,11 +187,7 @@ class TestReliabilityWrapperDecorator:
         """测试带自定义配置的装饰器"""
         from src.aise.reliability.reliability_wrapper import reliability_guard
 
-        @reliability_guard(
-            max_retries=2,
-            default_timeout=5.0,
-            failure_threshold=5
-        )
+        @reliability_guard(max_retries=2, default_timeout=5.0, failure_threshold=5)
         def func_with_config():
             return "success"
 
@@ -233,10 +229,7 @@ class TestReliabilityWrapperCallbacks:
         def on_error(error: Exception):
             events.append({"type": "error", "error": str(error)})
 
-        wrapper = ReliabilityWrapper(
-            on_error=on_error,
-            retry_policy=RetryPolicy(max_retries=0)
-        )
+        wrapper = ReliabilityWrapper(on_error=on_error, retry_policy=RetryPolicy(max_retries=0))
 
         def failing_func():
             raise ValueError("Test error")
@@ -276,7 +269,7 @@ class TestReliabilityWrapperMetrics:
 
         wrapper = ReliabilityWrapper(
             retry_policy=RetryPolicy(max_retries=3, initial_delay=0.01),
-            circuit_breaker=CircuitBreaker(failure_threshold=10)
+            circuit_breaker=CircuitBreaker(failure_threshold=10),
         )
 
         def flaky_func():
