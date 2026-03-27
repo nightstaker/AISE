@@ -8,7 +8,7 @@ import time
 from functools import wraps
 from typing import Any, Callable, Optional, Type, TypeVar, Union
 
-F = TypeVar('F', bound=Callable[..., Any])
+F = TypeVar("F", bound=Callable[..., Any])
 
 
 class TransientError(Exception):
@@ -16,6 +16,7 @@ class TransientError(Exception):
 
     This exception indicates a transient error that should be retried.
     """
+
     pass
 
 
@@ -53,7 +54,7 @@ class RetryPolicy:
         jitter: float = 0.1,
         retry_on: Optional[Union[Type[Exception], tuple]] = None,
         on_retry: Optional[Callable[[int, float, Exception], None]] = None,
-        on_success: Optional[Callable[[Any, int], None]] = None
+        on_success: Optional[Callable[[Any, int], None]] = None,
     ):
         """Initialize retry policy
 
@@ -86,7 +87,7 @@ class RetryPolicy:
             延迟时间（秒）
         """
         # Exponential backoff
-        delay = self.initial_delay * (self.multiplier ** attempt)
+        delay = self.initial_delay * (self.multiplier**attempt)
 
         # Cap at max_delay
         delay = min(delay, self.max_delay)
@@ -95,7 +96,7 @@ class RetryPolicy:
         if self.jitter > 0:
             # Jitter adds randomness: delay * (1 - jitter/2) to delay * (1 + jitter/2)
             jitter_range = delay * self.jitter
-            delay = delay + random.uniform(-jitter_range/2, jitter_range/2)
+            delay = delay + random.uniform(-jitter_range / 2, jitter_range / 2)
             delay = max(0, delay)  # Ensure non-negative
 
         return delay
@@ -159,7 +160,7 @@ def retry(
     jitter: float = 0.1,
     retry_on: Optional[Union[Type[Exception], tuple]] = None,
     on_retry: Optional[Callable[[int, float, Exception], None]] = None,
-    on_success: Optional[Callable[[Any, int], None]] = None
+    on_success: Optional[Callable[[Any, int], None]] = None,
 ) -> Callable[[F], F]:
     """重试装饰器
 
@@ -195,13 +196,14 @@ def retry(
         jitter=jitter,
         retry_on=retry_on,
         on_retry=on_retry,
-        on_success=on_success
+        on_success=on_success,
     )
 
     def decorator(func: F) -> F:
         @wraps(func)
         def wrapper(*args, **kwargs):
             return policy.execute(func, *args, **kwargs)
+
         return wrapper  # type: ignore
 
     return decorator
