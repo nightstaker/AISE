@@ -3,7 +3,6 @@
 Tests for retry policy with exponential backoff and jitter.
 """
 
-
 import pytest
 
 
@@ -26,13 +25,7 @@ class TestRetryPolicyConfig:
         """Test custom retry policy configuration"""
         from src.aise.reliability.retry_policy import RetryPolicy
 
-        policy = RetryPolicy(
-            max_retries=5,
-            initial_delay=0.5,
-            max_delay=30.0,
-            multiplier=1.5,
-            jitter=0.2
-        )
+        policy = RetryPolicy(max_retries=5, initial_delay=0.5, max_delay=30.0, multiplier=1.5, jitter=0.2)
 
         assert policy.max_retries == 5
         assert policy.initial_delay == 0.5
@@ -169,11 +162,7 @@ class TestRetryExecution:
         from src.aise.reliability.retry_policy import RetryPolicy, TransientError
 
         # Policy configured to only retry TransientError
-        policy = RetryPolicy(
-            max_retries=3,
-            initial_delay=0.01,
-            retry_on=(TransientError,)
-        )
+        policy = RetryPolicy(max_retries=3, initial_delay=0.01, retry_on=(TransientError,))
 
         call_count = 0
 
@@ -253,17 +242,9 @@ class TestRetryCallbacks:
         retry_events = []
 
         def on_retry(attempt: int, delay: float, error: Exception):
-            retry_events.append({
-                "attempt": attempt,
-                "delay": delay,
-                "error": str(error)
-            })
+            retry_events.append({"attempt": attempt, "delay": delay, "error": str(error)})
 
-        policy = RetryPolicy(
-            max_retries=2,
-            initial_delay=0.01,
-            on_retry=on_retry
-        )
+        policy = RetryPolicy(max_retries=2, initial_delay=0.01, on_retry=on_retry)
 
         call_count = 0
 
@@ -286,16 +267,9 @@ class TestRetryCallbacks:
         success_events = []
 
         def on_success(result: any, attempts: int):
-            success_events.append({
-                "result": result,
-                "attempts": attempts
-            })
+            success_events.append({"result": result, "attempts": attempts})
 
-        policy = RetryPolicy(
-            max_retries=3,
-            initial_delay=0.01,
-            on_success=on_success
-        )
+        policy = RetryPolicy(max_retries=3, initial_delay=0.01, on_success=on_success)
 
         call_count = 0
 
