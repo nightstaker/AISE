@@ -25,16 +25,19 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-LLM_API_BASE = os.environ.get("AISE_LLM_API_BASE", "http://10.0.0.119:8088/v1")
-LLM_MODEL = os.environ.get("AISE_LLM_MODEL", "deepseek-r1")
+LLM_API_BASE = os.environ.get("AISE_LLM_API_BASE", "https://openrouter.ai/api/v1")
+LLM_MODEL = os.environ.get("AISE_LLM_MODEL", "stepfun/step-3.5-flash:free")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 PROJECT_NAME = "snake_game"
 PROJECT_DIR = Path("tmp_test_projects") / PROJECT_NAME
 TEST_TIMEOUT_SECONDS = 30 * 60
-API_TIMEOUT_SECONDS = int(os.environ.get("AISE_API_TIMEOUT", "600"))
+API_TIMEOUT_SECONDS = int(os.environ.get("AISE_API_TIMEOUT", "300"))
+MAX_API_RETRIES = int(os.environ.get("AISE_API_RETRIES", "3"))
 
 
 def call_llm_api(messages: list[dict[str, str]], model: str | None = None) -> str:
-    """Call the external LLM API."""
+    """Call the external LLM API with retry logic."""
+    import urllib.error
     import urllib.request
 
     model = model or LLM_MODEL
@@ -48,20 +51,40 @@ def call_llm_api(messages: list[dict[str, str]], model: str | None = None) -> st
         "max_tokens": 32000,
     }
 
-    req = urllib.request.Request(
-        url, data=json.dumps(data).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST"
-    )
+    headers = {"Content-Type": "application/json"}
+    if OPENROUTER_API_KEY:
+        headers["Authorization"] = f"Bearer {OPENROUTER_API_KEY}"
 
-    print(f"    API call: {url}")
-    start_time = time.time()
+    last_error = None
+    for attempt in range(1, MAX_API_RETRIES + 1):
+        req = urllib.request.Request(url, data=json.dumps(data).encode("utf-8"), headers=headers, method="POST")
 
-    with urllib.request.urlopen(req, timeout=API_TIMEOUT_SECONDS) as response:
-        result = json.loads(response.read().decode("utf-8"))
-        content = result["choices"][0]["message"]["content"]
+        print(f"    API call: {url} (attempt {attempt}/{MAX_API_RETRIES})")
+        start_time = time.time()
 
-    elapsed = time.time() - start_time
-    print(f"    OK: {elapsed:.1f}s, {len(content)} chars")
-    return content
+        try:
+            with urllib.request.urlopen(req, timeout=API_TIMEOUT_SECONDS) as response:
+                result = json.loads(response.read().decode("utf-8"))
+                message = result["choices"][0]["message"]
+                # Handle reasoning models (e.g. step-3.5-flash) where content may be null
+                # and the actual response is in the reasoning field
+                content = message.get("content") or ""
+                if not content and message.get("reasoning"):
+                    content = message["reasoning"]
+
+            elapsed = time.time() - start_time
+            print(f"    OK: {elapsed:.1f}s, {len(content)} chars")
+            return content
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            elapsed = time.time() - start_time
+            last_error = e
+            print(f"    RETRY: attempt {attempt} failed after {elapsed:.1f}s: {e}")
+            if attempt < MAX_API_RETRIES:
+                wait = 2**attempt
+                print(f"    Waiting {wait}s before retry...")
+                time.sleep(wait)
+
+    raise RuntimeError(f"LLM API failed after {MAX_API_RETRIES} attempts: {last_error}")
 
 
 # =============================================================================
@@ -653,8 +676,8 @@ def run_system_tests(project_dir: Path) -> dict[str, Any]:
 
 
 @pytest.mark.skipif(
-    os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true",
-    reason="This test requires a local LLM API endpoint and is for local development validation only",
+    not os.environ.get("OPENROUTER_API_KEY"),
+    reason="This test requires OPENROUTER_API_KEY environment variable to call LLM API",
 )
 class TestMultiModuleSystemDevelopment:
     """System test for multi-module application development."""
