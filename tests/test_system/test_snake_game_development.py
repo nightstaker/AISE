@@ -5,6 +5,9 @@ to perform full software development lifecycle:
 - Requirements Analysis → Architecture Design → Detailed Design → Implementation
 
 The system must produce a proper multi-subsystem, multi-module, multi-file structure.
+
+Note: This test requires a local LLM API endpoint and is designed for local development
+validation only. It will be skipped in CI/CD environments.
 """
 
 from __future__ import annotations
@@ -649,6 +652,10 @@ def run_system_tests(project_dir: Path) -> dict[str, Any]:
     return results
 
 
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true",
+    reason="This test requires a local LLM API endpoint and is for local development validation only",
+)
 class TestMultiModuleSystemDevelopment:
     """System test for multi-module application development."""
 

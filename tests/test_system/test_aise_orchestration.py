@@ -2,6 +2,8 @@
 
 This test verifies that AISE can orchestrate its own components
 to complete a multi-step development task without external LLM API.
+
+This test uses only internal AISE components and does not require external dependencies.
 """
 
 from __future__ import annotations
