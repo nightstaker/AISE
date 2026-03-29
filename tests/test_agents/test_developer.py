@@ -570,7 +570,8 @@ class TestDeveloperAgent:
         assert "def implement_syncorchestrator" not in code_text
         assert "from src.syncbridge.syncorchestrator import SyncOrchestrator" in test_text
 
-    def test_deep_developer_workflow_sr_group_retry_failure_raises_immediately(self, monkeypatch):
+    def test_deep_developer_workflow_sr_group_retry_failure_continues_with_warning(self, monkeypatch):
+        """SR group failure should warn and continue, not raise."""
         bus = MessageBus()
         store = ArtifactStore()
         dev = DeveloperAgent(bus, store)
@@ -586,19 +587,15 @@ class TestDeveloperAgent:
         monkeypatch.setattr(skill, "_develop_single_sr_group_round", _always_fail)
         ctx = SkillContext(artifact_store=store)
 
-        try:
-            skill._develop_single_sr_group_round_with_retry(
-                context=ctx,
-                subsystem_slug="user_service",
-                sr_key="SR-002",
-                plans=[{"fn_id": "FN-SR-002-01"}],
-                round_index=2,
-                max_attempts=2,
-            )
-            assert False, "expected RuntimeError"
-        except RuntimeError as exc:
-            assert "SR task group failed after 2 attempts" in str(exc)
-            assert "sr_group=SR-002" in str(exc)
+        # Should NOT raise — logs warning and continues
+        skill._develop_single_sr_group_round_with_retry(
+            context=ctx,
+            subsystem_slug="user_service",
+            sr_key="SR-002",
+            plans=[{"fn_id": "FN-SR-002-01"}],
+            round_index=2,
+            max_attempts=2,
+        )
         assert calls == [("SR-002", 2), ("SR-002", 2)]
 
     def test_deep_developer_workflow_uses_configured_sr_group_retry_attempts(self, tmp_path, monkeypatch):

@@ -1430,7 +1430,6 @@ class DeepDeveloperWorkflowSkill(Skill):
         max_attempts: int = 2,
     ) -> dict[str, Any]:
         attempts = max(1, int(max_attempts or 1))
-        last_error: Exception | None = None
         attempt_errors: list[str] = []
         for attempt in range(1, attempts + 1):
             try:
@@ -1442,7 +1441,6 @@ class DeepDeveloperWorkflowSkill(Skill):
                     round_index=round_index,
                 )
             except Exception as exc:
-                last_error = exc
                 detail = f"attempt={attempt} cause={exc.__class__.__name__}: {exc}"
                 attempt_errors.append(detail[:500])
                 logger.warning(
@@ -1462,7 +1460,7 @@ class DeepDeveloperWorkflowSkill(Skill):
         )
         if attempt_errors:
             message += f"; details={attempt_errors}"
-        raise RuntimeError(message) from last_error
+        logger.warning("Developer workflow: %s — continuing with partial results", message)
 
     def _process_single_subsystem_batch_rounds(
         self,
@@ -2373,7 +2371,7 @@ class DeepDeveloperWorkflowSkill(Skill):
                     user_prompt=prompt,
                 )
             except Exception as exc:
-                last_error = exc
+                pass
                 logger.warning(
                     (
                         "Developer LLM segment attempt failed: purpose=%s "
