@@ -1571,15 +1571,17 @@ class DeepProductWorkflowSkill(Skill):
         return "unknown_parse_failure"
 
     def _extract_first_json_object(self, text: str) -> str | None:
-        """Extract the first *valid* JSON object from text.
+        """Extract the *largest* valid JSON object from text.
 
         Handles reasoning-model output where reasoning text may contain
-        small brace fragments (e.g. ``{SF-001, SF-002}``) before the
-        actual JSON payload.  When the first extracted ``{…}`` candidate
-        fails ``json.loads``, the search continues from the next ``{``.
+        small brace fragments or JSON skeleton examples before the
+        actual JSON payload.  Scans all ``{…}`` candidates, validates
+        each with ``json.loads``, and returns the largest valid one.
         """
-        search_from = 0
         best: str | None = None
+        best_len = 0
+        search_from = 0
+
         while True:
             start = text.find("{", search_from)
             if start < 0:
@@ -1614,15 +1616,19 @@ class DeepProductWorkflowSkill(Skill):
                 break
 
             candidate = text[start : end + 1]
-            # Quick validation: try to parse as JSON
-            try:
-                parsed = json.loads(candidate)
-                if isinstance(parsed, dict):
-                    return candidate
-            except json.JSONDecodeError:
-                pass
+            candidate_len = len(candidate)
 
-            # Not valid JSON — continue searching from after this opening brace
+            # Only consider candidates larger than what we already found
+            if candidate_len > best_len:
+                try:
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, dict):
+                        best = candidate
+                        best_len = candidate_len
+                except json.JSONDecodeError:
+                    pass
+
+            # Continue searching from after this opening brace
             search_from = start + 1
 
         return best
