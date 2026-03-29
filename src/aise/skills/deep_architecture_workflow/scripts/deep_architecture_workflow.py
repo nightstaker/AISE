@@ -1818,8 +1818,19 @@ class DeepArchitectureWorkflowSkill(Skill):
                 continue
             seen_names.add(slug)
             apis = self._normalize_llm_subsystem_apis(item.get("apis"), subsystem_name=raw_name or slug)
-            if len(apis) < 2:
-                raise RuntimeError(f"LLM subsystem `{raw_name or slug}` has insufficient API definitions")
+            if not apis:
+                logger.warning(
+                    "Architecture subsystem `%s` has no API definitions; generating placeholder",
+                    raw_name or slug,
+                )
+                apis = [
+                    {
+                        "name": f"{slug}_init",
+                        "description": f"Initialize the {raw_name or slug} subsystem",
+                        "parameters": [],
+                        "returns": "None",
+                    }
+                ]
             description = str(item.get("description", item.get("boundary", ""))).strip()
             if len(description) < 20:
                 description = self._subsystem_description_from_label(raw_name or slug)
@@ -3566,35 +3577,64 @@ class DeepArchitectureWorkflowSkill(Skill):
             return None
 
     def _extract_first_json_object(self, text: str) -> str | None:
-        start = text.find("{")
-        if start < 0:
-            return None
+        """Extract the *largest* valid JSON object from text.
 
-        depth = 0
-        in_string = False
-        escape = False
-        for idx, ch in enumerate(text[start:], start=start):
-            if in_string:
-                if escape:
-                    escape = False
-                elif ch == "\\":
-                    escape = True
-                elif ch == '"':
-                    in_string = False
-                continue
+        Handles reasoning-model output where reasoning text may contain
+        small brace fragments or JSON skeleton examples before the
+        actual JSON payload.
+        """
+        best: str | None = None
+        best_len = 0
+        search_from = 0
 
-            if ch == '"':
-                in_string = True
-                continue
-            if ch == "{":
-                depth += 1
-                continue
-            if ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return text[start : idx + 1]
+        while True:
+            start = text.find("{", search_from)
+            if start < 0:
+                break
 
-        return None
+            depth = 0
+            in_string = False
+            escape = False
+            end = -1
+            for idx, ch in enumerate(text[start:], start=start):
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif ch == "\\":
+                        escape = True
+                    elif ch == '"':
+                        in_string = False
+                    continue
+                if ch == '"':
+                    in_string = True
+                    continue
+                if ch == "{":
+                    depth += 1
+                    continue
+                if ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = idx
+                        break
+
+            if end < 0:
+                break
+
+            candidate = text[start : end + 1]
+            candidate_len = len(candidate)
+
+            if candidate_len > best_len:
+                try:
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, dict):
+                        best = candidate
+                        best_len = candidate_len
+                except json.JSONDecodeError:
+                    pass
+
+            search_from = start + 1
+
+        return best
 
     def _repair_common_json_issues(self, text: str) -> str:
         repaired = text.strip()
