@@ -1018,12 +1018,14 @@ class DeepProductWorkflowSkill(Skill):
             interaction_process = self._as_str_list(item.get("interaction_process"))
             spec_targets = self._as_str_list(item.get("spec_targets"))
             constraints = self._as_str_list(item.get("constraints"))
+            # Core fields are mandatory
             if not source_sfs or not title or not overview or not scenario:
                 continue
-            if not expected_result or not use_case_diagram or not use_case_description or not verification_method:
+            if not expected_result or not verification_method:
                 continue
             if not users or not interaction_process or not spec_targets:
                 continue
+            # use_case_diagram, use_case_description, and constraints are optional
             normalized.append(
                 {
                     "id": str(item.get("id", f"SR-{idx:03d}")).strip() or f"SR-{idx:03d}",
@@ -1569,33 +1571,61 @@ class DeepProductWorkflowSkill(Skill):
         return "unknown_parse_failure"
 
     def _extract_first_json_object(self, text: str) -> str | None:
-        start = text.find("{")
-        if start < 0:
-            return None
+        """Extract the first *valid* JSON object from text.
 
-        depth = 0
-        in_string = False
-        escape = False
-        for idx, ch in enumerate(text[start:], start=start):
-            if in_string:
-                if escape:
-                    escape = False
-                elif ch == "\\":
-                    escape = True
-                elif ch == '"':
-                    in_string = False
-                continue
-            if ch == '"':
-                in_string = True
-                continue
-            if ch == "{":
-                depth += 1
-                continue
-            if ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return text[start : idx + 1]
-        return None
+        Handles reasoning-model output where reasoning text may contain
+        small brace fragments (e.g. ``{SF-001, SF-002}``) before the
+        actual JSON payload.  When the first extracted ``{…}`` candidate
+        fails ``json.loads``, the search continues from the next ``{``.
+        """
+        search_from = 0
+        best: str | None = None
+        while True:
+            start = text.find("{", search_from)
+            if start < 0:
+                break
+
+            depth = 0
+            in_string = False
+            escape = False
+            end = -1
+            for idx, ch in enumerate(text[start:], start=start):
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif ch == "\\":
+                        escape = True
+                    elif ch == '"':
+                        in_string = False
+                    continue
+                if ch == '"':
+                    in_string = True
+                    continue
+                if ch == "{":
+                    depth += 1
+                    continue
+                if ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = idx
+                        break
+
+            if end < 0:
+                break
+
+            candidate = text[start : end + 1]
+            # Quick validation: try to parse as JSON
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return candidate
+            except json.JSONDecodeError:
+                pass
+
+            # Not valid JSON — continue searching from after this opening brace
+            search_from = start + 1
+
+        return best
 
     def _repair_common_json_issues(self, text: str) -> str:
         repaired = text.strip()
