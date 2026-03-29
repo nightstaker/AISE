@@ -2457,6 +2457,18 @@ class DeepDeveloperWorkflowSkill(Skill):
             return "payload_not_object"
         for key in required_keys:
             if key not in payload:
+                # Auto-wrap single object as items array for reasoning model compatibility
+                if key == "items" and (payload.get("fn_id") or payload.get("module_name")):
+                    logger.warning(
+                        "LLM segment validation: auto-wrapping single object as items array (subsystem=%s module=%s)",
+                        subsystem_slug,
+                        module_name,
+                    )
+                    payload["items"] = [dict(payload)]
+                    # Remove item-level keys from top level to avoid confusion
+                    for item_key in ("fn_id", "module_name", "code_content", "test_content"):
+                        payload.pop(item_key, None)
+                    continue
                 return f"missing_key:{key}"
         if "code_content" in required_keys:
             code = str(payload.get("code_content", "")).strip()
