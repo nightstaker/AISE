@@ -2589,10 +2589,11 @@ class DeepDeveloperWorkflowSkill(Skill):
     def _extract_first_json_object(self, text: str) -> str | None:
         """Extract the *largest* valid JSON object from text.
 
-        Handles reasoning-model output where reasoning text may contain
-        small brace fragments or JSON skeleton examples before the
-        actual JSON payload.
+        Uses ``json.JSONDecoder.raw_decode`` at every ``{`` position to
+        robustly handle reasoning-model output that contains unbalanced
+        quotes, escaped JSON fragments, or other non-JSON text mixed in.
         """
+        decoder = json.JSONDecoder()
         best: str | None = None
         best_len = 0
         search_from = 0
@@ -2602,45 +2603,15 @@ class DeepDeveloperWorkflowSkill(Skill):
             if start < 0:
                 break
 
-            depth = 0
-            in_string = False
-            escape = False
-            end = -1
-            for idx, ch in enumerate(text[start:], start=start):
-                if in_string:
-                    if escape:
-                        escape = False
-                    elif ch == "\\":
-                        escape = True
-                    elif ch == '"':
-                        in_string = False
-                    continue
-                if ch == '"':
-                    in_string = True
-                    continue
-                if ch == "{":
-                    depth += 1
-                    continue
-                if ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        end = idx
-                        break
-
-            if end < 0:
-                break
-
-            candidate = text[start : end + 1]
-            candidate_len = len(candidate)
-
-            if candidate_len > best_len:
-                try:
-                    parsed = json.loads(candidate)
-                    if isinstance(parsed, dict):
-                        best = candidate
+            try:
+                obj, end_idx = decoder.raw_decode(text, start)
+                if isinstance(obj, dict):
+                    candidate_len = end_idx - start
+                    if candidate_len > best_len:
+                        best = text[start:end_idx]
                         best_len = candidate_len
-                except json.JSONDecodeError:
-                    pass
+            except (json.JSONDecodeError, ValueError):
+                pass
 
             search_from = start + 1
 
