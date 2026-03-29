@@ -214,6 +214,24 @@ class TestNormalizeLlmSystemRequirements:
         # After fix, this should pass with relaxed validation
         assert len(srs) >= 1
 
+    def test_minimal_sr_with_only_core_fields(self, skill):
+        """SR with only core fields (source_sfs, title, overview) should be accepted with defaults."""
+        design = {"system_features": [{"id": "SF-001", "name": "Core"}]}
+        minimal_sr = {
+            "source_sfs": ["SF-001"],
+            "title": "Core Game Mechanics",
+            "requirement_overview": "Implement core snake game mechanics",
+        }
+        srs = skill._normalize_llm_system_requirements([minimal_sr], design=design)
+        assert len(srs) == 1
+        sr = srs[0]
+        # Defaults should be filled in
+        assert sr["users"] == ["end_user"]
+        assert len(sr["interaction_process"]) > 0
+        assert sr["scenario"]  # should default to overview
+        assert sr["expected_result"]
+        assert sr["verification_method"]
+
     def test_multiple_srs(self, skill):
         design = {"system_features": [{"id": "SF-001"}, {"id": "SF-002"}]}
         srs = skill._normalize_llm_system_requirements(
