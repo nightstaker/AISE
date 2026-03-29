@@ -1960,7 +1960,15 @@ class DeepArchitectureWorkflowSkill(Skill):
 
         missing = [sr_id for sr_id in required_ids if sr_id not in seen_any]
         if missing:
-            raise RuntimeError(f"LLM sr_allocation missing SR assignments: {', '.join(missing)}")
+            logger.warning(
+                "LLM sr_allocation missing SR assignments: %s; distributing to first subsystem",
+                ", ".join(missing),
+            )
+            # Distribute unassigned SRs to the first subsystem
+            if allocation:
+                first_key = next(iter(allocation))
+                for sr_id in missing:
+                    allocation[first_key].append(sr_id)
         return allocation
 
     def _normalize_llm_architecture_components(
@@ -2005,7 +2013,11 @@ class DeepArchitectureWorkflowSkill(Skill):
                 if one:
                     responsibilities = [one]
             if not responsibilities:
-                raise RuntimeError(f"LLM component `{name}` missing responsibilities")
+                logger.warning(
+                    "Architecture component `%s` missing responsibilities; generating default",
+                    name,
+                )
+                responsibilities = [f"Handle {name} logic"]
             per_subsystem_count[subsystem_id] = per_subsystem_count.get(subsystem_id, 0) + 1
             comp_index = per_subsystem_count[subsystem_id]
             components.append(
