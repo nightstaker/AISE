@@ -549,6 +549,26 @@ class DeepDeveloperWorkflowSkill(Skill):
         required_content_key: str,
     ) -> dict[str, dict[str, str]]:
         items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list) and isinstance(payload, dict):
+            # Reasoning models sometimes return a single object instead of {items: [...]}
+            # Auto-wrap if it looks like a code/test item (has fn_id or module_name)
+            if payload.get("fn_id") or payload.get("module_name"):
+                logger.warning(
+                    "SR group payload for %s missing 'items' key; auto-wrapping single object",
+                    sr_key,
+                )
+                items = [payload]
+            elif any(isinstance(v, list) and v and isinstance(v[0], dict) for v in payload.values()):
+                # Try to find a list of dicts that looks like items
+                for v in payload.values():
+                    if isinstance(v, list) and v and isinstance(v[0], dict):
+                        if v[0].get("fn_id") or v[0].get("module_name"):
+                            logger.warning(
+                                "SR group payload for %s has items under non-standard key; extracting",
+                                sr_key,
+                            )
+                            items = v
+                            break
         if not isinstance(items, list):
             raise RuntimeError(f"Invalid SR group payload for {sr_key}: items must be a list")
         by_fn: dict[str, dict[str, str]] = {}
