@@ -87,6 +87,26 @@ class TestExtractFirstJsonObject:
         result = skill._extract_first_json_object(text)
         assert result == text
 
+    def test_skeleton_before_real_json(self, skill):
+        """Reasoning model includes a JSON skeleton example before the real payload."""
+        text = (
+            "I need to return a JSON object. The skeleton is:\n"
+            '{"design_goals":[],"design_approach":[],"requirements":[],"designer_response":[]}\n\n'
+            "Now let me fill it with actual content:\n\n"
+            '{"design_goals": ["Modular architecture"], '
+            '"design_approach": ["MVC pattern"], '
+            '"requirements": [{"source_sfs": ["SF-001"], "title": "Core Logic"}], '
+            '"designer_response": ["Complete design"]}'
+        )
+        result = skill._extract_first_json_object(text)
+        assert result is not None
+        import json
+
+        parsed = json.loads(result)
+        # Should return the LARGER JSON (with actual content), not the empty skeleton
+        assert len(parsed["requirements"]) > 0
+        assert parsed["design_goals"] == ["Modular architecture"]
+
 
 # ---------------------------------------------------------------------------
 # _parse_json_response tests
