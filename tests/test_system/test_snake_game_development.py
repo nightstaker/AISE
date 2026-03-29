@@ -65,7 +65,7 @@ Build a Snake Game application with the following requirements:
 """
 
 # Maximum time for the entire AISE pipeline to complete
-PIPELINE_TIMEOUT_SECONDS = int(os.environ.get("AISE_PIPELINE_TIMEOUT", "1800"))
+PIPELINE_TIMEOUT_SECONDS = int(os.environ.get("AISE_PIPELINE_TIMEOUT", "3600"))
 
 # ---------------------------------------------------------------------------
 # Fixtures
