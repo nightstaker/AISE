@@ -2031,14 +2031,33 @@ class DeepArchitectureWorkflowSkill(Skill):
                 }
             )
 
-        if not components:
-            raise RuntimeError("LLM architecture structure produced no valid components")
+        # Generate placeholder components for subsystems with none
         missing_subsystems = [sid for sid, count in per_subsystem_count.items() if count == 0]
         if missing_subsystems:
-            raise RuntimeError(
-                "LLM architecture structure produced no components for subsystems: "
-                + ", ".join(sorted(missing_subsystems))
+            logger.warning(
+                "Generating placeholder components for subsystems: %s",
+                ", ".join(sorted(missing_subsystems)),
             )
+            for sid in missing_subsystems:
+                per_subsystem_count[sid] = 1
+                subsystem_name = sid
+                for s in subsystems:
+                    if s["id"] == sid:
+                        subsystem_name = s.get("name", sid)
+                        break
+                components.append(
+                    {
+                        "id": f"COMP-{sid}-01",
+                        "name": self._slugify(subsystem_name) or sid.lower(),
+                        "type": "service",
+                        "subsystem_id": sid,
+                        "responsibilities": [f"Core {subsystem_name} logic"],
+                        "sr_ids": list(sr_allocation.get(sid, [])),
+                    }
+                )
+
+        if not components:
+            raise RuntimeError("LLM architecture structure produced no valid components")
         return components
 
     def _build_fn_items(
