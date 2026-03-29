@@ -1019,13 +1019,20 @@ class DeepProductWorkflowSkill(Skill):
             spec_targets = self._as_str_list(item.get("spec_targets"))
             constraints = self._as_str_list(item.get("constraints"))
             # Core fields are mandatory
-            if not source_sfs or not title or not overview or not scenario:
+            if not source_sfs or not title or not overview:
                 continue
-            if not expected_result or not verification_method:
-                continue
-            if not users or not interaction_process or not spec_targets:
-                continue
-            # use_case_diagram, use_case_description, and constraints are optional
+            # These fields are desirable but optional — LLM may omit them
+            if not scenario:
+                scenario = overview
+            if not expected_result:
+                expected_result = f"System implements {title} as specified"
+            if not verification_method:
+                verification_method = "Functional testing and code review"
+            if not users:
+                users = ["end_user"]
+            if not interaction_process:
+                interaction_process = [f"User interacts with {title}"]
+            # spec_targets, use_case_diagram, use_case_description, and constraints are optional
             normalized.append(
                 {
                     "id": str(item.get("id", f"SR-{idx:03d}")).strip() or f"SR-{idx:03d}",
