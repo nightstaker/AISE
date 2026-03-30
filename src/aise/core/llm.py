@@ -177,7 +177,7 @@ class LLMClient:
         attempts: list[dict[str, Any]] = []
         provider_chain = self._provider_chain()
         last_error: Exception | None = None
-        max_attempts_per_provider = 3  # 1 initial + 2 retries
+        max_attempts_per_provider = int(os.environ.get("AISE_LLM_MAX_RETRIES", "6"))
 
         for cfg_index, cfg in enumerate(provider_chain, start=1):
             self.config = cfg
@@ -276,8 +276,8 @@ class LLMClient:
         Returns:
             Delay in seconds to wait before retry
         """
-        base_delay = 1.0  # seconds
-        max_delay = 30.0  # seconds
+        base_delay = float(os.environ.get("AISE_LLM_BACKOFF_BASE", "5.0"))
+        max_delay = float(os.environ.get("AISE_LLM_BACKOFF_MAX", "120.0"))
 
         # Exponential backoff: 1s, 2s, 4s, 8s, ...
         exponential_delay = base_delay * (2 ** (attempt - 1))
