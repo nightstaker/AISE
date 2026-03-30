@@ -1711,8 +1711,8 @@ class DeepDeveloperWorkflowSkill(Skill):
                     round_index=round_index,
                     summary="Updated tests to align with latest implementation.",
                     details=[
-                        f"Static check: {check_result['static_check']}",
-                        f"Unit tests: {check_result['unit_test']}",
+                        f"Static check: {check_result.get('static_check', 'skipped')}",
+                        f"Unit tests: {check_result.get('unit_test', 'skipped')}",
                     ],
                 )
 
