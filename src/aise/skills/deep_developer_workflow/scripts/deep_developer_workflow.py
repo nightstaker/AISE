@@ -1212,7 +1212,7 @@ class DeepDeveloperWorkflowSkill(Skill):
             "from __future__ import annotations\n\n"
             f"def execute(payload: dict | None = None) -> dict:\n"
             "    return {'status': 'fallback', 'data': payload or {}, 'errors': [], 'meta': {'module': "
-            f"'{module_name}', 'subsystem': '{subsystem_slug}', 'fallback': True}}\n"
+            f"'{module_name}', 'subsystem': '{subsystem_slug}', 'fallback': True}}}}\n"
         )
 
     def _build_fallback_sr_group_tests_batch(
