@@ -585,9 +585,48 @@ class DeepDeveloperWorkflowSkill(Skill):
         expected_set = {x for x in expected_fn_ids if x}
         missing = [fn_id for fn_id in expected_fn_ids if fn_id and fn_id not in by_fn]
         extra = [fn_id for fn_id in by_fn.keys() if fn_id not in expected_set]
-        if missing or extra:
+
+        # Try to remap extra fn_ids to expected ones by module_name matching
+        if missing and extra:
+            plan_by_module = {}
+            for plan in plans:
+                mod = str(plan.get("module_name", "")).strip().lower()
+                fid = str(plan.get("fn_id", "")).strip()
+                if mod and fid:
+                    plan_by_module[mod] = fid
+            for extra_id in list(extra):
+                item_data = by_fn.get(extra_id)
+                if not item_data:
+                    continue
+                item_module = str(item_data.get("module_name", "")).strip().lower()
+                # Try exact module match or extra_id as module name
+                matched_fid = plan_by_module.get(item_module) or plan_by_module.get(extra_id.lower())
+                if matched_fid and matched_fid in missing:
+                    logger.warning(
+                        "SR group %s: remapping fn_id '%s' → '%s' (module match: %s)",
+                        sr_key,
+                        extra_id,
+                        matched_fid,
+                        item_module or extra_id,
+                    )
+                    by_fn[matched_fid] = by_fn.pop(extra_id)
+                    missing.remove(matched_fid)
+                    extra.remove(extra_id)
+
+        # Accept partial results if at least one item was successfully mapped
+        if missing and by_fn:
+            logger.warning(
+                "SR group %s: accepting partial results (%d/%d fn_ids). missing=%s extra=%s",
+                sr_key,
+                len(by_fn),
+                len(expected_fn_ids),
+                missing,
+                extra,
+            )
+        elif missing and not by_fn:
             raise RuntimeError(
-                f"Invalid SR group payload for {sr_key}: missing_fn_ids={missing or []} extra_fn_ids={extra or []}"
+                f"Invalid SR group payload for {sr_key}: no items could be mapped. "
+                f"missing_fn_ids={missing} extra_fn_ids={extra}"
             )
         return by_fn
 
@@ -2463,9 +2502,23 @@ class DeepDeveloperWorkflowSkill(Skill):
                         module_name,
                     )
                     payload["items"] = [dict(payload)]
-                    # Remove item-level keys from top level to avoid confusion
                     for item_key in ("fn_id", "module_name", "code_content", "test_content"):
                         payload.pop(item_key, None)
+                    continue
+                # Handle path/content format (reasoning models sometimes return file-path style)
+                if key == "items" and payload.get("path") and payload.get("content"):
+                    import os
+
+                    path_str = str(payload["path"])
+                    base = os.path.splitext(os.path.basename(path_str))[0]
+                    logger.warning(
+                        "LLM segment validation: converting path/content to items array (subsystem=%s path=%s)",
+                        subsystem_slug,
+                        path_str,
+                    )
+                    payload["items"] = [{"fn_id": base, "module_name": base, "code_content": str(payload["content"])}]
+                    payload.pop("path", None)
+                    payload.pop("content", None)
                     continue
                 return f"missing_key:{key}"
         if "code_content" in required_keys:
