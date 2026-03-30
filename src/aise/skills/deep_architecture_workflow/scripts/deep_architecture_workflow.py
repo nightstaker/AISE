@@ -210,7 +210,7 @@ class DeepArchitectureWorkflowSkill(Skill):
                 return subsystem_id, detail, rounds, file_name, rendered_doc
 
             future_results: dict[str, tuple[dict[str, Any], list[dict[str, Any]], Path]] = {}
-            max_workers = min(4, max(1, len(subsystems)))
+            max_workers = min(2, max(1, len(subsystems)))  # reduced from 4 to avoid rate limits
             if len(subsystems) <= 1:
                 for subsystem in subsystems:
                     sid, detail, rounds, file_name, rendered_doc = _run_one_subsystem(subsystem)

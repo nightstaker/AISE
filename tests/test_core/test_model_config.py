@@ -363,6 +363,9 @@ class TestLLMClient:
         assert result == "ok"
 
     def test_complete_switches_to_fallback_provider_after_retries(self, monkeypatch):
+        monkeypatch.setenv("AISE_LLM_MAX_RETRIES", "3")
+        monkeypatch.setenv("AISE_LLM_BACKOFF_BASE", "0.01")
+        monkeypatch.setenv("AISE_LLM_BACKOFF_MAX", "0.05")
         client = LLMClient(
             ModelConfig(
                 provider="primary",
@@ -386,7 +389,8 @@ class TestLLMClient:
         monkeypatch.setattr(client, "_complete_openai_compatible", fake_complete)
         result = client.complete([{"role": "user", "content": "hello"}])
         assert result == "ok-from-backup"
-        assert attempts == ["primary", "primary", "primary", "backup"]
+        # 3 attempts per provider (env override for fast test)
+        assert attempts == ["primary"] * 3 + ["backup"]
         assert client.provider == "primary"
 
     def test_extract_response_text_from_sdk_like_object(self):
