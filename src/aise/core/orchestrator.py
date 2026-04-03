@@ -6,7 +6,7 @@ from typing import Any
 
 from ..utils.logging import get_logger
 from .agent import Agent, AgentRole
-from .artifact import ArtifactStore
+from .artifact import ArtifactStore, ArtifactType
 from .message import MessageBus
 from .workflow import Workflow, WorkflowEngine
 
@@ -163,6 +163,86 @@ class Orchestrator:
         """Run the default SDLC workflow."""
         workflow = WorkflowEngine.create_default_workflow()
         return self.run_workflow(workflow, project_input, project_name)
+
+    def run_dynamic_workflow(
+        self,
+        project_input: dict[str, Any],
+        project_name: str = "",
+        llm_client: Any = None,
+        goal_artifacts: list[ArtifactType] | None = None,
+        constraints: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Run an AI-planned dynamic workflow.
+
+        Instead of the fixed 4-phase pipeline, this uses the AIPlanner
+        to generate an optimal execution plan based on the actual
+        requirements and available capabilities.
+
+        Args:
+            project_input: Input data (must contain 'raw_requirements').
+            project_name: Human-readable project name.
+            llm_client: LLM client for the planner (optional; uses fallback if None).
+            goal_artifacts: Desired output artifact types. Defaults to SOURCE_CODE.
+            constraints: Additional constraints for the planner.
+
+        Returns:
+            Dict with status, step_results, artifact_ids, and plan metadata.
+        """
+        from .ai_planner import AIPlanner, PlannerContext
+        from .dynamic_engine import DynamicEngine
+        from .process_registry import ProcessRegistry
+
+        registry = ProcessRegistry.build_default()
+
+        if llm_client is not None:
+            planner = AIPlanner.with_llm_client(registry, llm_client)
+        else:
+            planner = AIPlanner(registry=registry)
+
+        engine = DynamicEngine(registry, planner, self.artifact_store)
+
+        # Build planner context
+        existing_artifacts: dict[ArtifactType, str] = {}
+        for art_type in ArtifactType:
+            latest = self.artifact_store.get_latest(art_type)
+            if latest:
+                existing_artifacts[art_type] = latest.id
+
+        context = PlannerContext(
+            user_requirements=str(project_input.get("raw_requirements", "")),
+            available_artifacts=existing_artifacts,
+            constraints=constraints or [],
+            goal_artifacts=goal_artifacts or [ArtifactType.SOURCE_CODE],
+            project_name=project_name,
+        )
+
+        def executor(agent_name: str, skill_name: str, input_data: dict, proj_name: str) -> str:
+            return self.execute_task(agent_name, skill_name, input_data, proj_name)
+
+        result = engine.run(context, executor, project_name)
+
+        return {
+            "status": result.status,
+            "step_results": [
+                {
+                    "process": r.process_id,
+                    "agent": r.agent,
+                    "status": r.status.value,
+                    "artifact_id": r.artifact_id,
+                    "error": r.error,
+                    "duration": r.duration_seconds,
+                }
+                for r in result.step_results
+            ],
+            "artifact_ids": result.artifact_ids,
+            "plan": {
+                "goal": result.plan.goal,
+                "reasoning": result.plan.reasoning,
+                "steps": [s.to_dict() for s in result.plan.steps],
+            },
+            "replans": result.replans,
+            "total_duration": result.total_duration_seconds,
+        }
 
     def execute_task_auto_route(
         self,
