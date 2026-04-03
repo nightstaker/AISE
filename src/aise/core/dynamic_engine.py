@@ -92,7 +92,7 @@ class DynamicEngine:
 
     Usage:
         registry = ProcessRegistry.build_default()
-        planner = AIPlanner.with_llm_client(registry, llm)
+        planner = AIPlanner.from_llm_client(registry, llm)
         engine = DynamicEngine(registry, planner, artifact_store)
 
         context = PlannerContext(user_requirements="Build a REST API")

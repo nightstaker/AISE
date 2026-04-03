@@ -206,6 +206,7 @@ class AIPlanner:
     ) -> None:
         self.registry = registry
         self.llm_config = llm_config or {}
+        self._llm_client: Any | None = None
 
     def generate_plan(self, context: PlannerContext) -> ExecutionPlan:
         """Generate an execution plan from requirements and context.
@@ -214,10 +215,10 @@ class AIPlanner:
         dependency-chain resolution if LLM fails.
         """
         catalog = json.dumps(self.registry.to_llm_catalog(), indent=2, ensure_ascii=False)
-        prompt = self._build_plan_prompt(context, catalog)
+        messages = self._build_plan_messages(context, catalog)
 
         try:
-            response = self._call_llm(prompt)
+            response = self._call_llm(messages)
             plan = self._parse_plan_response(response)
             logger.info(
                 "AI plan generated: goal=%s steps=%d",
@@ -247,7 +248,7 @@ class AIPlanner:
             indent=2,
         )
 
-        prompt = REPLAN_SYSTEM_PROMPT.format(
+        replan_content = REPLAN_SYSTEM_PROMPT.format(
             original_plan=original_json,
             failed_step_id=failed_step_id,
             error=error,
@@ -255,8 +256,13 @@ class AIPlanner:
             catalog=catalog,
         )
 
+        messages = [
+            {"role": "system", "content": "You are an AI workflow planner."},
+            {"role": "user", "content": replan_content},
+        ]
+
         try:
-            response = self._call_llm(prompt)
+            response = self._call_llm(messages)
             plan = self._parse_plan_response(response)
             logger.info("Recovery plan generated: steps=%d", len(plan.steps))
             return plan
@@ -312,33 +318,35 @@ class AIPlanner:
 
         return errors
 
-    def _build_plan_prompt(self, context: PlannerContext, catalog: str) -> str:
-        """Build the full prompt for the LLM."""
+    def _build_plan_messages(self, context: PlannerContext, catalog: str) -> list[dict[str, str]]:
+        """Build system + user messages for the LLM."""
         system = PLANNER_SYSTEM_PROMPT.format(catalog=catalog)
 
-        available_str = ""
+        user_parts: list[str] = []
+
         if context.available_artifacts:
-            available_str = "\n## Already Available Artifacts\n"
+            user_parts.append("## Already Available Artifacts")
             for art_type, art_id in context.available_artifacts.items():
-                available_str += f"- {art_type.value}: {art_id}\n"
-            available_str += "\nSkip processes that would re-create these.\n"
+                user_parts.append(f"- {art_type.value}: {art_id}")
+            user_parts.append("\nSkip processes that would re-create these.")
 
-        constraints_str = ""
         if context.constraints:
-            constraints_str = "\n## Additional Constraints\n"
+            user_parts.append("## Additional Constraints")
             for c in context.constraints:
-                constraints_str += f"- {c}\n"
+                user_parts.append(f"- {c}")
 
-        goal_str = ""
         if context.goal_artifacts:
-            goal_str = "\n## Goal Artifacts\n"
-            goal_str += "The plan must produce these artifact types:\n"
+            user_parts.append("## Goal Artifacts")
+            user_parts.append("The plan must produce these artifact types:")
             for g in context.goal_artifacts:
-                goal_str += f"- {g.value}\n"
+                user_parts.append(f"- {g.value}")
 
-        user_section = f"\n## User Requirements\n{context.user_requirements}\n"
+        user_parts.append(f"## User Requirements\n{context.user_requirements}")
 
-        return system + available_str + constraints_str + goal_str + user_section
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": "\n\n".join(user_parts)},
+        ]
 
     def _parse_plan_response(self, response: str) -> ExecutionPlan:
         """Parse LLM response into an ExecutionPlan."""
@@ -387,11 +395,17 @@ class AIPlanner:
 
         raise ValueError(f"No valid JSON found in response: {text[:200]}...")
 
-    def _call_llm(self, prompt: str) -> str:
-        """Call the LLM with the given prompt. Override in tests."""
+    def _call_llm(self, messages: list[dict[str, str]]) -> str:
+        """Call the LLM with the given messages.
+
+        When created via from_llm_client(), this calls LLMClient.complete().
+        Override in tests or use from_llm_client() for production.
+        """
+        if self._llm_client is not None:
+            return self._llm_client.complete(messages)
         raise NotImplementedError(
             "AIPlanner._call_llm must be implemented or mocked. "
-            "Use AIPlanner.with_llm_client() to create a configured instance."
+            "Use AIPlanner.from_llm_client() to create a configured instance."
         )
 
     def _fallback_plan(self, context: PlannerContext) -> ExecutionPlan:
@@ -439,20 +453,24 @@ class AIPlanner:
         )
 
     @classmethod
+    def from_llm_client(
+        cls,
+        registry: ProcessRegistry,
+        llm_client: Any,
+    ) -> "AIPlanner":
+        """Create an AIPlanner with a real LLM client.
+
+        The llm_client must support .complete(messages) -> str.
+        """
+        planner = cls(registry=registry)
+        planner._llm_client = llm_client
+        return planner
+
+    @classmethod
     def with_llm_client(
         cls,
         registry: ProcessRegistry,
         llm_client: Any,
     ) -> "AIPlanner":
-        """Create an AIPlanner with a real LLM client."""
-        planner = cls(registry=registry)
-
-        def call_llm(prompt: str) -> str:
-            response = llm_client.call(
-                system_prompt="You are an AI workflow planner.",
-                user_prompt=prompt,
-            )
-            return response
-
-        planner._call_llm = call_llm  # type: ignore
-        return planner
+        """Alias for from_llm_client (backward compat)."""
+        return cls.from_llm_client(registry, llm_client)

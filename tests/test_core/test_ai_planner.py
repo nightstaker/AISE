@@ -331,10 +331,10 @@ class TestAIPlanner:
             constraints=[],
         )
 
-        captured_prompt = []
+        captured_messages = []
 
-        def mock_call(prompt):
-            captured_prompt.append(prompt)
+        def mock_call(messages):
+            captured_messages.append(messages)
             return json.dumps(
                 {
                     "goal": "test",
@@ -354,12 +354,15 @@ class TestAIPlanner:
         with patch.object(planner, "_call_llm", side_effect=mock_call):
             planner.generate_plan(context)
 
-        assert len(captured_prompt) == 1
-        prompt = captured_prompt[0]
+        assert len(captured_messages) == 1
+        messages = captured_messages[0]
+        # Messages should be a list with system + user
+        assert len(messages) == 2
+        full_text = messages[0]["content"] + messages[1]["content"]
         # Catalog info must be in prompt
-        assert "req_analysis" in prompt
-        assert "system_design" in prompt
-        assert "code_gen" in prompt
+        assert "req_analysis" in full_text
+        assert "system_design" in full_text
+        assert "code_gen" in full_text
 
     def test_replan_on_step_failure(self, sample_registry):
         """Planner can generate a recovery plan when a step fails."""
