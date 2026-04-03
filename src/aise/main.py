@@ -139,6 +139,46 @@ def run_project(requirements: str, project_name: str = "My Project") -> list[dic
     )
 
 
+def run_project_dynamic(
+    requirements: str,
+    project_name: str = "My Project",
+    goal_artifacts: list[str] | None = None,
+) -> dict:
+    """Run an AI-planned dynamic workflow for given requirements.
+
+    This is the AI-First alternative to run_project(). Instead of
+    following a fixed 4-phase pipeline, the AI planner dynamically
+    selects and orders processes based on the actual requirements.
+
+    Args:
+        requirements: Raw requirements text.
+        project_name: Name of the project.
+        goal_artifacts: Desired output artifact types (default: source_code).
+
+    Returns:
+        Dict with status, step_results, artifact_ids, plan metadata.
+    """
+    from .core.artifact import ArtifactType
+
+    project_root = _prepare_run_project_root(project_name)
+    orchestrator = create_team(project_root=str(project_root))
+
+    goals = None
+    if goal_artifacts:
+        goals = []
+        for name in goal_artifacts:
+            try:
+                goals.append(ArtifactType(name))
+            except ValueError:
+                pass
+
+    return orchestrator.run_dynamic_workflow(
+        project_input={"raw_requirements": requirements},
+        project_name=project_name,
+        goal_artifacts=goals,
+    )
+
+
 def _slugify_name(text: str) -> str:
     chars: list[str] = []
     prev_sep = False

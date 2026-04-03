@@ -321,7 +321,12 @@ class DeepOrchestrator:
         self,
         project_input: dict[str, Any],
     ) -> list[dict[str, str]]:
-        """Generate phase/agent plan using deep agent; fallback to SDLC defaults."""
+        """Generate phase/agent plan using AI-First ProcessRegistry + LLM.
+
+        Strategy:
+        1. Try AI-First: use ProcessRegistry catalog to let LLM choose processes
+        2. Fallback: static SDLC phase ordering
+        """
         default_plan = [{"phase": phase, "agent": agent} for phase, agent in PHASE_AGENT_MAP.items()]
         available_agents = list(self.orchestrator.agents.keys())
         if not available_agents:
@@ -329,7 +334,10 @@ class DeepOrchestrator:
 
         model = self.config.default_model if self.config else ModelConfig()
         llm = self._build_llm(model)
-        planner_required_keys = ["workflow"]
+
+        # Build ProcessRegistry catalog for LLM context
+        catalog_summary = self._get_process_catalog_summary()
+
         planner_prompt = (
             "You plan SDLC workflow routing for a multi-agent team.\n"
             "Return STRICT JSON only, with schema:\n"
@@ -338,6 +346,7 @@ class DeepOrchestrator:
             "- Keep canonical phase order: requirements, design, implementation, testing.\n"
             "- Choose an agent from provided available agents for each phase.\n"
             "- Keep exactly 4 phase items.\n"
+            "- Prefer deep_workflow processes over individual steps when available.\n"
         )
         planner = create_runtime_agent(llm, [], planner_prompt)
 
@@ -345,8 +354,8 @@ class DeepOrchestrator:
             prompt = (
                 f"Available agents: {available_agents}\n"
                 f"Project input keys: {sorted(project_input.keys())}\n"
-                f"Requirements summary: {str(project_input.get('raw_requirements', ''))[:1000]}\n"
-                f"required_keys (schema echo): {', '.join(planner_required_keys)}\n"
+                f"Requirements summary: {str(project_input.get('raw_requirements', ''))[:1000]}\n\n"
+                f"## Available Processes (from ProcessRegistry)\n{catalog_summary}\n\n"
                 "JSON format guardrails:\n"
                 "- First build the JSON skeleton with the required key and 4 phase items, then fill agent values.\n"
                 "- Keep key names exactly as shown in the schema.\n"
@@ -371,6 +380,25 @@ class DeepOrchestrator:
             logger.warning("Workflow plan generation failed, fallback to defaults: error=%s", exc)
 
         return self._validate_workflow_plan(default_plan, available_agents) or default_plan
+
+    def _get_process_catalog_summary(self) -> str:
+        """Get a concise summary of available processes from ProcessRegistry."""
+        try:
+            from ..core.process_registry import ProcessRegistry
+
+            registry = ProcessRegistry.build_default()
+            deep_workflows = [p for p in registry.all() if p.is_deep_workflow]
+            summary_lines = []
+            for p in deep_workflows:
+                summary_lines.append(
+                    f"- {p.id}: {p.description} "
+                    f"(agents: {p.agent_roles}, "
+                    f"outputs: {[a.value for a in p.output_artifact_types]})"
+                )
+            return "\n".join(summary_lines) if summary_lines else "No deep workflows found"
+        except Exception as exc:
+            logger.debug("Could not build process catalog: %s", exc)
+            return "ProcessRegistry unavailable"
 
     def _validate_workflow_plan(
         self,
