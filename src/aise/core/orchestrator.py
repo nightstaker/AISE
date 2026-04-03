@@ -198,7 +198,7 @@ class Orchestrator:
         registry.auto_discover_from_agents(self._agents)
 
         if llm_client is not None:
-            planner = AIPlanner.with_llm_client(registry, llm_client)
+            planner = AIPlanner.from_llm_client(registry, llm_client)
         else:
             planner = AIPlanner(registry=registry)
 
