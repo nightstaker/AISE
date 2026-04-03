@@ -134,6 +134,37 @@ class ProcessRegistry:
             "Process registered: id=%s capabilities=%s", descriptor.id, [c.value for c in descriptor.capabilities]
         )
 
+    def register_or_update(self, descriptor: ProcessDescriptor) -> bool:
+        """Register a process or update it if it already exists.
+
+        Returns True if a new process was registered, False if updated.
+        """
+        if descriptor.id in self._processes:
+            # Remove old index entries
+            old = self._processes[descriptor.id]
+            for cap in old.capabilities:
+                ids = self._by_capability.get(cap, [])
+                if old.id in ids:
+                    ids.remove(old.id)
+            for art in old.output_artifact_types:
+                ids = self._by_output.get(art, [])
+                if old.id in ids:
+                    ids.remove(old.id)
+            for role in old.agent_roles:
+                ids = self._by_agent.get(role, [])
+                if old.id in ids:
+                    ids.remove(old.id)
+            del self._processes[descriptor.id]
+
+        self._processes[descriptor.id] = descriptor
+        for cap in descriptor.capabilities:
+            self._by_capability[cap].append(descriptor.id)
+        for art in descriptor.output_artifact_types:
+            self._by_output[art].append(descriptor.id)
+        for role in descriptor.agent_roles:
+            self._by_agent[role].append(descriptor.id)
+        return True
+
     def get(self, process_id: str) -> ProcessDescriptor | None:
         """Get a process by ID."""
         return self._processes.get(process_id)
@@ -208,6 +239,104 @@ class ProcessRegistry:
             registry.register(desc)
         logger.info("Default process registry built: %d processes", len(registry.all()))
         return registry
+
+    def auto_discover_from_agents(self, agents: dict[str, Any]) -> int:
+        """Auto-discover and register skills from live Agent instances.
+
+        Scans registered agents' skills and creates ProcessDescriptors
+        for any skill not already in the registry. This ensures newly
+        added skills are automatically available to the AI planner.
+
+        Args:
+            agents: Dict of agent_name -> Agent instances.
+
+        Returns:
+            Number of newly discovered processes.
+        """
+        discovered = 0
+        for agent_name, agent in agents.items():
+            role = getattr(agent, "role", None)
+            role_value = role.value if role else agent_name
+            skills = getattr(agent, "_skills", {}) or getattr(agent, "skills", {})
+
+            for skill_name, skill in skills.items():
+                if skill_name in self._processes:
+                    continue  # Already registered
+
+                # Infer descriptor from skill metadata
+                desc = self._descriptor_from_skill(skill, skill_name, role_value)
+                self.register_or_update(desc)
+                discovered += 1
+                logger.info(
+                    "Auto-discovered process: id=%s agent=%s",
+                    skill_name,
+                    agent_name,
+                )
+
+        if discovered:
+            logger.info(
+                "Auto-discovery complete: %d new processes (total: %d)",
+                discovered,
+                len(self._processes),
+            )
+        return discovered
+
+    @staticmethod
+    def _descriptor_from_skill(
+        skill: Any,
+        skill_name: str,
+        agent_role: str,
+    ) -> ProcessDescriptor:
+        """Create a ProcessDescriptor from a Skill instance."""
+        description = getattr(skill, "description", "") or f"Skill: {skill_name}"
+
+        # Infer phase affinity from skill name patterns
+        phase = _infer_phase(skill_name)
+        capability = _infer_capability(skill_name)
+
+        return ProcessDescriptor(
+            id=skill_name,
+            name=skill_name.replace("_", " ").title(),
+            description=str(description),
+            agent_roles=[agent_role],
+            phase_affinity=[phase] if phase else [],
+            input_keys=[],  # Cannot infer reliably
+            output_artifact_types=[],  # Cannot infer reliably
+            capabilities=[capability],
+            is_deep_workflow="deep" in skill_name.lower(),
+        )
+
+
+def _infer_phase(skill_name: str) -> str:
+    """Infer phase affinity from skill name."""
+    name = skill_name.lower()
+    if any(k in name for k in ("requirement", "product", "story", "feature")):
+        return "requirements"
+    if any(k in name for k in ("design", "architect", "api")):
+        return "design"
+    if any(k in name for k in ("code", "develop", "implement", "bug", "refactor")):
+        return "implementation"
+    if any(k in name for k in ("test", "qa", "review")):
+        return "testing"
+    return ""
+
+
+def _infer_capability(skill_name: str) -> ProcessCapability:
+    """Infer capability from skill name."""
+    name = skill_name.lower()
+    if any(k in name for k in ("analysis", "requirement", "parse")):
+        return ProcessCapability.ANALYSIS
+    if any(k in name for k in ("design", "architect")):
+        return ProcessCapability.DESIGN
+    if any(k in name for k in ("code", "generate", "implement", "develop")):
+        return ProcessCapability.GENERATION
+    if any(k in name for k in ("test", "qa")):
+        return ProcessCapability.TESTING
+    if any(k in name for k in ("review",)):
+        return ProcessCapability.REVIEW
+    if "deep" in name:
+        return ProcessCapability.DEEP_WORKFLOW
+    return ProcessCapability.MANAGEMENT
 
 
 def _default_process_descriptors() -> list[ProcessDescriptor]:
