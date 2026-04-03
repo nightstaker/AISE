@@ -194,6 +194,9 @@ class Orchestrator:
 
         registry = ProcessRegistry.build_default()
 
+        # Auto-discover skills from registered agents
+        registry.auto_discover_from_agents(self._agents)
+
         if llm_client is not None:
             planner = AIPlanner.with_llm_client(registry, llm_client)
         else:
@@ -243,6 +246,57 @@ class Orchestrator:
             "replans": result.replans,
             "total_duration": result.total_duration_seconds,
         }
+
+    def preview_dynamic_plan(
+        self,
+        project_input: dict[str, Any],
+        project_name: str = "",
+        goal_artifacts: list[ArtifactType] | None = None,
+        output_format: str = "text",
+    ) -> str:
+        """Generate and visualize an execution plan WITHOUT running it.
+
+        Args:
+            project_input: Input data (must contain 'raw_requirements').
+            project_name: Human-readable project name.
+            goal_artifacts: Desired output artifact types.
+            output_format: 'text', 'mermaid', 'summary', or 'confirm'.
+
+        Returns:
+            Formatted plan visualization string.
+        """
+        from .ai_planner import AIPlanner, PlannerContext
+        from .plan_visualizer import PlanVisualizer
+        from .process_registry import ProcessRegistry
+
+        registry = ProcessRegistry.build_default()
+        registry.auto_discover_from_agents(self._agents)
+        planner = AIPlanner(registry=registry)
+        visualizer = PlanVisualizer(registry=registry)
+
+        existing_artifacts: dict[ArtifactType, str] = {}
+        for art_type in ArtifactType:
+            latest = self.artifact_store.get_latest(art_type)
+            if latest:
+                existing_artifacts[art_type] = latest.id
+
+        context = PlannerContext(
+            user_requirements=str(project_input.get("raw_requirements", "")),
+            available_artifacts=existing_artifacts,
+            goal_artifacts=goal_artifacts or [ArtifactType.SOURCE_CODE],
+            project_name=project_name,
+        )
+
+        plan = planner.generate_plan(context)
+
+        formatters = {
+            "text": visualizer.to_text_table,
+            "mermaid": visualizer.to_mermaid,
+            "summary": visualizer.to_summary,
+            "confirm": visualizer.to_confirmation_prompt,
+        }
+        formatter = formatters.get(output_format, visualizer.to_text_table)
+        return formatter(plan)
 
     def execute_task_auto_route(
         self,

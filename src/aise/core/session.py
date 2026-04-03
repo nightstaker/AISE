@@ -22,6 +22,7 @@ class UserCommand(Enum):
     ARTIFACTS = "artifacts"
     RUN_PHASE = "phase"
     RUN_WORKFLOW = "workflow"
+    RUN_DYNAMIC = "dynamic"
     ASK = "ask"
     HELP = "help"
     QUIT = "quit"
@@ -40,6 +41,9 @@ _COMMAND_ALIASES: dict[str, UserCommand] = {
     "phase": UserCommand.RUN_PHASE,
     "workflow": UserCommand.RUN_WORKFLOW,
     "run": UserCommand.RUN_WORKFLOW,
+    "dynamic": UserCommand.RUN_DYNAMIC,
+    "ai": UserCommand.RUN_DYNAMIC,
+    "plan": UserCommand.RUN_DYNAMIC,
     "ask": UserCommand.ASK,
     "help": UserCommand.HELP,
     "quit": UserCommand.QUIT,
@@ -123,6 +127,7 @@ class OnDemandSession:
             UserCommand.ARTIFACTS: self._handle_artifacts,
             UserCommand.RUN_PHASE: self._handle_run_phase,
             UserCommand.RUN_WORKFLOW: self._handle_run_workflow,
+            UserCommand.RUN_DYNAMIC: self._handle_run_dynamic,
             UserCommand.ASK: self._handle_ask,
             UserCommand.HELP: self._handle_help,
             UserCommand.QUIT: self._handle_quit,
@@ -432,6 +437,55 @@ class OnDemandSession:
         except Exception as e:
             return {"status": "error", "output": f"Workflow execution failed: {e}"}
 
+    def _handle_run_dynamic(self, text: str) -> dict[str, Any]:
+        """Run AI-First dynamic workflow instead of static pipeline."""
+        reqs = self._gather_requirements()
+        if not reqs:
+            return {
+                "status": "error",
+                "output": "No requirements found. Add requirements first with: add <text>",
+            }
+
+        # Parse optional goal artifact from text
+        goal_artifacts = None
+        if text.strip():
+            try:
+                goal_artifacts = [ArtifactType(text.strip())]
+            except ValueError:
+                pass
+
+        try:
+            result = self.orchestrator.run_dynamic_workflow(
+                {"raw_requirements": reqs},
+                self.project_name,
+                goal_artifacts=goal_artifacts,
+            )
+
+            lines = ["🤖 AI-First Dynamic Workflow"]
+            lines.append(f"Status: {result['status']}")
+            lines.append(f"Plan: {result['plan']['goal']}")
+            lines.append(f"Reasoning: {result['plan']['reasoning']}")
+            lines.append(f"Replans: {result['replans']}")
+            lines.append(f"Duration: {result['total_duration']:.1f}s")
+            lines.append("")
+            lines.append("Steps:")
+            for step in result["step_results"]:
+                icon = {"completed": "✅", "failed": "❌", "skipped": "⏭️"}.get(step["status"], "❓")
+                line = f"  {icon} {step['process']} ({step['agent']}) — {step['status']}"
+                if step.get("error"):
+                    line += f" [{step['error'][:60]}]"
+                if step.get("duration"):
+                    line += f" ({step['duration']:.1f}s)"
+                lines.append(line)
+
+            if result["artifact_ids"]:
+                lines.append(f"\nArtifacts produced: {len(result['artifact_ids'])}")
+
+            return {"status": "ok", "results": result, "output": "\n".join(lines)}
+
+        except Exception as e:
+            return {"status": "error", "output": f"Dynamic workflow failed: {e}"}
+
     def _handle_ask(self, text: str) -> dict[str, Any]:
         """Route a freeform question to the Project Manager for a progress update."""
         if not text.strip():
@@ -528,7 +582,8 @@ Available commands:
   status             Show project and team status
   artifacts [type]   List artifacts (optionally filter by type)
   phase <name>       Run a specific phase (requirements|design|implementation|testing)
-  workflow           Run the full SDLC workflow
+  workflow           Run the full static SDLC workflow
+  dynamic [goal]     Run AI-First dynamic workflow (optional goal: source_code, architecture_design, etc.)
   ask <question>     Ask the Project Manager for a progress report
   help               Show this help message
   quit               Exit the session
