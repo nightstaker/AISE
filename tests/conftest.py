@@ -65,18 +65,21 @@ def mock_llm_for_non_llm_unit_tests(monkeypatch: pytest.MonkeyPatch, request: py
 
     # Check if test module's source mentions LLMClient
     # This avoids expensive regex matching for ~80% of tests that don't need LLM
-    try:
-        test_module = request.module
-        import inspect
+    # Exception: test_agents always needs mock (skills call LLM indirectly)
+    if "tests/test_agents/" not in nodeid:
+        try:
+            test_module = request.module
+            import inspect
 
-        source = inspect.getsource(test_module)
-        if "LLMClient" not in source:
-            # No LLM usage at all, skip mock setup entirely
-            yield
-            return
-    except (OSError, TypeError):
-        # If we can't get source, fall through to full mock
-        pass
+            source = inspect.getsource(test_module)
+            if "LLMClient" not in source:
+                # No LLM usage at all, skip mock setup entirely
+                yield
+                gc.collect()
+                return
+        except (OSError, TypeError):
+            # If we can't get source, fall through to full mock
+            pass
 
     def _fake_complete(self: LLMClient, messages: list[dict[str, str]], **kwargs: Any) -> str:
         system_text = "\n".join(str(msg.get("content", "")) for msg in messages if msg.get("role") == "system")
