@@ -35,6 +35,18 @@ function mountReact(rootId, componentFactory) {
 function setupDashboardReact() {
   const initial = readScriptJson("dashboard-initial-data", { projects: [], global_config_data: {} });
 
+  function formatTime(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return String(ts);
+    const now = Date.now();
+    const diff = now - d.getTime();
+    if (diff < 60000) return "刚刚";
+    if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
   function DashboardApp() {
     const h = window.React.createElement;
     const config = initial.global_config_data || {};
@@ -50,6 +62,7 @@ function setupDashboardReact() {
     const [submitting, setSubmitting] = window.React.useState(false);
     const [deletingProjectId, setDeletingProjectId] = window.React.useState("");
     const [error, setError] = window.React.useState("");
+    const [showModal, setShowModal] = window.React.useState(false);
 
     window.React.useEffect(() => {
       let active = true;
@@ -98,6 +111,7 @@ function setupDashboardReact() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
+        setShowModal(false);
         if (created.run_id) {
           window.location.href = `/projects/${encodeURIComponent(created.project_id)}/runs/${encodeURIComponent(created.run_id)}`;
           return;
@@ -109,7 +123,9 @@ function setupDashboardReact() {
       }
     }
 
-    async function deleteProject(project) {
+    async function deleteProject(project, e) {
+      e.preventDefault();
+      e.stopPropagation();
       const projectId = String(project.project_id || "");
       if (!projectId) return;
       const first = window.confirm(`确认删除项目「${project.project_name || projectId}」？`);
@@ -144,125 +160,164 @@ function setupDashboardReact() {
       });
     }
 
-    function statusIcon(status) {
-      if (status === 'completed' || status === 'success') return '✓ ';
-      if (status === 'running' || status === 'in_progress') return '◉ ';
-      if (status === 'failed' || status === 'error') return '✕ ';
-      return '○ ';
+    function statusBadge(status) {
+      if (status === "completed" || status === "success") return h("span", { className: "status-badge status-success" }, "✓ 成功");
+      if (status === "running" || status === "in_progress") return h("span", { className: "status-badge status-running" }, "◉ 运行中");
+      if (status === "failed" || status === "error") return h("span", { className: "status-badge status-failed" }, "✕ 失败");
+      return h("span", { className: "status-badge status-pending" }, "◎ 等待中");
     }
 
-    const projectCards = projects.length
-      ? projects.map((project) =>
+    const runningCount = projects.filter((p) => p.status === "running" || p.status === "in_progress").length;
+    const successCount = projects.filter((p) => p.status === "completed" || p.status === "success").length;
+    const failedCount = projects.filter((p) => p.status === "failed" || p.status === "error").length;
+
+    const modal = showModal
+      ? h(
+          "div",
+          {
+            className: "modal-overlay",
+            onClick: (e) => { if (e.target === e.currentTarget) setShowModal(false); },
+          },
           h(
             "div",
-            {
-              key: project.project_id,
-              className: "project-card",
-            },
+            { className: "modal-content" },
             h(
-              "a",
-              {
-                className: "project-card-link",
-                href: `/projects/${encodeURIComponent(project.project_id)}`,
-              },
-              h("h3", null, project.project_name),
-              h("p", null, `ID: ${project.project_id}`),
-              h("p", null, `${statusIcon(project.status)}状态: ${project.status}`),
-              h("p", null, `模式: ${project.development_mode}`),
-              h("p", null, `Agent 数: ${project.agent_count}`),
-              h("p", null, `更新时间: ${project.updated_at}`)
+              "div",
+              { className: "modal-header" },
+              h("h2", null, "新建项目"),
+              h("button", { className: "modal-close", onClick: () => setShowModal(false) }, "×")
             ),
             h(
-              "button",
-              {
-                type: "button",
-                className: "btn danger",
-                disabled: deletingProjectId === String(project.project_id),
-                onClick: () => deleteProject(project),
-              },
-              deletingProjectId === String(project.project_id) ? "删除中..." : "删除项目"
+              "form",
+              { className: "modal-form", onSubmit: submitProject },
+              h("label", null, "项目名称"),
+              h("input", {
+                required: true,
+                value: formData.project_name,
+                placeholder: "例如: UserAPI",
+                onChange: (e) => setFormData((prev) => ({ ...prev, project_name: e.target.value })),
+              }),
+              h("label", null, "开发模式"),
+              h(
+                "select",
+                {
+                  value: formData.development_mode,
+                  onChange: (e) => setFormData((prev) => ({ ...prev, development_mode: e.target.value })),
+                },
+                h("option", { value: "local" }, "Local"),
+                h("option", { value: "github" }, "GitHub")
+              ),
+              h("label", null, "初始需求（可选）"),
+              h("textarea", {
+                rows: 4,
+                placeholder: "例如：构建一个用户管理 API",
+                value: formData.initial_requirement,
+                onChange: (e) => setFormData((prev) => ({ ...prev, initial_requirement: e.target.value })),
+              }),
+              h("h3", null, "Agent 模型选择"),
+              h(
+                "div",
+                { className: "agent-grid" },
+                ...availableAgents.flatMap((agent) => [
+                  h("label", { key: `${agent}-label` }, agent),
+                  h(
+                    "select",
+                    {
+                      key: `${agent}-select`,
+                      value: String(agentModels[agent] || defaultModelId()),
+                      onChange: (e) =>
+                        setAgentModels((prev) => ({
+                          ...prev,
+                          [agent]: e.target.value,
+                        })),
+                    },
+                    ...selectOptionsFor(agent)
+                  ),
+                ])
+              ),
+              error ? h("p", { className: "warning" }, error) : null,
+              h(
+                "div",
+                { className: "modal-actions" },
+                h("button", { type: "button", className: "btn secondary", onClick: () => setShowModal(false) }, "取消"),
+                h("button", { className: "btn", type: "submit", disabled: submitting }, submitting ? "创建中..." : "创建项目")
+              )
             )
           )
         )
-      : [h("p", { key: "empty", className: "muted" }, "暂无项目，先创建一个。")];
+      : null;
 
     return h(
       "div",
-      { className: "dashboard-shell dashboard-layout" },
+      { className: "dashboard-shell" },
       h(
-        "section",
-        { className: "split" },
+        "div",
+        { className: "dashboard-topbar" },
         h(
-          "article",
-          { className: "dashboard-hero" },
-          h("h2", null, "✨ 新建项目"),
-          h(
-            "form",
-            { className: "stack", onSubmit: submitProject },
-            h("label", null, "项目名称"),
-            h("input", {
-              required: true,
-              value: formData.project_name,
-              placeholder: "例如: UserAPI",
-              onChange: (e) => setFormData((prev) => ({ ...prev, project_name: e.target.value })),
-            }),
-            h("label", null, "开发模式"),
-            h(
-              "select",
-              {
-                value: formData.development_mode,
-                onChange: (e) => setFormData((prev) => ({ ...prev, development_mode: e.target.value })),
-              },
-              h("option", { value: "local" }, "Local"),
-              h("option", { value: "github" }, "GitHub")
-            ),
-            h("label", null, "初始需求（可选）"),
-            h("textarea", {
-              rows: 4,
-              placeholder: "例如：构建一个用户管理 API",
-              value: formData.initial_requirement,
-              onChange: (e) => setFormData((prev) => ({ ...prev, initial_requirement: e.target.value })),
-            }),
-            h("h3", null, "Agent 模型选择"),
-            h(
-              "div",
-              { className: "agent-grid" },
-              ...availableAgents.flatMap((agent) => [
-                h("label", { key: `${agent}-label` }, agent),
-                h(
-                  "select",
-                  {
-                    key: `${agent}-select`,
-                    value: String(agentModels[agent] || defaultModelId()),
-                    onChange: (e) =>
-                      setAgentModels((prev) => ({
-                        ...prev,
-                        [agent]: e.target.value,
-                      })),
-                  },
-                  ...selectOptionsFor(agent)
-                ),
-              ])
-            ),
-            error ? h("p", { className: "warning" }, error) : null,
-            h("button", { className: "btn", type: "submit", disabled: submitting }, submitting ? "创建中..." : "创建项目")
-          )
-        ),
-        h(
-          "article",
-          { className: "card stats-card" },
-          h("h2", null, "📊 工作台概览"),
-          h("p", { className: "metric-line" }, ["项目数", h("strong", { key: "count" }, String(projects.length))]),
+          "div",
+          { className: "dashboard-topbar-left" },
+          h("h1", { className: "dashboard-title" }, "项目"),
           h(
             "div",
-            { className: "auth-grid" },
-            h("a", { className: "btn secondary", href: "/config/global/models" }, "⚙️ 模型配置"),
-            h("a", { className: "btn secondary", href: "/config/global/agents" }, "🤖 Agent 配置")
+            { className: "dashboard-stats" },
+            h("span", { className: "stat-chip" }, `共 ${projects.length} 个`),
+            runningCount > 0 ? h("span", { className: "stat-chip stat-running" }, `${runningCount} 运行中`) : null,
+            successCount > 0 ? h("span", { className: "stat-chip stat-success" }, `${successCount} 成功`) : null,
+            failedCount > 0 ? h("span", { className: "stat-chip stat-failed" }, `${failedCount} 失败`) : null
           )
-        )
+        ),
+        h("button", { className: "btn create-project-btn", onClick: () => setShowModal(true) }, "＋ 新建项目")
       ),
-      error ? h("section", { className: "error" }, error) : null,
-      h("section", { className: "card" }, h("h2", null, "📁 项目概览"), h("div", { className: "project-cards" }, ...projectCards))
+      error ? h("div", { className: "dashboard-error" }, error) : null,
+      h(
+        "div",
+        { className: "project-cards-grid" },
+        projects.length
+          ? projects.map((project) =>
+              h(
+                "a",
+                {
+                  key: project.project_id,
+                  className: "project-card",
+                  href: `/projects/${encodeURIComponent(project.project_id)}`,
+                },
+                h(
+                  "div",
+                  { className: "project-card-header" },
+                  h("h3", null, project.project_name),
+                  statusBadge(project.status)
+                ),
+                h(
+                  "div",
+                  { className: "project-card-meta" },
+                  h("span", null, `模式: ${project.development_mode}`),
+                  h("span", null, `Agent: ${project.agent_count}`)
+                ),
+                h(
+                  "div",
+                  { className: "project-card-footer" },
+                  h("span", { className: "project-card-time" }, formatTime(project.updated_at)),
+                  h(
+                    "button",
+                    {
+                      className: "project-card-delete",
+                      disabled: deletingProjectId === String(project.project_id),
+                      onClick: (e) => deleteProject(project, e),
+                    },
+                    deletingProjectId === String(project.project_id) ? "删除中..." : "删除"
+                  )
+                )
+              )
+            )
+          : h(
+              "div",
+              { className: "empty-state" },
+              h("div", { className: "empty-icon" }, "📂"),
+              h("p", null, "暂无项目"),
+              h("p", null, "点击上方按钮创建你的第一个项目")
+            )
+      ),
+      modal
     );
   }
 
