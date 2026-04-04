@@ -146,6 +146,12 @@ Select only the processes that are actually needed for the given requirements.
 5. Only include processes that contribute to the goal.
 6. Assign each step to an agent from the process's agent_roles list.
 7. Do NOT include on_demand_only processes unless explicitly requested.
+8. CRITICAL: Respect depends_on fields. If a process depends_on artifacts X, Y,
+   you MUST include a preceding step that produces X and Y. For a full SDLC project,
+   start with deep_product_workflow (or requirement_analysis) to produce REQUIREMENTS
+   and SYSTEM_REQUIREMENTS before architecture or implementation steps.
+9. For a typical software project, the MINIMUM viable plan is:
+   deep_product_workflow → deep_architecture_workflow → deep_developer_workflow.
 
 ## Output Format
 Return STRICT JSON:

@@ -136,7 +136,8 @@ class DynamicEngine:
             project_name,
         )
 
-        # Step 2: Validate
+        # Step 2: Validate and auto-resolve missing dependencies
+        plan = self._auto_resolve_dependencies(plan)
         errors = self.planner.validate_plan(plan)
         if errors:
             logger.warning("Plan validation warnings: %s", errors)
@@ -382,6 +383,80 @@ class DynamicEngine:
                 error=str(exc),
                 duration_seconds=duration,
             )
+
+    def _auto_resolve_dependencies(
+        self,
+        plan: ExecutionPlan,
+    ) -> ExecutionPlan:
+        """Check each step's artifact dependencies and prepend missing producers.
+
+        If the plan jumps straight to architecture without requirements,
+        this will auto-insert the requirements step.
+        """
+        available = set()  # Track what artifacts the plan will produce
+        existing_process_ids = {s.process_id for s in plan.steps}
+        prepend: list[PlanStep] = []
+        prepend_ids: set[str] = set()
+
+        for step in plan.steps:
+            proc = self.registry.get(step.process_id)
+            if proc is None:
+                continue
+
+            for dep_art in proc.depends_on_artifacts:
+                if dep_art not in available:
+                    # Need a producer — find one
+                    chain = self.registry.resolve_dependency_chain(dep_art, available.copy())
+                    for p in chain:
+                        if p.id not in existing_process_ids and p.id not in prepend_ids:
+                            logger.info(
+                                "Auto-resolving dependency: %s needs %s, adding %s",
+                                step.process_id,
+                                dep_art.value,
+                                p.id,
+                            )
+                            agent = p.agent_roles[0] if p.agent_roles else "developer"
+                            arts = [a.value for a in p.output_artifact_types]
+                            prepend.append(
+                                PlanStep(
+                                    process_id=p.id,
+                                    agent=agent,
+                                    rationale=f"Auto-resolved: produces {arts}",
+                                    input_mapping={},
+                                    depends_on_steps=[],
+                                )
+                            )
+                            prepend_ids.add(p.id)
+                            for a in p.output_artifact_types:
+                                available.add(a)
+
+            for a in proc.output_artifact_types:
+                available.add(a)
+
+        if prepend:
+            logger.info(
+                "Auto-resolved %d missing dependency steps: %s",
+                len(prepend),
+                [s.process_id for s in prepend],
+            )
+            # Fix depends_on for original steps
+            all_new_ids = {s.process_id for s in prepend}
+            for step in plan.steps:
+                proc = self.registry.get(step.process_id)
+                if proc:
+                    for dep_art in proc.depends_on_artifacts:
+                        producers = self.registry.find_producers(dep_art)
+                        for p in producers:
+                            if p.id in all_new_ids and p.id not in step.depends_on_steps:
+                                step.depends_on_steps.append(p.id)
+
+            return ExecutionPlan(
+                goal=plan.goal,
+                steps=prepend + plan.steps,
+                reasoning=plan.reasoning + f" (auto-resolved {len(prepend)} missing dependencies)",
+            )
+
+        return plan
 
     def _should_skip(
         self,
