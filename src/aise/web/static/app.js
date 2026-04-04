@@ -144,6 +144,13 @@ function setupDashboardReact() {
       });
     }
 
+    function statusIcon(status) {
+      if (status === 'completed' || status === 'success') return '✓ ';
+      if (status === 'running' || status === 'in_progress') return '◉ ';
+      if (status === 'failed' || status === 'error') return '✕ ';
+      return '○ ';
+    }
+
     const projectCards = projects.length
       ? projects.map((project) =>
           h(
@@ -160,7 +167,7 @@ function setupDashboardReact() {
               },
               h("h3", null, project.project_name),
               h("p", null, `ID: ${project.project_id}`),
-              h("p", null, `状态: ${project.status}`),
+              h("p", null, `${statusIcon(project.status)}状态: ${project.status}`),
               h("p", null, `模式: ${project.development_mode}`),
               h("p", null, `Agent 数: ${project.agent_count}`),
               h("p", null, `更新时间: ${project.updated_at}`)
@@ -187,8 +194,8 @@ function setupDashboardReact() {
         { className: "split" },
         h(
           "article",
-          { className: "card card-glow" },
-          h("h2", null, "新建项目"),
+          { className: "dashboard-hero" },
+          h("h2", null, "✨ 新建项目"),
           h(
             "form",
             { className: "stack", onSubmit: submitProject },
@@ -243,19 +250,19 @@ function setupDashboardReact() {
         ),
         h(
           "article",
-          { className: "card" },
-          h("h2", null, "工作台概览"),
+          { className: "card stats-card" },
+          h("h2", null, "📊 工作台概览"),
           h("p", { className: "metric-line" }, ["项目数", h("strong", { key: "count" }, String(projects.length))]),
           h(
             "div",
             { className: "auth-grid" },
-            h("a", { className: "btn secondary", href: "/config/global/models" }, "模型配置"),
-            h("a", { className: "btn secondary", href: "/config/global/agents" }, "Agent 配置")
+            h("a", { className: "btn secondary", href: "/config/global/models" }, "⚙️ 模型配置"),
+            h("a", { className: "btn secondary", href: "/config/global/agents" }, "🤖 Agent 配置")
           )
         )
       ),
       error ? h("section", { className: "error" }, error) : null,
-      h("section", { className: "card" }, h("h2", null, "项目概览"), h("div", { className: "project-cards" }, ...projectCards))
+      h("section", { className: "card" }, h("h2", null, "📁 项目概览"), h("div", { className: "project-cards" }, ...projectCards))
     );
   }
 
@@ -774,7 +781,7 @@ function setupRunReact() {
     }
 
     function taskStatusLabel(status) {
-      return status === "completed" ? "完成" : status === "running" ? "执行中" : status === "failed" ? "失败" : "待执行";
+      return status === "completed" ? "✓ 完成" : status === "running" ? "◉ 执行中" : status === "failed" ? "✕ 失败" : "○ 待执行";
     }
 
     function selectTaskByCardTask(task, event) {
@@ -1671,7 +1678,7 @@ function setupRunReact() {
       h(
         "section",
         { className: "card card-glow run-summary-card" },
-        h("h1", null, "工作流执行详情"),
+        h("h1", null, "⚡ 工作流执行详情"),
         h(
           "p",
           null,
@@ -2369,8 +2376,8 @@ function setupLoginReact() {
     const configured = initial.configured || {};
     return h(
       "section",
-      { className: "card narrow card-glow" },
-      h("h1", null, "登录 AISE Web"),
+      { className: "card narrow card-glow login-card" },
+      h("h1", null, "⚡ 登录 AISE Web"),
       h("p", { className: "muted" }, "支持内置管理员账号、Google 或 Microsoft 登录。"),
       h(
         "form",

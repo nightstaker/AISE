@@ -4,40 +4,70 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title or "AISE Web" }}</title>
-  <link rel="stylesheet" href="/static/main.css?v=20260223f">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@500;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+  <link rel="stylesheet" href="/static/main.css?v=20260404a">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="/">AISE 控制台</a>
-    <nav class="topnav">
-      {% if user %}
-      <details class="user-menu">
-        <summary>
-          {{ user.name }}
-          {% if user.role %}<span class="role-tag">{{ user.role }}</span>{% endif %}
-        </summary>
-        <div class="user-menu-pop">
-          <div class="user-meta">{{ user.provider }}</div>
-          <a href="/config/global/models">Settings / Models</a>
-          <a href="/config/global/agents">Settings / Agents</a>
-          <a href="/config/global/workspace">Settings / Workspace</a>
-          <a href="/config/global/logging">Settings / Logging</a>
-          <a href="/config/global/json">Settings / Raw JSON</a>
-          <hr>
-          <a href="/logout">退出</a>
-        </div>
-      </details>
-      {% else %}
-      <a href="/login">登录</a>
-      {% endif %}
-    </nav>
-  </header>
-  <main class="page">
-    {% block content %}{% endblock %}
-  </main>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-top">
+        <a class="brand" href="/">
+          <span class="brand-icon">⚡</span>
+          <span class="brand-text">AISE</span>
+        </a>
+        <nav class="sidebar-nav">
+          <a class="sidebar-link active" href="/">
+            <span class="sidebar-link-icon">📊</span>
+            <span>Dashboard</span>
+          </a>
+          <a class="sidebar-link" href="/config/global/models">
+            <span class="sidebar-link-icon">⚙️</span>
+            <span>Settings</span>
+          </a>
+        </nav>
+      </div>
+      <div class="sidebar-bottom">
+        {% if user %}
+        <details class="user-menu">
+          <summary class="user-menu-trigger">
+            <span class="user-avatar">{{ user.name[:1] | upper }}</span>
+            <span class="user-info">
+              <span class="user-name">{{ user.name }}</span>
+              {% if user.role %}<span class="role-tag">{{ user.role }}</span>{% endif %}
+            </span>
+          </summary>
+          <div class="user-menu-pop">
+            <div class="user-meta">{{ user.provider }}</div>
+            <a href="/config/global/models">Settings / Models</a>
+            <a href="/config/global/agents">Settings / Agents</a>
+            <a href="/config/global/workspace">Settings / Workspace</a>
+            <a href="/config/global/logging">Settings / Logging</a>
+            <a href="/config/global/json">Settings / Raw JSON</a>
+            <hr>
+            <a href="/logout">退出</a>
+          </div>
+        </details>
+        {% else %}
+        <a class="sidebar-link" href="/login">
+          <span class="sidebar-link-icon">🔑</span>
+          <span>登录</span>
+        </a>
+        {% endif %}
+      </div>
+    </aside>
+    <main class="page">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  <!-- Keep legacy topbar/topnav classes for Python backend compatibility -->
+  <template id="legacy-compat">
+    <header class="topbar"><nav class="topnav"></nav></header>
+  </template>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="/static/app.js?v=20260223f"></script>
+  <script src="/static/app.js?v=20260404a"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>
