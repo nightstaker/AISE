@@ -7,7 +7,6 @@ import importlib.util
 import json
 import os
 import re
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -69,8 +68,9 @@ def mock_llm_for_non_llm_unit_tests(monkeypatch: pytest.MonkeyPatch, request: py
     try:
         test_module = request.module
         import inspect
+
         source = inspect.getsource(test_module)
-        if 'LLMClient' not in source:
+        if "LLMClient" not in source:
             # No LLM usage at all, skip mock setup entirely
             yield
             return
@@ -554,6 +554,7 @@ def mock_llm_for_non_llm_unit_tests(monkeypatch: pytest.MonkeyPatch, request: py
     gc.collect()
     # 强制回收未使用的 TimeoutHandler 实例（只有这些才有 _shutdown 标志）
     from aise.reliability.timeout_handler import TimeoutHandler
+
     for obj in gc.get_objects():
         if isinstance(obj, TimeoutHandler):
             try:
