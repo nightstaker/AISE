@@ -2560,6 +2560,9 @@ class WebProjectService:
                 len(plan_info.get("steps", [])) if isinstance(plan_info, dict) else 0,
             )
             if isinstance(plan_info, dict) and plan_info.get("steps"):
+                # Auto-resolve missing dependencies before persisting
+                # so UI shows the complete plan (including requirements phase)
+                plan_info = self._auto_resolve_plan_preview(plan_info, base_orchestrator)
                 project._dynamic_plan = plan_info  # type: ignore[attr-defined]
                 # Persist plan to disk so it survives restarts
                 self._persist_dynamic_plan(project_id, plan_info)
@@ -2572,6 +2575,56 @@ class WebProjectService:
                 logger.warning("_preview_dynamic_plan: plan has no steps, falling back to static")
         except Exception:
             logger.warning("Dynamic plan preview failed, UI will use static nodes", exc_info=True)
+
+    @staticmethod
+    def _auto_resolve_plan_preview(plan_info: dict[str, Any], orchestrator: Any) -> dict[str, Any]:
+        """Run auto-resolve on the preview plan to fill missing dependency steps.
+
+        The AI planner sometimes skips requirements phase. This ensures
+        the persisted plan includes all necessary steps.
+        """
+        try:
+            from ..core.ai_planner import ExecutionPlan, PlanStep
+            from ..core.dynamic_engine import DynamicEngine
+            from ..core.process_registry import ProcessRegistry
+
+            registry = ProcessRegistry.build_default()
+            registry.auto_discover_from_agents(getattr(orchestrator, "_agents", {}))
+            # Minimal planner just for dependency resolution
+            from ..core.ai_planner import AIPlanner
+
+            planner = AIPlanner(registry=registry)
+            engine = DynamicEngine(registry, planner, orchestrator.artifact_store)
+
+            steps = [
+                PlanStep(
+                    process_id=s.get("process_id", ""),
+                    agent=s.get("agent", ""),
+                    rationale=s.get("rationale", ""),
+                    input_mapping=s.get("input_mapping", {}),
+                    depends_on_steps=s.get("depends_on_steps", []),
+                )
+                for s in plan_info.get("steps", [])
+                if isinstance(s, dict)
+            ]
+            plan = ExecutionPlan(
+                goal=plan_info.get("goal", ""),
+                steps=steps,
+                reasoning=plan_info.get("reasoning", ""),
+            )
+            resolved = engine._auto_resolve_dependencies(plan)
+            # Re-serialize
+            return {
+                "goal": resolved.goal,
+                "reasoning": resolved.reasoning,
+                "steps": [s.to_dict() for s in resolved.steps],
+            }
+        except Exception:
+            logger.warning(
+                "Failed to auto-resolve plan preview deps, using original",
+                exc_info=True,
+            )
+            return plan_info
 
     @staticmethod
     def _group_tasks_by_agent(
