@@ -694,6 +694,8 @@ class DeepDeveloperWorkflowSkill(Skill):
                     "Rules:\n"
                     "- Return exactly one item for each FN in the input list (no extras, no omissions).\n"
                     "- fn_id and module_name must exactly match the provided values.\n"
+                    "- IMPORTANT: When multiple FNs share the same module_name, each item's test_content \n"
+                    "must contain the COMPLETE test file with tests for ALL FNs in that module combined.\n"
                     "- test_content must import from src.<subsystem>.<module>.\n"
                     "- Preserve and test the existing public API style inferred "
                     "from current source files (class-based or function-based).\n"
@@ -807,6 +809,9 @@ class DeepDeveloperWorkflowSkill(Skill):
                     "Rules:\n"
                     "- Return exactly one item for each FN in the input list (no extras, no omissions).\n"
                     "- fn_id and module_name must exactly match the provided values.\n"
+                    "- IMPORTANT: When multiple FNs share the same module_name, each item's code_content \n"
+                    "must contain the COMPLETE module with ALL FNs for that module combined. \n"
+                    "Do NOT split shared-module FNs into separate incomplete implementations.\n"
                     "- Preserve the module's existing public API style inferred "
                     "from current source files (class-based or function-based).\n"
                     "- If existing_class_names is non-empty, preserve those "
@@ -919,16 +924,18 @@ class DeepDeveloperWorkflowSkill(Skill):
                     "- ASCII lowercase snake_case filenames only, suffix .py, no directories.\n"
                     "- fn_to_module_map: object mapping each FN id to one filename from module_files.\n"
                     "- Every FN id must be mapped exactly once.\n"
-                    "- Use one dedicated module per FN for now (do not map multiple FN ids to the same file).\n"
-                    "- Plan a stable file list first; later implementation rounds will only modify these files.\n"
+                    "- IMPORTANT: Multiple FN ids CAN and SHOULD be mapped to the SAME file when they "
+                    "belong to the same logical module. Group related FNs into cohesive modules.\n"
+                    "- The subsystem architecture design doc defines the canonical module filenames. "
+                    "Use EXACTLY those documented module names as your module_files. "
+                    "Do NOT create new files beyond what the design doc specifies.\n"
+                    "- Plan a stable file list first; later implementation rounds will EXTEND these files.\n"
                     "- Prefer domain-meaningful names; avoid generic file names like module.py/service.py/handler.py.\n"
                     "- Do not assume files named api.py, service.py, or schemas.py are required.\n"
                     "- Only include api-like/contract files when explicitly needed by FN responsibilities.\n"
-                    "- The subsystem architecture design doc defines canonical module filenames (base module stems).\n"
-                    "- Prefer those documented base module stems and append FN/SR suffixes "
-                    "for dedicated per-FN files.\n"
                     "- If an FN description says '<module> module', preserve that documented "
-                    "module stem as the filename prefix.\n"
+                    "module stem as the filename.\n"
+                    "- File count should match what the design doc specifies, NOT the FN count.\n"
                 ),
                 user_prompt=(
                     f"Subsystem key: {subsystem_key}\n"
@@ -962,23 +969,33 @@ class DeepDeveloperWorkflowSkill(Skill):
         fn_items: list[dict[str, Any]],
         documented_module_stems: list[str] | None = None,
     ) -> dict[str, Any]:
-        used_module_names: set[str] = set()
+        doc_stems = [s for s in (documented_module_stems or []) if s]
         fn_plans: list[dict[str, str]] = []
-        module_files: list[str] = []
-        for index, fn_item in enumerate(fn_items, start=1):
-            fn_id = str(fn_item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"
-            preferred_doc_stem = self._match_documented_module_stem_for_fn(
-                fn_name=str(fn_item.get("name", "")),
-                fn_description=str(fn_item.get("description", "")),
-                documented_module_stems=documented_module_stems or [],
-            )
-            if preferred_doc_stem:
-                module_name = self._build_doc_based_sr_module_name(
-                    fn_id=fn_id,
-                    base_stem=preferred_doc_stem,
-                    used_names=used_module_names,
+        module_files_set: set[str] = set()
+
+        if doc_stems:
+            # When we have documented module stems from design doc, distribute
+            # FNs across those modules (multiple FNs per module is expected).
+            for index, fn_item in enumerate(fn_items):
+                fn_id = str(fn_item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"
+                # Try to match FN to a documented module by name/description
+                matched_stem = self._match_documented_module_stem_for_fn(
+                    fn_name=str(fn_item.get("name", "")),
+                    fn_description=str(fn_item.get("description", "")),
+                    documented_module_stems=doc_stems,
                 )
-            else:
+                if not matched_stem:
+                    # Round-robin distribute to documented modules
+                    matched_stem = doc_stems[index % len(doc_stems)]
+                module_file = f"{matched_stem}.py"
+                module_files_set.add(module_file)
+                fn_plans.append({"fn_id": fn_id, "module_name": matched_stem, "module_file": module_file})
+        else:
+            # No documented stems — derive module names from FN semantics.
+            # Still try to group FNs with similar names into the same module.
+            used_module_names: set[str] = set()
+            for index, fn_item in enumerate(fn_items, start=1):
+                fn_id = str(fn_item.get("id", "FN-UNKNOWN")).strip() or "FN-UNKNOWN"
                 module_name = self._derive_semantic_module_name(
                     fn_id=fn_id,
                     fn_name=str(fn_item.get("name", "")),
@@ -990,9 +1007,11 @@ class DeepDeveloperWorkflowSkill(Skill):
                     index=index,
                     used_names=used_module_names,
                 )
-            module_file = f"{module_name}.py"
-            fn_plans.append({"fn_id": fn_id, "module_name": module_name, "module_file": module_file})
-            module_files.append(module_file)
+                module_file = f"{module_name}.py"
+                module_files_set.add(module_file)
+                fn_plans.append({"fn_id": fn_id, "module_name": module_name, "module_file": module_file})
+
+        module_files = sorted(module_files_set)
         return {"module_files": module_files, "fn_plans": fn_plans}
 
     def _normalize_subsystem_file_manifest_payload(
@@ -1063,8 +1082,8 @@ class DeepDeveloperWorkflowSkill(Skill):
                     f"LLM subsystem file manifest mapped {fn_id} to {module_name}, "
                     f"which does not preserve documented module stem {preferred_doc_stem}"
                 )
-            if module_name in used_modules:
-                raise RuntimeError("LLM subsystem file manifest must map one FN to one unique module file")
+            # Multiple FNs can map to the same module file — this is expected
+            # when the design doc specifies fewer modules than FN count.
             used_modules.add(module_name)
             fn_plans.append({"fn_id": fn_id, "module_name": module_name, "module_file": candidate})
 
