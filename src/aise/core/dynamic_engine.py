@@ -285,80 +285,100 @@ class DynamicEngine:
         ordered_steps = plan.execution_order()
         results: list[StepResult] = []
         completed_step_ids: set[str] = set()
+        # Use a work queue so deferred steps get retried after their deps complete
+        pending_steps = list(ordered_steps)
+        max_passes = len(pending_steps) + 1  # prevent infinite loops
+        pass_count = 0
 
-        for step in ordered_steps:
-            # Check if we can skip this step
-            if self._should_skip(step, completed_artifacts, completed_step_ids):
-                result = StepResult(
-                    process_id=step.process_id,
-                    agent=step.agent,
-                    status=StepStatus.SKIPPED,
-                    metadata={"reason": "output artifacts already available"},
-                )
-                results.append(result)
-                completed_step_ids.add(step.process_id)
-                logger.info("Step skipped (artifacts exist): %s", step.process_id)
-                continue
+        while pending_steps and pass_count < max_passes:
+            pass_count += 1
+            deferred: list[PlanStep] = []
+            made_progress = False
 
-            # Check dependencies are satisfied — accept either:
-            # 1. All depends_on_steps present in completed_step_ids, OR
-            # 2. All required artifact types available (handles LLM using
-            #    wrong step names that still produce the needed artifacts)
-            deps_ok = all(d in completed_step_ids for d in step.depends_on_steps)
-            if not deps_ok:
-                proc = self.registry.get(step.process_id)
-                if proc is not None and proc.depends_on_artifacts:
-                    artifact_types_available = set(completed_artifacts.keys())
-                    deps_ok = all(art_type in artifact_types_available for art_type in proc.depends_on_artifacts)
-            if not deps_ok:
-                result = StepResult(
-                    process_id=step.process_id,
-                    agent=step.agent,
-                    status=StepStatus.SKIPPED,
-                    metadata={"reason": "unmet dependencies"},
-                )
-                results.append(result)
-                logger.warning(
-                    "Step skipped (unmet deps): %s depends_on=%s completed=%s",
-                    step.process_id,
-                    step.depends_on_steps,
-                    completed_step_ids,
-                )
-                continue
+            for step in pending_steps:
+                # Check if we can skip this step
+                if self._should_skip(step, completed_artifacts, completed_step_ids):
+                    result = StepResult(
+                        process_id=step.process_id,
+                        agent=step.agent,
+                        status=StepStatus.SKIPPED,
+                        metadata={"reason": "output artifacts already available"},
+                    )
+                    results.append(result)
+                    completed_step_ids.add(step.process_id)
+                    made_progress = True
+                    logger.info("Step skipped (artifacts exist): %s", step.process_id)
+                    continue
 
-            # Notify callback: step is now RUNNING
-            if progress_callback is not None:
-                running_marker = StepResult(
-                    process_id=step.process_id,
-                    agent=step.agent,
-                    status=StepStatus.RUNNING,
-                )
-                try:
-                    progress_callback(running_marker, results + [running_marker], plan)
-                except Exception:
-                    logger.debug("Progress callback error (ignored)", exc_info=True)
-
-            # Execute the step
-            result = self._execute_step(step, executor, project_name, completed_artifacts)
-            results.append(result)
-
-            # Notify progress callback: step completed/failed
-            if progress_callback is not None:
-                try:
-                    progress_callback(result, results, plan)
-                except Exception:
-                    logger.debug("Progress callback error (ignored)", exc_info=True)
-
-            if result.status == StepStatus.COMPLETED:
-                completed_step_ids.add(step.process_id)
-                # Track produced artifacts
-                if result.artifact_id:
+                # Check dependencies are satisfied — accept either:
+                # 1. All depends_on_steps present in completed_step_ids, OR
+                # 2. All required artifact types available (handles LLM using
+                #    wrong step names that still produce the needed artifacts)
+                deps_ok = all(d in completed_step_ids for d in step.depends_on_steps)
+                if not deps_ok:
                     proc = self.registry.get(step.process_id)
-                    if proc:
-                        for art_type in proc.output_artifact_types:
-                            completed_artifacts[art_type] = result.artifact_id
-            elif result.status == StepStatus.FAILED:
-                return results, result
+                    if proc is not None and proc.depends_on_artifacts:
+                        artifact_types_available = set(completed_artifacts.keys())
+                        deps_ok = all(art_type in artifact_types_available for art_type in proc.depends_on_artifacts)
+                if not deps_ok:
+                    # Defer — will retry after other steps complete
+                    deferred.append(step)
+                    continue
+
+                # Notify callback: step is now RUNNING
+                if progress_callback is not None:
+                    running_marker = StepResult(
+                        process_id=step.process_id,
+                        agent=step.agent,
+                        status=StepStatus.RUNNING,
+                    )
+                    try:
+                        progress_callback(running_marker, results + [running_marker], plan)
+                    except Exception:
+                        logger.debug("Progress callback error (ignored)", exc_info=True)
+
+                # Execute the step
+                result = self._execute_step(step, executor, project_name, completed_artifacts)
+                results.append(result)
+
+                # Notify progress callback: step completed/failed
+                if progress_callback is not None:
+                    try:
+                        progress_callback(result, results, plan)
+                    except Exception:
+                        logger.debug("Progress callback error (ignored)", exc_info=True)
+
+                if result.status == StepStatus.COMPLETED:
+                    completed_step_ids.add(step.process_id)
+                    made_progress = True
+                    # Track produced artifacts
+                    if result.artifact_id:
+                        proc = self.registry.get(step.process_id)
+                        if proc:
+                            for art_type in proc.output_artifact_types:
+                                completed_artifacts[art_type] = result.artifact_id
+                elif result.status == StepStatus.FAILED:
+                    return results, result
+
+            # Prepare next pass with deferred steps
+            pending_steps = deferred
+            if deferred and not made_progress:
+                # No progress made — remaining steps have unresolvable deps
+                for step in deferred:
+                    result = StepResult(
+                        process_id=step.process_id,
+                        agent=step.agent,
+                        status=StepStatus.SKIPPED,
+                        metadata={"reason": "unmet dependencies after all passes"},
+                    )
+                    results.append(result)
+                    logger.warning(
+                        "Step permanently skipped (unmet deps): %s depends_on=%s completed=%s",
+                        step.process_id,
+                        step.depends_on_steps,
+                        completed_step_ids,
+                    )
+                break
 
         return results, None
 
