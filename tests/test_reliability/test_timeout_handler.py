@@ -3,9 +3,18 @@
 Tests for timeout handling for tool calls.
 """
 
+import gc
 import time
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def cleanup_timeout_handlers():
+    """Auto-cleanup TimeoutHandler instances after each test to prevent thread leaks."""
+    yield
+    # Force garbage collection to clean up any leaked handlers
+    gc.collect()
 
 
 class TestTimeoutConfig:
@@ -47,6 +56,7 @@ class TestTimeoutExecution:
 
         assert result == "success"
 
+    @pytest.mark.slow
     def test_execution_times_out(self):
         """Test that execution times out"""
         from src.aise.reliability.timeout_handler import TimeoutError, TimeoutHandler
@@ -60,6 +70,7 @@ class TestTimeoutExecution:
         with pytest.raises(TimeoutError, match="function timed out"):
             handler.execute(slow_function)
 
+    @pytest.mark.slow
     def test_custom_timeout_per_call(self):
         """Test that custom timeout can be specified per call"""
         from src.aise.reliability.timeout_handler import TimeoutError, TimeoutHandler
@@ -104,6 +115,7 @@ class TestTimeoutDecorator:
 
         assert result == "success"
 
+    @pytest.mark.slow
     def test_decorator_timeout(self):
         """Test decorator timeout"""
         from src.aise.reliability.timeout_handler import TimeoutError, timeout
@@ -133,6 +145,7 @@ class TestTimeoutDecorator:
 class TestTimeoutCallbacks:
     """Timeout callback tests"""
 
+    @pytest.mark.slow
     def test_on_timeout_callback(self):
         """Test on_timeout callback is called"""
         from src.aise.reliability.timeout_handler import TimeoutError, TimeoutHandler

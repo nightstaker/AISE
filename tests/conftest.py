@@ -2,16 +2,43 @@
 
 from __future__ import annotations
 
+import gc
 import importlib.util
 import json
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from aise.core.llm import LLMClient
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Add custom CLI options for pytest."""
+    parser.addoption(
+        "--run-slow",
+        action="store_true",
+        default=False,
+        help="Run slow tests (e2e with sleep, reliability timing tests)",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Register custom markers."""
+    config.addinivalue_line("markers", "slow: mark test as slow (contains sleep/long waits)")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip slow tests by default unless --run-slow is specified."""
+    if config.getoption("--run-slow"):
+        return  # Run all tests including slow ones
+    skip_slow = pytest.mark.skip(reason="Need --run-slow option to run")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip_slow)
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool:
@@ -25,10 +52,31 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool:
 
 @pytest.fixture(autouse=True)
 def mock_llm_for_non_llm_unit_tests(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest):
-    """Provide deterministic LLM responses for tests that do not validate LLM internals."""
+    """Provide deterministic LLM responses for tests that do not validate LLM internals.
+
+    Optimized: fast-path for tests that don't use LLMClient to avoid regex overhead.
+    """
     nodeid = request.node.nodeid
+
+    # Fast-path: skip tests that explicitly test LLM internals
     if "tests/test_core/test_model_config.py" in nodeid:
+        yield
+        gc.collect()
         return
+
+    # Check if test module's source mentions LLMClient
+    # This avoids expensive regex matching for ~80% of tests that don't need LLM
+    try:
+        test_module = request.module
+        import inspect
+        source = inspect.getsource(test_module)
+        if 'LLMClient' not in source:
+            # No LLM usage at all, skip mock setup entirely
+            yield
+            return
+    except (OSError, TypeError):
+        # If we can't get source, fall through to full mock
+        pass
 
     def _fake_complete(self: LLMClient, messages: list[dict[str, str]], **kwargs: Any) -> str:
         system_text = "\n".join(str(msg.get("content", "")) for msg in messages if msg.get("role") == "system")
@@ -499,3 +547,17 @@ def mock_llm_for_non_llm_unit_tests(monkeypatch: pytest.MonkeyPatch, request: py
         return "{}"
 
     monkeypatch.setattr(LLMClient, "complete", _fake_complete)
+
+    yield
+
+    # Teardown: 清理线程资源，防止线程泄漏
+    gc.collect()
+    # 强制回收未使用的 TimeoutHandler 实例（只有这些才有 _shutdown 标志）
+    from aise.reliability.timeout_handler import TimeoutHandler
+    for obj in gc.get_objects():
+        if isinstance(obj, TimeoutHandler):
+            try:
+                if hasattr(obj, "_shutdown") and not obj._shutdown:
+                    obj.shutdown(wait=False)
+            except Exception:
+                pass
