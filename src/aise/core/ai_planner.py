@@ -232,7 +232,7 @@ class AIPlanner:
         """
         catalog = json.dumps(self.registry.to_llm_catalog(), indent=2, ensure_ascii=False)
         selected_process = None
-        
+
         # Step 1: Select process if ID provided or if md_adapter is available
         if selected_process_id and self.md_adapter:
             descriptor = self.md_adapter.get_descriptor(selected_process_id)
