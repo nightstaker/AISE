@@ -125,10 +125,11 @@ class DynamicEngine:
         project_name: str = "",
         progress_callback: ProgressCallback | None = None,
         project_input: dict[str, Any] | None = None,
+        selected_process_id: str | None = None,
     ) -> ExecutionResult:
         """Run a complete AI-planned workflow.
 
-        1. Generate plan from context
+        1. Generate plan from context (optionally constrained by a process template)
         2. Validate plan
         3. Execute steps in dependency order
         4. On failure: replan and continue
@@ -137,8 +138,8 @@ class DynamicEngine:
         self._project_input = project_input
         start_time = time.monotonic()
 
-        # Step 1: Generate initial plan
-        plan = self.planner.generate_plan(context)
+        # Step 1: Generate initial plan (with optional process constraint)
+        plan = self.planner.generate_plan(context, selected_process_id=selected_process_id)
         logger.info(
             "Dynamic execution starting: goal=%s steps=%d project=%s",
             plan.goal,
