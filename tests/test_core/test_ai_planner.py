@@ -411,3 +411,32 @@ class TestAIPlanner:
 
         assert isinstance(recovery_plan, ExecutionPlan)
         assert len(recovery_plan.steps) == 2
+
+
+class TestExecutionPlanDependencyValidation:
+    """Tests for enhanced artifact dependency chain validation."""
+
+    def test_validate_catches_missing_prerequisite_step(self, sample_registry):
+        """Validate detect missing artifact producers."""
+        plan = ExecutionPlan(
+            goal="Build API",
+            steps=[
+                PlanStep("system_design", "architect", "Design", {}, []),
+            ],
+            reasoning="Direct design",
+        )
+        errors = plan.validate(sample_registry)
+        assert len(errors) > 0
+
+    def test_validate_passes_with_correct_chain(self, sample_registry):
+        """Validate passes when all deps satisfied."""
+        plan = ExecutionPlan(
+            goal="Build API",
+            steps=[
+                PlanStep("req_analysis", "product_manager", "Requirements", {}, []),
+                PlanStep("system_design", "architect", "Design", {}, ["req_analysis"]),
+            ],
+            reasoning="Full chain",
+        )
+        errors = plan.validate(sample_registry)
+        assert errors == []

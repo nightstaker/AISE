@@ -67,8 +67,11 @@ class ExecutionPlan:
     reasoning: str
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def validate(self) -> list[str]:
-        """Validate the plan structure. Returns list of error messages."""
+    def validate(self, registry: ProcessRegistry | None = None) -> list[str]:
+        """Validate the plan structure. Returns list of error messages.
+
+        If registry is provided, also validates artifact dependency chains.
+        """
         errors: list[str] = []
         step_ids = {s.process_id for s in self.steps}
 
@@ -82,7 +85,48 @@ class ExecutionPlan:
         if self._has_cycle():
             errors.append("Circular dependency detected in plan steps")
 
+        # Validate artifact dependency chains (if registry provided)
+        if registry is not None:
+            self._validate_artifact_chains(registry, step_ids, errors)
+
         return errors
+
+    def _validate_artifact_chains(
+        self,
+        registry: ProcessRegistry,
+        step_ids: set[str],
+        errors: list[str],
+    ) -> None:
+        """Check that all artifact dependencies are satisfied by preceding steps."""
+        produced_artifacts: set[ArtifactType] = set()
+
+        for step in self.steps:
+            proc = registry.get(step.process_id)
+            if proc is None:
+                continue
+
+            # Check if this step's artifact dependencies are met
+            for dep_art in proc.depends_on_artifacts:
+                if dep_art not in produced_artifacts:
+                    # Check if a preceding step produces this artifact
+                    producer_found = False
+                    for prev_step in self.steps:
+                        if prev_step.process_id == step.process_id:
+                            break  # Reached current step, stop searching
+                        prev_proc = registry.get(prev_step.process_id)
+                        if prev_proc and dep_art in prev_proc.output_artifact_types:
+                            producer_found = True
+                            break
+
+                    if not producer_found:
+                        errors.append(
+                            f"Step '{step.process_id}' requires artifact {dep_art.value} "
+                            f"but no preceding step produces it. Missing prerequisite process."
+                        )
+
+            # Track artifacts produced by this step
+            for art_type in proc.output_artifact_types:
+                produced_artifacts.add(art_type)
 
     def execution_order(self) -> list[PlanStep]:
         """Return steps in topologically sorted execution order."""
@@ -153,6 +197,58 @@ Select only the processes that are actually needed for the given requirements.
    and SYSTEM_REQUIREMENTS before architecture or implementation steps.
 9. For a typical software project, the MINIMUM viable plan is:
    deep_product_workflow → deep_architecture_workflow → deep_developer_workflow.
+10. DEPENDENCY CHAIN EXAMPLE: If step B produces SOURCE_CODE and step C depends on SOURCE_CODE,
+    then step C's depends_on_steps MUST include step B's process_id. Never skip prerequisite steps.
+11. ARTIFACT FLOW: Always trace the artifact production chain. If your goal is SOURCE_CODE,
+    work backwards: SOURCE_CODE is produced by deep_developer_workflow, which needs ARCHITECTURE,
+    which needs REQUIREMENTS from deep_product_workflow. Include ALL steps in the chain.
+
+## Example Plans
+GOOD (correct dependency chain for a web app):
+```
+{{
+  "goal": "Build a web application",
+  "steps": [
+    {{
+      "process_id": "deep_product_workflow",
+      "agent": "product_manager",
+      "rationale": "Produces REQUIREMENTS and SYSTEM_REQUIREMENTS",
+      "depends_on_steps": []
+    }},
+    {{
+      "process_id": "deep_architecture_workflow",
+      "agent": "architect",
+      "rationale": "Needs REQUIREMENTS from previous step",
+      "depends_on_steps": ["deep_product_workflow"]
+    }},
+    {{
+      "process_id": "deep_developer_workflow",
+      "agent": "developer",
+      "rationale": "Needs ARCHITECTURE_DESIGN from previous step",
+      "depends_on_steps": ["deep_architecture_workflow"]
+    }}
+  ]
+}}
+```
+
+BAD (missing prerequisite steps):
+```
+{{
+  "goal": "Build a web application",
+  "steps": [
+    {{
+      "process_id": "deep_architecture_workflow",
+      "agent": "architect",
+      "rationale": "..."
+    }},
+    {{
+      "process_id": "deep_developer_workflow",
+      "agent": "developer",
+      "rationale": "..."
+    }}
+  ]
+}}
+```
 
 ## Output Format
 Return STRICT JSON:
@@ -340,7 +436,7 @@ class AIPlanner:
 
     def validate_plan(self, plan: ExecutionPlan) -> list[str]:
         """Validate a plan against the process registry."""
-        errors = plan.validate()
+        errors = plan.validate(self.registry)
 
         for step in plan.steps:
             proc = self.registry.get(step.process_id)
