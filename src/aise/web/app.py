@@ -597,6 +597,67 @@ class WebProjectService:
                 if project is not None:
                     project._dynamic_plan_pending = False  # type: ignore[attr-defined]
 
+            # Progress callback: update run.phase_results in real-time
+            def _on_step_progress(
+                step_result: Any,
+                all_results: list[Any],
+                plan: Any,
+            ) -> None:
+                try:
+                    from ..core.dynamic_engine import StepStatus
+
+                    # Build step results from actual progress
+                    seen_process_ids = set()
+                    step_entries = []
+                    for r in all_results:
+                        seen_process_ids.add(r.process_id)
+                        step_entries.append(
+                            {
+                                "process": r.process_id,
+                                "agent": r.agent,
+                                "status": r.status.value if isinstance(r.status, StepStatus) else str(r.status),
+                                "artifact_id": r.artifact_id,
+                                "error": r.error,
+                                "duration": r.duration_seconds,
+                            }
+                        )
+                    # Include pending steps from plan that haven't started yet
+                    for s in getattr(plan, "steps", []):
+                        if s.process_id not in seen_process_ids:
+                            step_entries.append(
+                                {
+                                    "process": s.process_id,
+                                    "agent": s.agent,
+                                    "status": "pending",
+                                    "artifact_id": None,
+                                    "error": None,
+                                    "duration": 0,
+                                }
+                            )
+                    partial_result = {
+                        "step_results": step_entries,
+                        "plan": {
+                            "goal": getattr(plan, "goal", ""),
+                            "steps": [
+                                {"process_id": s.process_id, "agent": s.agent} for s in getattr(plan, "steps", [])
+                            ],
+                        },
+                    }
+                    rows = self.project_manager._normalize_dynamic_workflow_result(partial_result)
+                    with self._lock:
+                        r = self._find_run(project_id, run_id)
+                        if r is not None:
+                            r.phase_results = rows
+                            self._save_state()
+                    logger.debug(
+                        "Progress update: project=%s step=%s status=%s",
+                        project_id,
+                        step_result.process_id,
+                        step_result.status,
+                    )
+                except Exception:
+                    logger.debug("Progress callback error (ignored)", exc_info=True)
+
             try:
                 results = self.project_manager.run_project_workflow(
                     project_id,
@@ -607,6 +668,7 @@ class WebProjectService:
                         "_run_id": run_id,
                         "_project_id": project_id,
                     },
+                    progress_callback=_on_step_progress,
                 )
                 completed_status = "completed"
                 error_message = ""

@@ -22,6 +22,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable
 
 from ..utils.logging import get_logger
@@ -82,6 +83,9 @@ class ExecutionResult:
 # Type for the executor function: (agent_name, skill_name, input_data, project_name) -> artifact_id
 Executor = Callable[[str, str, dict[str, Any], str], str]
 
+# Progress callback: called after each step completes with (step_result, all_results_so_far, plan)
+ProgressCallback = Callable[[StepResult, list[StepResult], ExecutionPlan], None]
+
 
 class DynamicEngine:
     """Execute AIPlanner-generated plans against the actual agent system.
@@ -105,17 +109,20 @@ class DynamicEngine:
         planner: AIPlanner,
         artifact_store: ArtifactStore,
         max_replans: int = 2,
+        project_root: str | None = None,
     ) -> None:
         self.registry = registry
         self.planner = planner
         self.artifact_store = artifact_store
         self.max_replans = max_replans
+        self._project_root = project_root
 
     def run(
         self,
         context: PlannerContext,
         executor: Executor,
         project_name: str = "",
+        progress_callback: ProgressCallback | None = None,
     ) -> ExecutionResult:
         """Run a complete AI-planned workflow.
 
@@ -156,6 +163,7 @@ class DynamicEngine:
                 executor,
                 project_name,
                 completed_artifacts,
+                progress_callback=progress_callback,
             )
             all_results.extend(results)
 
@@ -260,6 +268,7 @@ class DynamicEngine:
         executor: Executor,
         project_name: str,
         completed_artifacts: dict[ArtifactType, str],
+        progress_callback: ProgressCallback | None = None,
     ) -> tuple[list[StepResult], StepResult | None]:
         """Execute plan steps in topological order.
 
@@ -302,9 +311,28 @@ class DynamicEngine:
                 )
                 continue
 
+            # Notify callback: step is now RUNNING
+            if progress_callback is not None:
+                running_marker = StepResult(
+                    process_id=step.process_id,
+                    agent=step.agent,
+                    status=StepStatus.RUNNING,
+                )
+                try:
+                    progress_callback(running_marker, results + [running_marker], plan)
+                except Exception:
+                    logger.debug("Progress callback error (ignored)", exc_info=True)
+
             # Execute the step
             result = self._execute_step(step, executor, project_name, completed_artifacts)
             results.append(result)
+
+            # Notify progress callback: step completed/failed
+            if progress_callback is not None:
+                try:
+                    progress_callback(result, results, plan)
+                except Exception:
+                    logger.debug("Progress callback error (ignored)", exc_info=True)
 
             if result.status == StepStatus.COMPLETED:
                 completed_step_ids.add(step.process_id)
@@ -341,6 +369,15 @@ class DynamicEngine:
         for art_type, art_id in completed_artifacts.items():
             # Auto-inject available artifacts by type name
             input_data.setdefault(art_type.value, art_id)
+
+        # Force correct directory paths based on project_root.
+        # LLM-generated input_mapping may specify wrong output_dir (e.g. "output")
+        # but skills expect docs/ for documents, src/ for code, tests/ for tests.
+        if self._project_root:
+            root = Path(self._project_root)
+            input_data["output_dir"] = str(root / "docs")
+            input_data.setdefault("source_dir", str(root / "src"))
+            input_data.setdefault("tests_dir", str(root / "tests"))
 
         logger.info(
             "Step executing: process=%s agent=%s input_keys=%s",

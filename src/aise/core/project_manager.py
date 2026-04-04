@@ -190,6 +190,7 @@ class ProjectManager:
         self,
         project_id: str,
         requirements: dict[str, Any],
+        progress_callback: Any = None,
     ) -> list[dict[str, Any]]:
         """Run the AI-planned dynamic workflow for a specific project.
 
@@ -232,6 +233,7 @@ class ProjectManager:
                     project_input=requirements,
                     project_name=project.project_name,
                     llm_client=llm_client,
+                    progress_callback=progress_callback,
                 )
                 # Store the dynamic plan on the project for UI access
                 project._dynamic_plan = dynamic_result.get("plan")  # type: ignore[attr-defined]
@@ -321,7 +323,11 @@ class ProjectManager:
                     "artifact_id": step.get("artifact_id"),
                     "duration": step.get("duration"),
                 }
-                if step_status not in {"completed", "skipped"}:
+                if step_status == "running":
+                    phase_status = "running"
+                elif step_status == "pending" and phase_status == "completed":
+                    phase_status = "pending"
+                elif step_status not in {"completed", "skipped", "running", "pending"}:
                     phase_status = "failed"
             rows.append(
                 {

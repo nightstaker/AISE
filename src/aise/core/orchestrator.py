@@ -171,6 +171,7 @@ class Orchestrator:
         llm_client: Any = None,
         goal_artifacts: list[ArtifactType] | None = None,
         constraints: list[str] | None = None,
+        progress_callback: Any = None,
     ) -> dict[str, Any]:
         """Run an AI-planned dynamic workflow.
 
@@ -202,7 +203,7 @@ class Orchestrator:
         else:
             planner = AIPlanner(registry=registry)
 
-        engine = DynamicEngine(registry, planner, self.artifact_store)
+        engine = DynamicEngine(registry, planner, self.artifact_store, project_root=self.project_root)
 
         # Build planner context
         existing_artifacts: dict[ArtifactType, str] = {}
@@ -222,7 +223,7 @@ class Orchestrator:
         def executor(agent_name: str, skill_name: str, input_data: dict, proj_name: str) -> str:
             return self.execute_task(agent_name, skill_name, input_data, proj_name)
 
-        result = engine.run(context, executor, project_name)
+        result = engine.run(context, executor, project_name, progress_callback=progress_callback)
 
         return {
             "status": result.status,

@@ -652,7 +652,14 @@ function setupRunReact() {
 
     function normalizeTaskState(taskResult, phaseState) {
       if (taskResult && typeof taskResult === "object") {
-        return taskResult.status === "success" ? "completed" : "failed";
+        const s = String(taskResult.status || "");
+        if (s === "success" || s === "completed") return "completed";
+        if (s === "running" || s === "in_progress") return "running";
+        if (s === "pending" || s === "waiting") return "pending";
+        if (s === "skipped") return "completed";
+        if (s === "failed" || s === "error") return "failed";
+        // Unknown status with a result object — treat as failed
+        return s ? "failed" : "pending";
       }
       if (phaseState === "completed") return "completed";
       if (phaseState === "failed") return "pending";
