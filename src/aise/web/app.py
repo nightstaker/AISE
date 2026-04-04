@@ -2574,13 +2574,12 @@ def create_app() -> FastAPI:
         user = request.session.get("user")
         if not user:
             return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
-        return templates.TemplateResponse(
+        return templates.TemplateResponse(request,
             "dashboard.html",
             {
-                "request": request,
-                "projects": service.list_projects(),
+"projects": service.list_projects(),
                 "global_config_data": service.get_global_config_data(),
-                "user": user,
+                "user": user
             },
         )
 
@@ -2593,14 +2592,13 @@ def create_app() -> FastAPI:
             "oauth_enabled": oauth is not None,
             "dev_login_enabled": dev_login_enabled,
         }
-        return templates.TemplateResponse(
+        return templates.TemplateResponse(request,
             "login.html",
             {
-                "request": request,
-                "user": user,
+"user": user,
                 "configured": configured,
                 "error": error,
-                "local_admin_username": local_admin_username,
+                "local_admin_username": local_admin_username
             },
         )
 
@@ -2725,9 +2723,10 @@ def create_app() -> FastAPI:
         payload = service.get_project(project_id)
         if payload is None:
             raise HTTPException(status_code=404, detail="Project not found")
-        return templates.TemplateResponse(
+        return templates.TemplateResponse(request,
             "project_detail.html",
-            {"request": request, "project": payload, "user": user},
+            {
+"project": payload, "user": user},
         )
 
     @app.post("/projects/{project_id}/requirements")
@@ -2753,9 +2752,10 @@ def create_app() -> FastAPI:
         run = service.get_run(project_id, run_id)
         if project is None or run is None:
             raise HTTPException(status_code=404, detail="Run not found")
-        return templates.TemplateResponse(
+        return templates.TemplateResponse(request,
             "run_detail.html",
-            {"request": request, "project": project, "run": run, "user": user},
+            {
+"project": project, "run": run, "user": user},
         )
 
     @app.get(
@@ -2780,17 +2780,16 @@ def create_app() -> FastAPI:
         task = phase.get("tasks", {}).get(task_key)
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
-        return templates.TemplateResponse(
+        return templates.TemplateResponse(request,
             "task_detail.html",
             {
-                "request": request,
-                "project_id": project_id,
+"project_id": project_id,
                 "run_id": run_id,
                 "phase_idx": phase_idx,
                 "phase_name": phase.get("phase", ""),
                 "task_key": task_key,
                 "task": task,
-                "user": user,
+                "user": user
             },
         )
 
@@ -2804,15 +2803,14 @@ def create_app() -> FastAPI:
         section = section.lower()
         if section not in {"models", "agents", "workspace", "workflow", "logging", "json"}:
             raise HTTPException(status_code=404, detail="Config section not found")
-        return templates.TemplateResponse(
+        return templates.TemplateResponse(request,
             "global_config.html",
             {
-                "request": request,
-                "config_json": service.load_global_config_json(),
+"config_json": service.load_global_config_json(),
                 "config_data": service.get_global_config_data(),
                 "user": user,
                 "error": None,
-                "section": section,
+                "section": section
             },
         )
 
@@ -2889,15 +2887,14 @@ def create_app() -> FastAPI:
         except Exception as exc:
             error = str(exc)
 
-        return templates.TemplateResponse(
+        return templates.TemplateResponse(request,
             "global_config.html",
             {
-                "request": request,
-                "config_json": service.load_global_config_json(),
+"config_json": service.load_global_config_json(),
                 "config_data": service.get_global_config_data(),
                 "user": user,
                 "error": error,
-                "section": section,
+                "section": section
             },
         )
 
