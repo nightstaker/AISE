@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from unittest.mock import MagicMock
-
 import pytest
 
 from aise.core.ai_planner import AIPlanner, PlannerContext
@@ -124,7 +120,7 @@ class TestProcessMdAdapter:
 
     def test_agile_descriptor(self, md_adapter: ProcessMdAdapter, registry: ProcessRegistry) -> None:
         """Agile process descriptor should include relevant workflows."""
-        descriptors = md_adapter.load_all(registry)
+        md_adapter.load_all(registry)
         agile = md_adapter.get_descriptor("agile_sprint_v1")
         assert agile is not None
         assert "rapid_iteration" in agile.phase_affinity
