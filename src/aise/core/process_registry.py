@@ -189,8 +189,21 @@ class ProcessRegistry:
         return [self._processes[pid] for pid in ids]
 
     def to_llm_catalog(self) -> list[dict[str, Any]]:
-        """Export the full catalog as a list of LLM-readable dicts."""
-        return [p.to_llm_dict() for p in self._processes.values()]
+        """Export the catalog as LLM-readable dicts, excluding superseded processes.
+
+        When a deep workflow supersedes atomic steps (e.g., deep_product_workflow
+        supersedes requirement_analysis + user_story_writing), only the deep
+        workflow is included so the LLM cannot pick the wrong granularity.
+        """
+        superseded: set[str] = set()
+        for p in self._processes.values():
+            if p.supersedes:
+                superseded.update(p.supersedes)
+        return [
+            p.to_llm_dict()
+            for p in self._processes.values()
+            if p.id not in superseded
+        ]
 
     def resolve_dependency_chain(
         self,
