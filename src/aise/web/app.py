@@ -2289,10 +2289,20 @@ class WebProjectService:
         )
 
     def _build_workflow_nodes(self, project: Project) -> list[dict[str, Any]]:
-        """Build workflow node metadata for UI based on active runtime."""
+        """Build workflow node metadata for UI based on active runtime.
+
+        AI-First path: if the project has a dynamic plan (from AIPlanner),
+        build nodes from the plan steps. Falls back to DeepOrchestrator
+        playbook or static WorkflowEngine phases.
+        """
         from ..langchain.agent_node import PHASE_SKILL_PLAYBOOK, SKILL_INPUT_HINTS
         from ..langchain.deep_orchestrator import DeepOrchestrator
         from ..langchain.state import PHASE_AGENT_MAP, WORKFLOW_PHASES
+
+        # --- AI-First: build from dynamic plan if available ---
+        dynamic_plan = getattr(project, "_dynamic_plan", None)
+        if isinstance(dynamic_plan, dict) and dynamic_plan.get("steps"):
+            return self._build_dynamic_workflow_nodes(dynamic_plan)
 
         if isinstance(project.orchestrator, DeepOrchestrator):
             available_agents = set(project.orchestrator.agents.keys())
@@ -2336,6 +2346,38 @@ class WebProjectService:
             for phase in default_workflow.phases
             for phase_task_keys in [[f"{task.agent}.{task.skill}" for task in phase.tasks]]
         ]
+
+    def _build_dynamic_workflow_nodes(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
+        """Build workflow nodes from an AI-generated dynamic plan."""
+        steps = plan.get("steps", [])
+
+        # Group steps by phase
+        phase_order: list[str] = []
+        phase_steps: dict[str, list[dict[str, Any]]] = {}
+        for step in steps:
+            phase = step.get("phase", step.get("process_id", "unknown"))
+            if phase not in phase_steps:
+                phase_order.append(phase)
+                phase_steps[phase] = []
+            phase_steps[phase].append(step)
+
+        nodes: list[dict[str, Any]] = []
+        for phase in phase_order:
+            group = phase_steps[phase]
+            tasks = [f"{s.get('agent', 'unknown')}.{s.get('process_id', s.get('skill', 'unknown'))}" for s in group]
+            agent_tasks = self._group_tasks_by_agent(tasks, {})
+            agent_tasks = self._expand_phase_subagents(phase, tasks, agent_tasks)
+            nodes.append(
+                {
+                    "name": phase,
+                    "tasks": tasks,
+                    "agent_tasks": agent_tasks,
+                    "review_gate": None,
+                    "ai_planned": True,
+                    "reasoning": plan.get("reasoning", ""),
+                }
+            )
+        return nodes
 
     @staticmethod
     def _group_tasks_by_agent(
@@ -2574,13 +2616,10 @@ def create_app() -> FastAPI:
         user = request.session.get("user")
         if not user:
             return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
-        return templates.TemplateResponse(request,
+        return templates.TemplateResponse(
+            request,
             "dashboard.html",
-            {
-"projects": service.list_projects(),
-                "global_config_data": service.get_global_config_data(),
-                "user": user
-            },
+            {"projects": service.list_projects(), "global_config_data": service.get_global_config_data(), "user": user},
         )
 
     @app.get("/login", response_class=HTMLResponse)
@@ -2592,14 +2631,10 @@ def create_app() -> FastAPI:
             "oauth_enabled": oauth is not None,
             "dev_login_enabled": dev_login_enabled,
         }
-        return templates.TemplateResponse(request,
+        return templates.TemplateResponse(
+            request,
             "login.html",
-            {
-"user": user,
-                "configured": configured,
-                "error": error,
-                "local_admin_username": local_admin_username
-            },
+            {"user": user, "configured": configured, "error": error, "local_admin_username": local_admin_username},
         )
 
     @app.post("/auth/local-login")
@@ -2723,10 +2758,10 @@ def create_app() -> FastAPI:
         payload = service.get_project(project_id)
         if payload is None:
             raise HTTPException(status_code=404, detail="Project not found")
-        return templates.TemplateResponse(request,
+        return templates.TemplateResponse(
+            request,
             "project_detail.html",
-            {
-"project": payload, "user": user},
+            {"project": payload, "user": user},
         )
 
     @app.post("/projects/{project_id}/requirements")
@@ -2752,10 +2787,10 @@ def create_app() -> FastAPI:
         run = service.get_run(project_id, run_id)
         if project is None or run is None:
             raise HTTPException(status_code=404, detail="Run not found")
-        return templates.TemplateResponse(request,
+        return templates.TemplateResponse(
+            request,
             "run_detail.html",
-            {
-"project": project, "run": run, "user": user},
+            {"project": project, "run": run, "user": user},
         )
 
     @app.get(
@@ -2780,16 +2815,17 @@ def create_app() -> FastAPI:
         task = phase.get("tasks", {}).get(task_key)
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
-        return templates.TemplateResponse(request,
+        return templates.TemplateResponse(
+            request,
             "task_detail.html",
             {
-"project_id": project_id,
+                "project_id": project_id,
                 "run_id": run_id,
                 "phase_idx": phase_idx,
                 "phase_name": phase.get("phase", ""),
                 "task_key": task_key,
                 "task": task,
-                "user": user
+                "user": user,
             },
         )
 
@@ -2803,14 +2839,15 @@ def create_app() -> FastAPI:
         section = section.lower()
         if section not in {"models", "agents", "workspace", "workflow", "logging", "json"}:
             raise HTTPException(status_code=404, detail="Config section not found")
-        return templates.TemplateResponse(request,
+        return templates.TemplateResponse(
+            request,
             "global_config.html",
             {
-"config_json": service.load_global_config_json(),
+                "config_json": service.load_global_config_json(),
                 "config_data": service.get_global_config_data(),
                 "user": user,
                 "error": None,
-                "section": section
+                "section": section,
             },
         )
 
@@ -2887,14 +2924,15 @@ def create_app() -> FastAPI:
         except Exception as exc:
             error = str(exc)
 
-        return templates.TemplateResponse(request,
+        return templates.TemplateResponse(
+            request,
             "global_config.html",
             {
-"config_json": service.load_global_config_json(),
+                "config_json": service.load_global_config_json(),
                 "config_data": service.get_global_config_data(),
                 "user": user,
                 "error": error,
-                "section": section
+                "section": section,
             },
         )
 

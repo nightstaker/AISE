@@ -1,0 +1,186 @@
+{
+  "project_name": "Untitled Project",
+  "development_mode": "local",
+  "default_model": {
+    "provider": "OpenRouter",
+    "model": "qwen/qwen3.6-plus:free",
+    "api_key": "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",
+    "base_url": "https://openrouter.ai/api/v1",
+    "temperature": 0.7,
+    "max_tokens": 4096,
+    "extra": {
+      "model_id": "qwen3.6-plus",
+      "model_name": "qwen3.6-plus"
+    }
+  },
+  "model_catalog": [
+    {
+      "id": "qwen/qwen3.6-plus:free",
+      "default": true
+    },
+    {
+      "id": "MiniMax-M2.5",
+      "default": false
+    },
+    {
+      "id": "stepfun/step-3.5-flash:free",
+      "default": false
+    },
+    {
+      "id": "KIMI-K2.5",
+      "default": false
+    },
+    {
+      "id": "qwen3.6-plus",
+      "default": false
+    }
+  ],
+  "models": [
+    {
+      "id": "MiniMax-M2.5",
+      "name": "MiniMax-M2.5",
+      "api_model": "minimax/minimax-m2.5",
+      "default": false,
+      "default_provider": "OpenRouter",
+      "is_local": false,
+      "providers": [
+        "OpenRouter"
+      ],
+      "extra": {}
+    },
+    {
+      "id": "stepfun/step-3.5-flash:free",
+      "name": "stepfun/step-3.5-flash:free",
+      "api_model": "stepfun/step-3.5-flash:free",
+      "default": false,
+      "default_provider": "OpenRouter",
+      "is_local": false,
+      "providers": [
+        "OpenRouter"
+      ],
+      "extra": {}
+    },
+    {
+      "id": "KIMI-K2.5",
+      "name": "KIMI-K2.5",
+      "api_model": "moonshotai/kimi-k2.5",
+      "default": false,
+      "default_provider": "OpenRouter",
+      "is_local": false,
+      "providers": [
+        "OpenRouter"
+      ],
+      "extra": {}
+    },
+    {
+      "id": "qwen3.6-plus",
+      "name": "qwen3.6-plus",
+      "api_model": "qwen/qwen3.6-plus:free",
+      "default": false,
+      "default_provider": "OpenRouter",
+      "is_local": false,
+      "providers": [
+        "OpenRouter"
+      ],
+      "extra": {}
+    },
+    {
+      "id": "qwen/qwen3.6-plus:free",
+      "name": "Qwen3.6-Plus-Free",
+      "api_model": "qwen/qwen3.6-plus:free",
+      "default": true,
+      "default_provider": "OpenRouter",
+      "is_local": false,
+      "providers": [
+        "OpenRouter"
+      ],
+      "extra": {}
+    }
+  ],
+  "model_providers": [
+    {
+      "provider": "OpenRouter",
+      "api_key": "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",
+      "base_url": "https://openrouter.ai/api/v1",
+      "enabled": true
+    },
+    {
+      "provider": "Local",
+      "api_key": "",
+      "base_url": "http://127.0.0.1:8088/v1",
+      "enabled": true
+    }
+  ],
+  "agent_model_selection": {
+    "product_manager": "qwen3.6-plus",
+    "architect": "qwen3.6-plus",
+    "developer": "qwen3.6-plus",
+    "qa_engineer": "qwen3.6-plus",
+    "project_manager": "qwen3.6-plus",
+    "rd_director": "qwen3.6-plus"
+  },
+  "agents": {
+    "product_manager": {
+      "name": "product_manager",
+      "enabled": true
+    },
+    "architect": {
+      "name": "architect",
+      "enabled": true
+    },
+    "developer": {
+      "name": "developer",
+      "enabled": true
+    },
+    "qa_engineer": {
+      "name": "qa_engineer",
+      "enabled": true
+    },
+    "project_manager": {
+      "name": "project_manager",
+      "enabled": true
+    },
+    "rd_director": {
+      "name": "rd_director",
+      "enabled": true
+    }
+  },
+  "agent_counts": {},
+  "workflow": {
+    "max_review_iterations": 3,
+    "review_min_rounds": 2,
+    "review_max_rounds": 3,
+    "developer_sr_task_retry_attempts": 2,
+    "fail_on_review_rejection": false
+  },
+  "session": {
+    "max_concurrent_sessions": 5,
+    "status_update_interval_minutes": 5,
+    "stale_task_threshold_minutes": 10,
+    "reviewer_poll_interval_seconds": 60
+  },
+  "workspace": {
+    "projects_root": "projects",
+    "artifacts_root": "artifacts",
+    "auto_create_dirs": true
+  },
+  "logging": {
+    "level": "INFO",
+    "log_dir": "logs",
+    "json_format": false,
+    "rotate_daily": true
+  },
+  "whatsapp": {
+    "phone_number_id": "",
+    "access_token": "",
+    "verify_token": "",
+    "business_account_id": "",
+    "webhook_port": 8080,
+    "webhook_path": "/webhook"
+  },
+  "github": {
+    "token": "",
+    "repo_owner": "",
+    "repo_name": ""
+  }
+}
