@@ -191,7 +191,14 @@ class ProjectManager:
         project_id: str,
         requirements: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        """Run the default SDLC workflow for a specific project.
+        """Run the AI-planned dynamic workflow for a specific project.
+
+        Uses AIPlanner to dynamically select processes and generate an
+        execution plan based on the actual requirements, instead of
+        following a fixed 4-phase pipeline.
+
+        Falls back to the classic static workflow if dynamic planning
+        is unavailable or fails.
 
         Args:
             project_id: The project ID
@@ -209,12 +216,39 @@ class ProjectManager:
 
         logger.info("Project workflow started: project_id=%s name=%s", project_id, project.project_name)
         orchestrator = project.orchestrator
-        if hasattr(orchestrator, "run_default_workflow"):
-            return orchestrator.run_default_workflow(  # type: ignore[no-any-return]
-                requirements,
-                project.project_name,
-            )
 
+        # --- AI-First path: dynamic workflow via AIPlanner ---
+        base_orchestrator = getattr(orchestrator, "orchestrator", orchestrator)
+        if hasattr(base_orchestrator, "run_dynamic_workflow"):
+            try:
+                # Get an LLM client from any registered agent for the planner
+                llm_client = self._get_planner_llm_client(base_orchestrator)
+                logger.info(
+                    "Using AI-First dynamic workflow: project_id=%s name=%s",
+                    project_id,
+                    project.project_name,
+                )
+                dynamic_result = base_orchestrator.run_dynamic_workflow(
+                    project_input=requirements,
+                    project_name=project.project_name,
+                    llm_client=llm_client,
+                )
+                # Store the dynamic plan on the project for UI access
+                project._dynamic_plan = dynamic_result.get("plan")  # type: ignore[attr-defined]
+                rows = self._normalize_dynamic_workflow_result(dynamic_result)
+                if rows:
+                    return rows
+                logger.warning(
+                    "Dynamic workflow returned empty result, falling back: project_id=%s",
+                    project_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Dynamic workflow failed, falling back to static: project_id=%s",
+                    project_id,
+                )
+
+        # --- Fallback: DeepOrchestrator (LangGraph supervisor) ---
         if hasattr(orchestrator, "run_workflow"):
             deep_result = orchestrator.run_workflow(  # type: ignore[call-arg]
                 requirements,
@@ -224,22 +258,99 @@ class ProjectManager:
             if rows:
                 return rows
 
-            # Deep runtime produced no usable phase rows (e.g. repeated network failures).
-            # Fall back to the wrapped classic orchestrator to keep delivery progressing.
-            base_orchestrator = getattr(orchestrator, "orchestrator", None)
-            if base_orchestrator is not None and hasattr(base_orchestrator, "run_default_workflow"):
-                logger.warning(
-                    "Deep workflow returned empty result, falling back to classic workflow: project_id=%s name=%s",
-                    project_id,
-                    project.project_name,
-                )
-                return base_orchestrator.run_default_workflow(  # type: ignore[no-any-return]
-                    requirements,
-                    project.project_name,
-                )
-            return rows
+        # --- Fallback: classic static workflow ---
+        if hasattr(orchestrator, "run_default_workflow"):
+            logger.warning(
+                "Falling back to static default workflow: project_id=%s",
+                project_id,
+            )
+            return orchestrator.run_default_workflow(  # type: ignore[no-any-return]
+                requirements,
+                project.project_name,
+            )
+
+        base_orch = getattr(orchestrator, "orchestrator", None)
+        if base_orch is not None and hasattr(base_orch, "run_default_workflow"):
+            return base_orch.run_default_workflow(  # type: ignore[no-any-return]
+                requirements,
+                project.project_name,
+            )
 
         raise ValueError(f"Project {project_id} orchestrator does not support workflow execution")
+
+    @staticmethod
+    def _get_planner_llm_client(orchestrator: Any) -> Any:
+        """Extract an LLM client from the orchestrator's registered agents."""
+        agents = getattr(orchestrator, "_agents", {})
+        for agent in agents.values():
+            client = getattr(agent, "llm_client", None)
+            if client is not None:
+                return client
+        return None
+
+    def _normalize_dynamic_workflow_result(
+        self,
+        result: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Convert DynamicEngine output to the phase-result list shape for the UI."""
+        if not isinstance(result, dict):
+            return []
+
+        step_results = result.get("step_results", [])
+        plan = result.get("plan", {})
+
+        # Group steps by their process's phase affinity
+        phase_groups: dict[str, list[dict[str, Any]]] = {}
+        for step in step_results:
+            process_id = step.get("process", "")
+            # Infer phase from the plan step
+            phase = self._infer_phase_from_process(process_id, plan)
+            if phase not in phase_groups:
+                phase_groups[phase] = []
+            phase_groups[phase].append(step)
+
+        rows: list[dict[str, Any]] = []
+        for phase, steps in phase_groups.items():
+            tasks: dict[str, dict[str, Any]] = {}
+            phase_status = "completed"
+            for step in steps:
+                task_key = f"{step.get('agent', 'unknown')}.{step.get('process', 'unknown')}"
+                step_status = step.get("status", "unknown")
+                tasks[task_key] = {
+                    "status": "success" if step_status == "completed" else step_status,
+                    "artifact_id": step.get("artifact_id"),
+                    "duration": step.get("duration"),
+                }
+                if step_status not in {"completed", "skipped"}:
+                    phase_status = "failed"
+            rows.append(
+                {
+                    "phase": phase,
+                    "status": phase_status,
+                    "tasks": tasks,
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _infer_phase_from_process(process_id: str, plan: dict[str, Any]) -> str:
+        """Infer phase name from a process ID using the plan or naming conventions."""
+        # Check plan steps for phase info
+        for step in plan.get("steps", []):
+            if step.get("process_id") == process_id:
+                return step.get("phase", process_id)
+
+        # Infer from process name
+        pid = process_id.lower()
+        if any(kw in pid for kw in ("requirement", "product", "analysis")):
+            return "requirements"
+        if any(kw in pid for kw in ("architect", "design", "api_design")):
+            return "design"
+        if any(kw in pid for kw in ("develop", "implement", "code", "tdd")):
+            return "implementation"
+        if any(kw in pid for kw in ("test", "qa", "review")):
+            return "testing"
+        return process_id
 
     def _normalize_deep_workflow_result(
         self,
