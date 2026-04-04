@@ -238,11 +238,7 @@ class Orchestrator:
                 for r in result.step_results
             ],
             "artifact_ids": result.artifact_ids,
-            "plan": {
-                "goal": result.plan.goal,
-                "reasoning": result.plan.reasoning,
-                "steps": [s.to_dict() for s in result.plan.steps],
-            },
+            "plan": self._serialize_plan(result.plan),
             "replans": result.replans,
             "total_duration": result.total_duration_seconds,
         }
@@ -297,6 +293,55 @@ class Orchestrator:
         }
         formatter = formatters.get(output_format, visualizer.to_text_table)
         return formatter(plan)
+
+    def preview_plan(
+        self,
+        project_input: dict[str, Any],
+        project_name: str = "",
+        llm_client: Any = None,
+        goal_artifacts: list[ArtifactType] | None = None,
+    ) -> dict[str, Any]:
+        """Generate an execution plan and return it as a dict for the UI.
+
+        Unlike preview_dynamic_plan (which returns formatted text),
+        this returns the raw plan dict so the web UI can render
+        dynamic workflow nodes.
+        """
+        from .ai_planner import AIPlanner, PlannerContext
+        from .process_registry import ProcessRegistry
+
+        registry = ProcessRegistry.build_default()
+        registry.auto_discover_from_agents(self._agents)
+
+        if llm_client is not None:
+            planner = AIPlanner.from_llm_client(registry, llm_client)
+        else:
+            planner = AIPlanner(registry=registry)
+
+        existing_artifacts: dict[ArtifactType, str] = {}
+        for art_type in ArtifactType:
+            latest = self.artifact_store.get_latest(art_type)
+            if latest:
+                existing_artifacts[art_type] = latest.id
+
+        context = PlannerContext(
+            user_requirements=str(project_input.get("raw_requirements", "")),
+            available_artifacts=existing_artifacts,
+            goal_artifacts=goal_artifacts or [ArtifactType.SOURCE_CODE],
+            project_name=project_name,
+        )
+
+        plan = planner.generate_plan(context)
+        return self._serialize_plan(plan)
+
+    @staticmethod
+    def _serialize_plan(plan: Any) -> dict[str, Any]:
+        """Serialize an ExecutionPlan to a dict."""
+        return {
+            "goal": getattr(plan, "goal", ""),
+            "reasoning": getattr(plan, "reasoning", ""),
+            "steps": [s.to_dict() for s in getattr(plan, "steps", [])],
+        }
 
     def execute_task_auto_route(
         self,

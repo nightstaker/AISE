@@ -586,6 +586,9 @@ class WebProjectService:
                 ]
                 self._save_state()
 
+            # --- AI-First: generate plan early so UI can render it ---
+            self._preview_dynamic_plan(project_id, requirement)
+
             try:
                 results = self.project_manager.run_project_workflow(
                     project_id,
@@ -2378,6 +2381,35 @@ class WebProjectService:
                 }
             )
         return nodes
+
+    def _preview_dynamic_plan(self, project_id: str, requirement: str) -> None:
+        """Generate AI plan early so UI can render dynamic workflow nodes.
+
+        Called before run_project_workflow so that _build_workflow_nodes
+        can access _dynamic_plan during polling.
+        """
+        try:
+            project = self.project_manager.get_project(project_id)
+            if project is None:
+                return
+            base_orchestrator = getattr(project.orchestrator, "orchestrator", project.orchestrator)
+            if not hasattr(base_orchestrator, "preview_plan"):
+                return
+            llm_client = self.project_manager._get_planner_llm_client(base_orchestrator)
+            plan_info = base_orchestrator.preview_plan(
+                project_input={"raw_requirements": requirement},
+                project_name=project.project_name,
+                llm_client=llm_client,
+            )
+            if isinstance(plan_info, dict) and plan_info.get("steps"):
+                project._dynamic_plan = plan_info  # type: ignore[attr-defined]
+                logger.info(
+                    "AI-First plan generated for UI: project_id=%s steps=%d",
+                    project_id,
+                    len(plan_info.get("steps", [])),
+                )
+        except Exception:
+            logger.debug("Dynamic plan preview failed, UI will use static nodes", exc_info=True)
 
     @staticmethod
     def _group_tasks_by_agent(
