@@ -281,7 +281,7 @@ class DynamicEngine:
 
         for step in ordered_steps:
             # Check if we can skip this step
-            if self._should_skip(step, completed_artifacts):
+            if self._should_skip(step, completed_artifacts, completed_step_ids):
                 result = StepResult(
                     process_id=step.process_id,
                     agent=step.agent,
@@ -302,9 +302,7 @@ class DynamicEngine:
                 proc = self.registry.get(step.process_id)
                 if proc is not None and proc.depends_on_artifacts:
                     artifact_types_available = set(completed_artifacts.keys())
-                    deps_ok = all(
-                        art_type in artifact_types_available for art_type in proc.depends_on_artifacts
-                    )
+                    deps_ok = all(art_type in artifact_types_available for art_type in proc.depends_on_artifacts)
             if not deps_ok:
                 result = StepResult(
                     process_id=step.process_id,
@@ -445,6 +443,12 @@ class DynamicEngine:
         prepend: list[PlanStep] = []
         prepend_ids: set[str] = set()
 
+        # Build set of superseded process IDs — never auto-resolve these
+        superseded: set[str] = set()
+        for p in self.registry._processes.values():
+            if p.supersedes:
+                superseded.update(p.supersedes)
+
         for step in plan.steps:
             proc = self.registry.get(step.process_id)
             if proc is None:
@@ -455,7 +459,7 @@ class DynamicEngine:
                     # Need a producer — find one
                     chain = self.registry.resolve_dependency_chain(dep_art, available.copy())
                     for p in chain:
-                        if p.id not in existing_process_ids and p.id not in prepend_ids:
+                        if p.id not in existing_process_ids and p.id not in prepend_ids and p.id not in superseded:
                             logger.info(
                                 "Auto-resolving dependency: %s needs %s, adding %s",
                                 step.process_id,
@@ -509,11 +513,28 @@ class DynamicEngine:
         self,
         step: PlanStep,
         completed_artifacts: dict[ArtifactType, str],
+        completed_process_ids: set[str] | None = None,
     ) -> bool:
-        """Check if a step can be skipped because its outputs already exist."""
+        """Check if a step can be skipped because its outputs already exist.
+
+        Also skips atomic steps that are superseded by a deep workflow
+        already in the completed set.
+        """
         proc = self.registry.get(step.process_id)
         if proc is None:
             return False
+
+        # Skip if this atomic step is superseded by a completed deep workflow
+        if completed_process_ids:
+            for cid in completed_process_ids:
+                completed_proc = self.registry.get(cid)
+                if completed_proc and step.process_id in completed_proc.supersedes:
+                    logger.info(
+                        "Skipping %s — superseded by completed %s",
+                        step.process_id,
+                        cid,
+                    )
+                    return True
 
         # Skip if ALL output artifacts are already available
         if not proc.output_artifact_types:

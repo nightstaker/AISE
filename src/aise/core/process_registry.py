@@ -199,11 +199,7 @@ class ProcessRegistry:
         for p in self._processes.values():
             if p.supersedes:
                 superseded.update(p.supersedes)
-        return [
-            p.to_llm_dict()
-            for p in self._processes.values()
-            if p.id not in superseded
-        ]
+        return [p.to_llm_dict() for p in self._processes.values() if p.id not in superseded]
 
     def resolve_dependency_chain(
         self,
@@ -214,6 +210,7 @@ class ProcessRegistry:
 
         Uses BFS on artifact dependencies to find the minimal chain.
         Skips processes whose output artifacts are already available.
+        Prefers deep workflows over superseded atomic processes.
         """
         available = available or set()
         if goal_artifact in available:
@@ -224,8 +221,21 @@ class ProcessRegistry:
         if not producers:
             return []
 
-        # Pick the first (or best) producer
-        producer = producers[0]
+        # Build set of superseded process IDs
+        superseded: set[str] = set()
+        for p in self._processes.values():
+            if p.supersedes:
+                superseded.update(p.supersedes)
+
+        # Prefer deep workflows over atomic/superseded steps
+        deep = [p for p in producers if p.is_deep_workflow]
+        non_superseded = [p for p in producers if p.id not in superseded]
+        if deep:
+            producer = deep[0]
+        elif non_superseded:
+            producer = non_superseded[0]
+        else:
+            producer = producers[0]
 
         # Recursively resolve dependencies
         chain: list[ProcessDescriptor] = []
