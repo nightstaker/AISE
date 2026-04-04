@@ -372,6 +372,10 @@ class WebProjectService:
             self._save_state()
             logger.info("Web requirement queued: project_id=%s run_id=%s", project_id, run_id)
 
+        # Generate AI plan synchronously so the UI shows dynamic nodes
+        # on the very first poll (before the background thread starts).
+        self._preview_dynamic_plan(project_id, requirement)
+
         Thread(
             target=self._execute_workflow_run,
             args=(project_id, run_id, requirement),
@@ -586,8 +590,8 @@ class WebProjectService:
                 ]
                 self._save_state()
 
-            # --- AI-First: generate plan early so UI can render it ---
-            self._preview_dynamic_plan(project_id, requirement)
+            # _preview_dynamic_plan already called synchronously in
+            # run_requirement before this thread started.
 
             try:
                 results = self.project_manager.run_project_workflow(
@@ -2389,17 +2393,31 @@ class WebProjectService:
         can access _dynamic_plan during polling.
         """
         try:
+            logger.info("_preview_dynamic_plan: starting for project_id=%s", project_id)
             project = self.project_manager.get_project(project_id)
             if project is None:
+                logger.warning("_preview_dynamic_plan: project not found")
                 return
             base_orchestrator = getattr(project.orchestrator, "orchestrator", project.orchestrator)
+            logger.info(
+                "_preview_dynamic_plan: orchestrator=%s has_preview_plan=%s",
+                type(base_orchestrator).__name__,
+                hasattr(base_orchestrator, "preview_plan"),
+            )
             if not hasattr(base_orchestrator, "preview_plan"):
+                logger.warning("_preview_dynamic_plan: orchestrator lacks preview_plan")
                 return
             llm_client = self.project_manager._get_planner_llm_client(base_orchestrator)
+            logger.info("_preview_dynamic_plan: llm_client=%s", type(llm_client).__name__ if llm_client else None)
             plan_info = base_orchestrator.preview_plan(
                 project_input={"raw_requirements": requirement},
                 project_name=project.project_name,
                 llm_client=llm_client,
+            )
+            logger.info(
+                "_preview_dynamic_plan: plan_info keys=%s steps=%d",
+                list(plan_info.keys()) if isinstance(plan_info, dict) else "not-dict",
+                len(plan_info.get("steps", [])) if isinstance(plan_info, dict) else 0,
             )
             if isinstance(plan_info, dict) and plan_info.get("steps"):
                 project._dynamic_plan = plan_info  # type: ignore[attr-defined]
@@ -2408,8 +2426,10 @@ class WebProjectService:
                     project_id,
                     len(plan_info.get("steps", [])),
                 )
+            else:
+                logger.warning("_preview_dynamic_plan: plan has no steps, falling back to static")
         except Exception:
-            logger.debug("Dynamic plan preview failed, UI will use static nodes", exc_info=True)
+            logger.warning("Dynamic plan preview failed, UI will use static nodes", exc_info=True)
 
     @staticmethod
     def _group_tasks_by_agent(
