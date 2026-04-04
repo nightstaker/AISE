@@ -293,8 +293,18 @@ class DynamicEngine:
                 logger.info("Step skipped (artifacts exist): %s", step.process_id)
                 continue
 
-            # Check dependencies are satisfied
+            # Check dependencies are satisfied — accept either:
+            # 1. All depends_on_steps present in completed_step_ids, OR
+            # 2. All required artifact types available (handles LLM using
+            #    wrong step names that still produce the needed artifacts)
             deps_ok = all(d in completed_step_ids for d in step.depends_on_steps)
+            if not deps_ok:
+                proc = self.registry.get(step.process_id)
+                if proc is not None and proc.depends_on_artifacts:
+                    artifact_types_available = set(completed_artifacts.keys())
+                    deps_ok = all(
+                        art_type in artifact_types_available for art_type in proc.depends_on_artifacts
+                    )
             if not deps_ok:
                 result = StepResult(
                     process_id=step.process_id,
