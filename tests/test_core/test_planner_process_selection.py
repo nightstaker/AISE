@@ -91,9 +91,7 @@ class TestProcessRepository:
 class TestProcessMdAdapter:
     """Test ProcessDescriptor conversion from Markdown ProcessDefinition."""
 
-    def test_convert_waterfall_to_descriptor(
-        self, md_repo: ProcessRepository, registry: ProcessRegistry
-    ) -> None:
+    def test_convert_waterfall_to_descriptor(self, md_repo: ProcessRepository, registry: ProcessRegistry) -> None:
         """Waterfall process should map to deep workflow skills."""
         process = md_repo.get_process("waterfall_standard_v1")
         assert process is not None
@@ -129,9 +127,7 @@ class TestProcessMdAdapter:
 class TestAIPlannerWithProcess:
     """Test AIPlanner with process template constraint."""
 
-    def test_plan_with_waterfall_process(
-        self, registry: ProcessRegistry, md_adapter: ProcessMdAdapter
-    ) -> None:
+    def test_plan_with_waterfall_process(self, registry: ProcessRegistry, md_adapter: ProcessMdAdapter) -> None:
         """AIPlanner should generate a plan that follows waterfall template."""
         planner = AIPlanner(registry=registry, md_adapter=md_adapter)
 
@@ -147,9 +143,7 @@ class TestAIPlannerWithProcess:
         assert plan is not None
         assert len(plan.steps) > 0
 
-    def test_plan_auto_selects_process(
-        self, registry: ProcessRegistry, md_adapter: ProcessMdAdapter
-    ) -> None:
+    def test_plan_auto_selects_process(self, registry: ProcessRegistry, md_adapter: ProcessMdAdapter) -> None:
         """AIPlanner should auto-select process when no ID is given."""
         planner = AIPlanner(registry=registry, md_adapter=md_adapter)
 
@@ -208,6 +202,5 @@ class TestAIPlannerWithProcess:
             proc = registry.get(step.process_id)
             if proc:
                 assert step.agent in proc.agent_roles, (
-                    f"Agent {step.agent} not valid for process {step.process_id}. "
-                    f"Valid: {proc.agent_roles}"
+                    f"Agent {step.agent} not valid for process {step.process_id}. Valid: {proc.agent_roles}"
                 )

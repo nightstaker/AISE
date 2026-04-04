@@ -364,6 +364,7 @@ class AIPlanner:
         # If a process is selected, add it to the system prompt
         if selected_process is not None:
             from .process_md_repository import ProcessDefinition
+
             if isinstance(selected_process, ProcessDefinition):
                 process_template = selected_process.render_for_prompt()
                 process_section = (
