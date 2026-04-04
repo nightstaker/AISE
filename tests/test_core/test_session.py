@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from aise.core.agent import Agent, AgentRole
 from aise.core.artifact import Artifact, ArtifactType
 from aise.core.orchestrator import Orchestrator
@@ -372,18 +374,21 @@ class TestOnDemandSession:
 class TestOnDemandSessionWithFullTeam:
     """Tests using the real create_team() with all agents and skills."""
 
+    @pytest.mark.slow
     def test_full_team_add_requirement(self):
         orch = create_team()
         session = OnDemandSession(orch, project_name="FullTeamTest")
         result = session.handle_input("add Build a REST API for user management")
         assert result["status"] == "ok"
 
+    @pytest.mark.slow
     def test_full_team_bug_report(self):
         orch = create_team()
         session = OnDemandSession(orch, project_name="FullTeamTest")
         result = session.handle_input("bug Login page returns 500 on empty password")
         assert result["status"] == "ok"
 
+    @pytest.mark.slow
     def test_full_team_status(self):
         orch = create_team()
         session = OnDemandSession(orch, project_name="FullTeamTest")
@@ -391,6 +396,7 @@ class TestOnDemandSessionWithFullTeam:
         assert result["status"] == "ok"
         assert "6" in result["output"]  # 6 agents
 
+    @pytest.mark.slow
     def test_full_team_ask(self):
         orch = create_team()
         session = OnDemandSession(orch, project_name="FullTeamTest")

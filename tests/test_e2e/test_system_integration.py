@@ -157,6 +157,7 @@ class TestE2EReliabilityMechanisms:
         assert result is True
         assert len(attempts) == 2
 
+    @pytest.mark.slow
     def test_timeout_on_slow_operation(self) -> None:
         """Test timeout for slow operations."""
 
@@ -317,6 +318,7 @@ class TestE2EFaultTolerance:
         # But score should be lower
         assert result.score < 5.0
 
+    @pytest.mark.slow
     def test_circuit_breaker_auto_recovery(self) -> None:
         """Test circuit breaker recovery after timeout."""
         cb = CircuitBreaker(failure_threshold=2, recovery_timeout=0.5)
