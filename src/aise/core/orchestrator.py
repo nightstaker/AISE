@@ -253,9 +253,16 @@ class Orchestrator:
                 project_name,
                 available_artifacts=context.available_artifacts,
                 progress_callback=progress_callback,
+                project_input=project_input,
             )
         else:
-            result = engine.run(context, executor, project_name, progress_callback=progress_callback)
+            result = engine.run(
+                context,
+                executor,
+                project_name,
+                progress_callback=progress_callback,
+                project_input=project_input,
+            )
 
         return {
             "status": result.status,

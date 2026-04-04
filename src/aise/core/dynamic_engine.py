@@ -116,6 +116,7 @@ class DynamicEngine:
         self.artifact_store = artifact_store
         self.max_replans = max_replans
         self._project_root = project_root
+        self._project_input: dict[str, Any] | None = None
 
     def run(
         self,
@@ -123,6 +124,7 @@ class DynamicEngine:
         executor: Executor,
         project_name: str = "",
         progress_callback: ProgressCallback | None = None,
+        project_input: dict[str, Any] | None = None,
     ) -> ExecutionResult:
         """Run a complete AI-planned workflow.
 
@@ -132,6 +134,7 @@ class DynamicEngine:
         4. On failure: replan and continue
         5. Return complete results
         """
+        self._project_input = project_input
         start_time = time.monotonic()
 
         # Step 1: Generate initial plan
@@ -238,8 +241,10 @@ class DynamicEngine:
         project_name: str = "",
         available_artifacts: dict[ArtifactType, str] | None = None,
         progress_callback: ProgressCallback | None = None,
+        project_input: dict[str, Any] | None = None,
     ) -> ExecutionResult:
         """Execute a pre-generated plan (skip the planning step)."""
+        self._project_input = project_input
         start_time = time.monotonic()
         completed_artifacts = dict(available_artifacts or {})
 
@@ -376,6 +381,10 @@ class DynamicEngine:
 
         # Build input data from input_mapping and available artifacts
         input_data = dict(step.input_mapping)
+        # Inject original project input (raw_requirements, user_memory, etc.)
+        if self._project_input:
+            for key, val in self._project_input.items():
+                input_data.setdefault(key, val)
         for art_type, art_id in completed_artifacts.items():
             # Auto-inject available artifacts by type name
             input_data.setdefault(art_type.value, art_id)
