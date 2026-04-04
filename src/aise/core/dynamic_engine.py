@@ -237,6 +237,7 @@ class DynamicEngine:
         executor: Executor,
         project_name: str = "",
         available_artifacts: dict[ArtifactType, str] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> ExecutionResult:
         """Execute a pre-generated plan (skip the planning step)."""
         start_time = time.monotonic()
@@ -247,6 +248,7 @@ class DynamicEngine:
             executor,
             project_name,
             completed_artifacts,
+            progress_callback=progress_callback,
         )
 
         total_time = time.monotonic() - start_time

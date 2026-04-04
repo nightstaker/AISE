@@ -172,6 +172,7 @@ class Orchestrator:
         goal_artifacts: list[ArtifactType] | None = None,
         constraints: list[str] | None = None,
         progress_callback: Any = None,
+        existing_plan: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run an AI-planned dynamic workflow.
 
@@ -223,7 +224,34 @@ class Orchestrator:
         def executor(agent_name: str, skill_name: str, input_data: dict, proj_name: str) -> str:
             return self.execute_task(agent_name, skill_name, input_data, proj_name)
 
-        result = engine.run(context, executor, project_name, progress_callback=progress_callback)
+        # Reuse existing plan (e.g., from preview) if provided,
+        # to avoid regenerating and getting a different plan.
+        if existing_plan and isinstance(existing_plan, dict) and existing_plan.get("steps"):
+            from .ai_planner import ExecutionPlan, PlanStep
+
+            reuse_steps = [
+                PlanStep(
+                    process_id=s.get("process_id", s.get("process", "")),
+                    agent=s.get("agent", ""),
+                    rationale=s.get("rationale", ""),
+                    input_mapping=s.get("input_mapping", {}),
+                    depends_on_steps=s.get("depends_on_steps", []),
+                )
+                for s in existing_plan["steps"]
+                if isinstance(s, dict)
+            ]
+            reuse_plan = ExecutionPlan(
+                goal=existing_plan.get("goal", context.user_requirements[:200]),
+                steps=reuse_steps,
+                reasoning=existing_plan.get("reasoning", "Reused from preview plan"),
+            )
+            # Auto-resolve any missing dependencies in the reused plan
+            reuse_plan = engine._auto_resolve_dependencies(reuse_plan)
+            result = engine.run_with_plan(
+                reuse_plan, context, executor, project_name, progress_callback=progress_callback
+            )
+        else:
+            result = engine.run(context, executor, project_name, progress_callback=progress_callback)
 
         return {
             "status": result.status,

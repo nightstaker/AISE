@@ -229,11 +229,14 @@ class ProjectManager:
                     project_id,
                     project.project_name,
                 )
+                # Reuse preview plan if available to avoid regenerating
+                preview_plan = getattr(project, "_dynamic_plan", None)
                 dynamic_result = base_orchestrator.run_dynamic_workflow(
                     project_input=requirements,
                     project_name=project.project_name,
                     llm_client=llm_client,
                     progress_callback=progress_callback,
+                    existing_plan=preview_plan,
                 )
                 # Store the dynamic plan on the project for UI access
                 project._dynamic_plan = dynamic_result.get("plan")  # type: ignore[attr-defined]
