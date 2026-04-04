@@ -1889,7 +1889,7 @@ class WebProjectService:
             return "failed"
         if has_trace_events and normalized_phase in {"completed"}:
             return "completed"
-        if has_trace_events:
+        if has_trace_events and normalized_phase in {"running", "in_progress", "in_review"}:
             return "running"
         if normalized_phase in {"completed"}:
             return "completed"
@@ -1897,6 +1897,11 @@ class WebProjectService:
             return "pending"
         if normalized_phase in {"running", "in_progress", "in_review"}:
             return "pending"
+        if normalized_phase in {"pending"}:
+            return "pending"
+        # No phase info and has trace events — cautiously report running
+        if has_trace_events:
+            return "running"
         return ""
 
     def delete_project(self, project_id: str) -> None:
