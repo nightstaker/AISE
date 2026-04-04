@@ -191,6 +191,7 @@ class ProjectManager:
         project_id: str,
         requirements: dict[str, Any],
         progress_callback: Any = None,
+        selected_process_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Run the AI-planned dynamic workflow for a specific project.
 
@@ -198,12 +199,16 @@ class ProjectManager:
         execution plan based on the actual requirements, instead of
         following a fixed 4-phase pipeline.
 
+        If selected_process_id is provided, the plan is constrained to
+        follow that process template (e.g., 'waterfall_standard_v1').
+
         Falls back to the classic static workflow if dynamic planning
         is unavailable or fails.
 
         Args:
             project_id: The project ID
             requirements: Project requirements (dict with "raw_requirements" key)
+            selected_process_id: Optional process template ID to constrain the plan.
 
         Returns:
             List of phase results from the workflow execution
@@ -237,6 +242,7 @@ class ProjectManager:
                     llm_client=llm_client,
                     progress_callback=progress_callback,
                     existing_plan=preview_plan,
+                    selected_process_id=selected_process_id,
                 )
                 # Store the dynamic plan on the project for UI access
                 project._dynamic_plan = dynamic_result.get("plan")  # type: ignore[attr-defined]

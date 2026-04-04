@@ -22,6 +22,7 @@ from typing import Any
 
 from ..utils.logging import get_logger
 from .artifact import ArtifactType
+from .process_md_adapter import ProcessMdAdapter
 from .process_registry import ProcessRegistry
 
 logger = get_logger(__name__)
@@ -209,27 +210,56 @@ class AIPlanner:
         self,
         registry: ProcessRegistry,
         llm_config: dict[str, Any] | None = None,
+        md_adapter: ProcessMdAdapter | None = None,
     ) -> None:
         self.registry = registry
+        self.md_adapter = md_adapter
         self.llm_config = llm_config or {}
         self._llm_client: Any | None = None
 
-    def generate_plan(self, context: PlannerContext) -> ExecutionPlan:
+    def generate_plan(
+        self,
+        context: PlannerContext,
+        selected_process_id: str | None = None,
+    ) -> ExecutionPlan:
         """Generate an execution plan from requirements and context.
+
+        If selected_process_id is provided, the plan is constrained to follow
+        that process template. Otherwise, the LLM dynamically composes a plan.
 
         Uses LLM to dynamically compose a workflow. Falls back to
         dependency-chain resolution if LLM fails.
         """
         catalog = json.dumps(self.registry.to_llm_catalog(), indent=2, ensure_ascii=False)
-        messages = self._build_plan_messages(context, catalog)
+        selected_process = None
+
+        # Step 1: Select process if ID provided or if md_adapter is available
+        if selected_process_id and self.md_adapter:
+            descriptor = self.md_adapter.get_descriptor(selected_process_id)
+            if descriptor:
+                # Look up the underlying ProcessDefinition from the md repo
+                for proc in self.md_adapter.md_repo.list_processes():
+                    if f"md_process_{proc.process_id}" == descriptor.id:
+                        selected_process = proc
+                        break
+        elif not selected_process_id and self.md_adapter:
+            # Auto-select based on requirements
+            selection = self.md_adapter.select_process(context.user_requirements)
+            if selection:
+                selected_process = selection.process
+                selected_process_id = selection.process.process_id
+                logger.info("Auto-selected process: %s (score=%.1f)", selected_process_id, selection.score)
+
+        messages = self._build_plan_messages(context, catalog, selected_process)
 
         try:
             response = self._call_llm(messages)
             plan = self._parse_plan_response(response)
             logger.info(
-                "AI plan generated: goal=%s steps=%d",
+                "AI plan generated: goal=%s steps=%d process=%s",
                 plan.goal,
                 len(plan.steps),
+                selected_process_id or "auto",
             )
             return plan
         except Exception as exc:
@@ -324,9 +354,34 @@ class AIPlanner:
 
         return errors
 
-    def _build_plan_messages(self, context: PlannerContext, catalog: str) -> list[dict[str, str]]:
+    def _build_plan_messages(
+        self,
+        context: PlannerContext,
+        catalog: str,
+        selected_process: Any = None,
+    ) -> list[dict[str, str]]:
         """Build system + user messages for the LLM."""
-        system = PLANNER_SYSTEM_PROMPT.format(catalog=catalog)
+        # If a process is selected, add it to the system prompt
+        if selected_process is not None:
+            from .process_md_repository import ProcessDefinition
+            if isinstance(selected_process, ProcessDefinition):
+                process_template = selected_process.render_for_prompt()
+                process_section = (
+                    "\n\n## SELECTED DEVELOPMENT PROCESS (MANDATORY)\n"
+                    "You MUST follow the process template below. This is an organizational requirement.\n\n"
+                    f"{process_template}\n\n"
+                    "Process Rules:\n"
+                    "- Your plan MUST include ALL steps defined in the process template.\n"
+                    "- Step ordering MUST follow the process template's sequence.\n"
+                    "- Participating agents for each step MUST be from the template's specified agents.\n"
+                    "- You can add sub-steps within each process step for more granular planning.\n"
+                    "- Do NOT skip any process step.\n"
+                )
+                system = PLANNER_SYSTEM_PROMPT.format(catalog=catalog) + process_section
+            else:
+                system = PLANNER_SYSTEM_PROMPT.format(catalog=catalog)
+        else:
+            system = PLANNER_SYSTEM_PROMPT.format(catalog=catalog)
 
         user_parts: list[str] = []
 

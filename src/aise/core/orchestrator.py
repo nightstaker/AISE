@@ -173,6 +173,7 @@ class Orchestrator:
         constraints: list[str] | None = None,
         progress_callback: Any = None,
         existing_plan: dict[str, Any] | None = None,
+        selected_process_id: str | None = None,
     ) -> dict[str, Any]:
         """Run an AI-planned dynamic workflow.
 
@@ -180,18 +181,23 @@ class Orchestrator:
         to generate an optimal execution plan based on the actual
         requirements and available capabilities.
 
+        If selected_process_id is provided, the plan must follow that
+        process template (e.g., 'waterfall_standard_v1' or 'agile_sprint_v1').
+
         Args:
             project_input: Input data (must contain 'raw_requirements').
             project_name: Human-readable project name.
             llm_client: LLM client for the planner (optional; uses fallback if None).
             goal_artifacts: Desired output artifact types. Defaults to SOURCE_CODE.
             constraints: Additional constraints for the planner.
+            selected_process_id: Optional process template ID to constrain the plan.
 
         Returns:
             Dict with status, step_results, artifact_ids, and plan metadata.
         """
         from .ai_planner import AIPlanner, PlannerContext
         from .dynamic_engine import DynamicEngine
+        from .process_md_adapter import ProcessMdAdapter
         from .process_registry import ProcessRegistry
 
         registry = ProcessRegistry.build_default()
@@ -199,10 +205,13 @@ class Orchestrator:
         # Auto-discover skills from registered agents
         registry.auto_discover_from_agents(self._agents)
 
+        # Initialize MD adapter for process template support
+        md_adapter = ProcessMdAdapter()
+
         if llm_client is not None:
-            planner = AIPlanner.from_llm_client(registry, llm_client)
+            planner = AIPlanner.from_llm_client(registry, llm_client, md_adapter=md_adapter)
         else:
-            planner = AIPlanner(registry=registry)
+            planner = AIPlanner(registry=registry, md_adapter=md_adapter)
 
         engine = DynamicEngine(registry, planner, self.artifact_store, project_root=self.project_root)
 
@@ -262,6 +271,7 @@ class Orchestrator:
                 project_name,
                 progress_callback=progress_callback,
                 project_input=project_input,
+                selected_process_id=selected_process_id,
             )
 
         return {
