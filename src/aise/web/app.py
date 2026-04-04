@@ -50,6 +50,7 @@ class WorkflowRun:
     completed_at: datetime | None = None
     error: str = ""
     phase_results: list[dict[str, Any]] = field(default_factory=list)
+    dynamic_plan: dict[str, Any] | None = None
 
 
 @dataclass
@@ -596,6 +597,13 @@ class WebProjectService:
                 project = self.project_manager.get_project(project_id)
                 if project is not None:
                     project._dynamic_plan_pending = False  # type: ignore[attr-defined]
+                    # Store plan on run so it persists with web_state.json
+                    plan = getattr(project, "_dynamic_plan", None)
+                    if isinstance(plan, dict) and plan.get("steps"):
+                        r = self._find_run(project_id, run_id)
+                        if r is not None:
+                            r.dynamic_plan = plan
+                            self._save_state()
 
             # Progress callback: update run.phase_results in real-time
             def _on_step_progress(
@@ -1657,20 +1665,18 @@ class WebProjectService:
             return False
 
         docs_dir = Path(project.project_root) / "docs"
-        requirements_ready = _is_fresh_file(docs_dir / "system-design.md") and _is_fresh_file(
-            docs_dir / "system-requirements.md"
+        output_dir = Path(project.project_root) / "output"
+        requirements_ready = (
+            _is_fresh_file(docs_dir / "system-design.md") and _is_fresh_file(docs_dir / "system-requirements.md")
+        ) or _has_fresh_content(docs_dir, suffixes={".md"})
+        design_ready = _is_fresh_file(docs_dir / "system-architecture.md") or _has_fresh_content(
+            output_dir, suffixes={".md"}
         )
-        design_ready = _is_fresh_file(docs_dir / "system-architecture.md")
         project_src = Path(project.project_root) / "src"
-        project_tests = Path(project.project_root) / "tests"
         implementation_ready = _has_fresh_content(
-            project_src / "services",
+            project_src,
             suffixes={".py"},
             exclude_names={"__init__.py"},
-        ) and _has_fresh_content(
-            project_tests / "services",
-            suffixes={".py"},
-            exclude_names={"__init__.py", "revision.md"},
         )
         if not (requirements_ready or design_ready or implementation_ready):
             return run_payload
@@ -1679,44 +1685,51 @@ class WebProjectService:
         if not isinstance(phase_results, list):
             phase_results = []
 
-        has_requirements_row = any(
-            isinstance(row, dict) and str(row.get("phase", "")) == "requirements" for row in phase_results
-        )
-        has_design_row = any(isinstance(row, dict) and str(row.get("phase", "")) == "design" for row in phase_results)
-        has_implementation_row = any(
-            isinstance(row, dict) and str(row.get("phase", "")) == "implementation" for row in phase_results
-        )
+        # Determine phase names: use dynamic plan names if available, else static
+        dynamic_plan = getattr(project, "_dynamic_plan", None) or self._load_dynamic_plan(project.project_id)
+        req_phase = "requirements"
+        design_phase = "design"
+        impl_phase = "implementation"
+        if isinstance(dynamic_plan, dict):
+            for step in dynamic_plan.get("steps", []):
+                pid = step.get("process_id", "")
+                phase_name = step.get("phase", pid)
+                if "product" in pid or "requirement" in pid:
+                    req_phase = phase_name
+                elif "architect" in pid or "design" in pid:
+                    design_phase = phase_name
+                elif "develop" in pid or "implement" in pid:
+                    impl_phase = phase_name
+
+        existing_phases = {str(row.get("phase", "")) for row in phase_results if isinstance(row, dict)}
 
         synthetic_rows: list[dict[str, Any]] = []
-        if requirements_ready and not has_requirements_row:
+        if requirements_ready and req_phase not in existing_phases and "requirements" not in existing_phases:
             synthetic_rows.append(
                 {
-                    "phase": "requirements",
+                    "phase": req_phase,
                     "status": "completed",
                     "tasks": {
-                        "product_manager.requirements": {"status": "success"},
                         "product_manager.deep_product_workflow": {"status": "success"},
                     },
                 }
             )
-        if design_ready and not has_design_row:
+        if design_ready and design_phase not in existing_phases and "design" not in existing_phases:
             synthetic_rows.append(
                 {
-                    "phase": "design",
+                    "phase": design_phase,
                     "status": "completed",
                     "tasks": {
-                        "architect.design": {"status": "success"},
                         "architect.deep_architecture_workflow": {"status": "success"},
                     },
                 }
             )
-        if implementation_ready and not has_implementation_row:
+        if implementation_ready and impl_phase not in existing_phases and "implementation" not in existing_phases:
             synthetic_rows.append(
                 {
-                    "phase": "implementation",
+                    "phase": impl_phase,
                     "status": "completed",
                     "tasks": {
-                        "developer.implementation": {"status": "success"},
                         "developer.deep_developer_workflow": {"status": "success"},
                     },
                 }
@@ -2252,6 +2265,7 @@ class WebProjectService:
                             completed_at=completed,
                             error=str(item.get("error", "")),
                             phase_results=list(item.get("phase_results", [])),
+                            dynamic_plan=item.get("dynamic_plan"),
                         )
                     )
 
@@ -2334,7 +2348,36 @@ class WebProjectService:
             "completed_at": run.completed_at.isoformat() if run.completed_at else None,
             "error": run.error,
             "phase_results": run.phase_results,
+            "dynamic_plan": run.dynamic_plan,
         }
+
+    def _persist_dynamic_plan(self, project_id: str, plan: dict[str, Any]) -> None:
+        """Save dynamic plan to disk so it survives service restarts."""
+        try:
+            project = self.project_manager.get_project(project_id)
+            if project is None or not project.project_root:
+                return
+            plan_path = Path(project.project_root) / "dynamic_plan.json"
+            plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info("Persisted dynamic plan: %s", plan_path)
+        except Exception:
+            logger.warning("Failed to persist dynamic plan for %s", project_id, exc_info=True)
+
+    def _load_dynamic_plan(self, project_id: str) -> dict[str, Any] | None:
+        """Load dynamic plan from disk (survives restarts)."""
+        try:
+            project = self.project_manager.get_project(project_id)
+            if project is None or not project.project_root:
+                return None
+            plan_path = Path(project.project_root) / "dynamic_plan.json"
+            if not plan_path.exists():
+                return None
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            if isinstance(plan, dict) and plan.get("steps"):
+                return plan
+        except Exception:
+            logger.warning("Failed to load dynamic plan for %s", project_id, exc_info=True)
+        return None
 
     @staticmethod
     def _serialize_requirement(item: RequirementEntry) -> dict[str, Any]:
@@ -2379,6 +2422,11 @@ class WebProjectService:
 
         # --- AI-First: build from dynamic plan if available ---
         dynamic_plan = getattr(project, "_dynamic_plan", None)
+        if not isinstance(dynamic_plan, dict) or not dynamic_plan.get("steps"):
+            # Try loading persisted plan from disk
+            dynamic_plan = self._load_dynamic_plan(project.project_id)
+            if isinstance(dynamic_plan, dict) and dynamic_plan.get("steps"):
+                project._dynamic_plan = dynamic_plan  # type: ignore[attr-defined]
         if isinstance(dynamic_plan, dict) and dynamic_plan.get("steps"):
             return self._build_dynamic_workflow_nodes(dynamic_plan)
 
@@ -2513,6 +2561,8 @@ class WebProjectService:
             )
             if isinstance(plan_info, dict) and plan_info.get("steps"):
                 project._dynamic_plan = plan_info  # type: ignore[attr-defined]
+                # Persist plan to disk so it survives restarts
+                self._persist_dynamic_plan(project_id, plan_info)
                 logger.info(
                     "AI-First plan generated for UI: project_id=%s steps=%d",
                     project_id,

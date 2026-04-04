@@ -193,7 +193,8 @@ class TestNormalizeDynamicResult:
                 "plan": {"steps": []},  # No plan steps to match
             }
         )
-        assert result[0]["phase"] == "implementation"
+        # Without plan steps, process_id is used directly as phase name
+        assert result[0]["phase"] == "deep_developer_workflow"
 
     def test_handles_failed_steps(self):
         pm = self._make_pm()
@@ -247,15 +248,16 @@ class TestInferPhaseFromProcess:
     @pytest.mark.parametrize(
         "process_id,expected",
         [
-            ("requirement_analysis", "requirements"),
-            ("deep_product_workflow", "requirements"),
-            ("deep_architecture_workflow", "design"),
-            ("api_design", "design"),
-            ("deep_developer_workflow", "implementation"),
-            ("code_generation", "implementation"),
-            ("tdd_development", "implementation"),
-            ("test_automation", "testing"),
-            ("qa_review", "testing"),
+            # Without plan steps, process_id is returned directly
+            ("requirement_analysis", "requirement_analysis"),
+            ("deep_product_workflow", "deep_product_workflow"),
+            ("deep_architecture_workflow", "deep_architecture_workflow"),
+            ("api_design", "api_design"),
+            ("deep_developer_workflow", "deep_developer_workflow"),
+            ("code_generation", "code_generation"),
+            ("tdd_development", "tdd_development"),
+            ("test_automation", "test_automation"),
+            ("qa_review", "qa_review"),
             ("unknown_process", "unknown_process"),
         ],
     )

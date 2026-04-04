@@ -343,22 +343,21 @@ class ProjectManager:
 
     @staticmethod
     def _infer_phase_from_process(process_id: str, plan: dict[str, Any]) -> str:
-        """Infer phase name from a process ID using the plan or naming conventions."""
-        # Check plan steps for phase info
+        """Infer phase name from a process ID using the plan.
+
+        Phase names MUST match what _build_dynamic_workflow_nodes uses,
+        which is the step's 'phase' field (defaulting to process_id).
+        This ensures phase_results keys align with workflow_nodes names
+        so the UI can map progress correctly.
+        """
+        # Check plan steps for phase info — must match _build_dynamic_workflow_nodes logic
         for step in plan.get("steps", []):
             if step.get("process_id") == process_id:
-                return step.get("phase", process_id)
+                # Use same logic as _build_dynamic_workflow_nodes:
+                # phase = step.get("phase", step.get("process_id", "unknown"))
+                return step.get("phase", step.get("process_id", process_id))
 
-        # Infer from process name
-        pid = process_id.lower()
-        if any(kw in pid for kw in ("requirement", "product", "analysis")):
-            return "requirements"
-        if any(kw in pid for kw in ("architect", "design", "api_design")):
-            return "design"
-        if any(kw in pid for kw in ("develop", "implement", "code", "tdd")):
-            return "implementation"
-        if any(kw in pid for kw in ("test", "qa", "review")):
-            return "testing"
+        # Fallback: use process_id directly (matches _build_dynamic_workflow_nodes)
         return process_id
 
     def _normalize_deep_workflow_result(
