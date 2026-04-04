@@ -16,7 +16,7 @@ def process_to_descriptor(process: ProcessDefinition, registry: "ProcessRegistry
     This adapter maps the Markdown-defined process steps to existing skills in the registry.
     The mapping is based on step names and participating agents.
     """
-    from .process_registry import ProcessCapability, ProcessConstraint, ProcessDescriptor
+    from .process_registry import ProcessCapability, ProcessDescriptor
 
     # Map process work_type to capability
     capability_map = {
@@ -35,7 +35,8 @@ def process_to_descriptor(process: ProcessDefinition, registry: "ProcessRegistry
         step_id_lower = step.step_id.lower()
 
         # Map step names to deep workflow skills
-        if any(kw in step_name_lower or kw in step_id_lower for kw in ["requirement", "sprint_planning", "req_analysis"]):
+        kw_list = ["requirement", "sprint_planning", "req_analysis"]
+        if any(kw in step_name_lower or kw in step_id_lower for kw in kw_list):
             included_process_ids.append("deep_product_workflow")
         elif any(kw in step_name_lower or kw in step_id_lower for kw in ["design", "architecture", "subsystem"]):
             included_process_ids.append("deep_architecture_workflow")
@@ -58,11 +59,7 @@ def process_to_descriptor(process: ProcessDefinition, registry: "ProcessRegistry
         agents_str = ", ".join(step.participating_agents) if step.participating_agents else "unspecified"
         step_descriptions.append(f"- {step.name}: {step.description} (agents: {agents_str})")
 
-    full_description = (
-        f"{process.summary}\n\n"
-        f"Work Type: {process.work_type}\n\n"
-        f"Steps:\n" + "\n".join(step_descriptions)
-    )
+    full_description = f"{process.summary}\n\nWork Type: {process.work_type}\n\nSteps:\n" + "\n".join(step_descriptions)
 
     # Determine which atomic skills this process supersedes
     supersedes: list[str] = []
@@ -72,14 +69,16 @@ def process_to_descriptor(process: ProcessDefinition, registry: "ProcessRegistry
     if "deep_product_workflow" in unique_included:
         supersedes.extend(["requirement_analysis", "system_requirement_design", "system_requirement_review"])
     if "deep_architecture_workflow" in unique_included:
-        supersedes.extend([
-            "architecture_design", "architecture_review",
-            "subsystem_architecture_design", "subsystem_architecture_review"
-        ])
+        supersedes.extend(
+            [
+                "architecture_design",
+                "architecture_review",
+                "subsystem_architecture_design",
+                "subsystem_architecture_review",
+            ]
+        )
     if "deep_developer_workflow" in unique_included:
-        supersedes.extend([
-            "code_generation", "code_review", "tdd_session", "test_case_design"
-        ])
+        supersedes.extend(["code_generation", "code_review", "tdd_session", "test_case_design"])
 
     descriptor = ProcessDescriptor(
         id=f"md_process_{process.process_id}",
