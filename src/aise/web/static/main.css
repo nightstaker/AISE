@@ -2160,6 +2160,18 @@ button.flow-composite-card:hover,
   background: rgba(0, 0, 0, 0.25);
 }
 
+.flow-step-time {
+  font-size: 0.7rem;
+  color: var(--text-tertiary, #94a3b8);
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.flow-step-time span {
+  white-space: nowrap;
+}
+
 /* Dark bg scrollbars */
 .task-detail-json::-webkit-scrollbar-thumb,
 .task-log-details::-webkit-scrollbar-thumb,

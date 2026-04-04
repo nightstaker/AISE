@@ -32,6 +32,19 @@ function mountReact(rootId, componentFactory) {
   root.render(componentFactory(window.React));
 }
 
+function formatLocalTime(ts) {
+  if (!ts) return "";
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return String(ts);
+    return d.toLocaleString("zh-CN", {
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+      hour12: false
+    });
+  } catch { return String(ts); }
+}
+
 function setupDashboardReact() {
   const initial = readScriptJson("dashboard-initial-data", { projects: [], global_config_data: {} });
 
@@ -406,6 +419,30 @@ function setupProjectReact() {
       }
     }
 
+    const [view, setView] = window.React.useState("default");
+
+    // Auto-redirect to latest run if available
+    window.React.useEffect(() => {
+      if (runs.length > 0) {
+        const latestRun = runs[0];
+        window.location.href = `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(latestRun.run_id)}`;
+      }
+    }, []); // only on initial load
+
+    // If redirecting, show loading
+    if (runs.length > 0 && view === "default") {
+      return h(
+        "div",
+        { className: "project-layout" },
+        h(
+          "section",
+          { className: "card card-glow project-header-card" },
+          h("h1", null, project.info.project_name),
+          h("p", { className: "muted" }, "正在跳转到最新执行记录...")
+        )
+      );
+    }
+
     return h(
       "div",
       { className: "project-layout" },
@@ -433,71 +470,77 @@ function setupProjectReact() {
             h("a", { className: "btn secondary", href: "/" }, "返回项目列表")
           )
         : null,
-      h(
+      view === "default" ? h(
         "section",
-        { className: "split project-top-grid" },
+        { className: "card", style: { display: "flex", gap: "16px", justifyContent: "center", padding: "32px" } },
         h(
-          "article",
-          { className: "card project-new-req-card" },
-          h("h2", null, "下发新需求"),
-          h(
-            "form",
-            { className: "stack", onSubmit: submitRequirement },
-            h("label", null, "需求内容"),
-            h("textarea", {
-              required: true,
-              rows: 6,
-              placeholder: "输入新需求",
-              value: text,
-              disabled: projectMissing,
-              onChange: (e) => setText(e.target.value),
-            }),
-            error ? h("p", { className: "warning" }, error) : null,
-            h(
-              "button",
-              { className: "btn", type: "submit", disabled: submitting || projectMissing },
-              submitting ? "提交中..." : "提交并运行工作流"
-            )
-          )
+          "button",
+          {
+            type: "button",
+            className: "btn",
+            style: { fontSize: "1.1rem", padding: "12px 32px" },
+            disabled: projectMissing,
+            onClick: () => setView("new-requirement"),
+          },
+          "＋ 新增需求"
         ),
         h(
-          "article",
-          { className: "card project-workflow-card" },
-          h("h2", null, "工作流节点"),
+          "button",
+          {
+            type: "button",
+            className: "btn secondary",
+            style: { fontSize: "1.1rem", padding: "12px 32px" },
+            onClick: () => setView("history"),
+          },
+          "📋 查看历史需求"
+        )
+      ) : null,
+      view === "new-requirement" ? h(
+        "section",
+        { className: "card" },
+        h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" } },
+          h("h2", null, "下发新需求"),
+          h("button", { type: "button", className: "btn secondary", onClick: () => setView("default") }, "← 返回")
+        ),
+        h(
+          "form",
+          { className: "stack", onSubmit: submitRequirement },
+          h("label", null, "需求内容"),
+          h("textarea", {
+            required: true,
+            rows: 6,
+            placeholder: "输入新需求",
+            value: text,
+            disabled: projectMissing,
+            onChange: (e) => setText(e.target.value),
+          }),
+          error ? h("p", { className: "warning" }, error) : null,
           h(
-            "ol",
-            { className: "workflow-list" },
-            ...(Array.isArray(project.workflow_nodes) ? project.workflow_nodes : []).map((node, index) =>
-              h(
-                "li",
-                { key: `${node.name}-${index}` },
-                h("strong", null, node.name),
-                h("p", { className: "muted" }, `任务: ${(node.tasks || []).join(", ")}`),
-                h("p", { className: "muted" }, `评审: ${node.review_gate || "无"}`)
-              )
-            )
+            "button",
+            { className: "btn", type: "submit", disabled: submitting || projectMissing },
+            submitting ? "提交中..." : "提交并运行工作流"
           )
         )
-      ),
-      h(
+      ) : null,
+      view === "history" ? h(
         "div",
-        { className: "project-bottom-grid" },
+        null,
         h(
           "section",
-          { className: "card project-history-card" },
-          h("h2", null, "历时需求"),
+          { className: "card" },
+          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" } },
+            h("h2", null, "历史需求与执行记录"),
+            h("button", { type: "button", className: "btn secondary", onClick: () => setView("default") }, "← 返回")
+          ),
+          h("h3", null, "需求列表"),
           h(
             "ul",
             { className: "history-list" },
             ...(requirements.length
-              ? requirements.map((req, idx) => h("li", { key: `${req.created_at}-${idx}` }, `${req.created_at} - ${req.text}`))
+              ? requirements.map((req, idx) => h("li", { key: `${req.created_at}-${idx}` }, `${formatLocalTime(req.created_at)} - ${req.text}`))
               : [h("li", { key: "empty", className: "muted" }, "暂无需求历史。")])
-          )
-        ),
-        h(
-          "section",
-          { className: "card project-runs-card" },
-          h("h2", null, "工作流执行记录"),
+          ),
+          h("h3", { style: { marginTop: "24px" } }, "工作流执行记录"),
           h(
             "div",
             { className: "table-scroll" },
@@ -526,7 +569,7 @@ function setupProjectReact() {
                         "tr",
                         { key: run.run_id },
                         h("td", null, run.run_id),
-                        h("td", null, run.started_at),
+                        h("td", null, formatLocalTime(run.started_at)),
                         h("td", null, run.status || "pending"),
                         h("td", null, String(run.requirement_text || "").slice(0, 80)),
                         h(
@@ -547,7 +590,7 @@ function setupProjectReact() {
             )
           )
         )
-      )
+      ) : null
     );
   }
 
@@ -1537,15 +1580,31 @@ function setupRunReact() {
         const relations = buildPhaseRelations(phaseKey, agentTasks);
         const compositeTaskCards = buildCompositeTaskCards(phaseKey, normalizedAgentTasks);
 
+        // Extract timing from phase result tasks
+        let phaseStartedAt = null;
+        let phaseCompletedAt = null;
+        if (phaseResult) {
+          // Phase-level timestamps (if backend provides them)
+          if (phaseResult.started_at) phaseStartedAt = phaseResult.started_at;
+          if (phaseResult.completed_at) phaseCompletedAt = phaseResult.completed_at;
+        }
+
         return {
           key: phaseKey,
           title: phaseNameMap[phaseKey] || phaseKey,
           rawTitle: phaseKey,
           status: phaseState,
+          startedAt: phaseStartedAt,
+          completedAt: phaseCompletedAt,
           tasks,
           agentTasks: normalizedAgentTasks,
           compositeTaskCards,
           relations,
+          // Collect task durations for display
+          taskDurations: Object.entries(taskStatusMap).reduce((acc, [k, v]) => {
+            if (v && typeof v === "object" && v.duration) acc[k] = v.duration;
+            return acc;
+          }, {}),
         };
       });
     }
@@ -1740,9 +1799,9 @@ function setupRunReact() {
           "项目: ",
           h("a", { href: `/projects/${encodeURIComponent(project.info.project_id)}` }, project.info.project_name)
         ),
-        h("p", { className: "muted" }, `执行ID: ${run.run_id} | 时间: ${run.started_at}`),
+        h("p", { className: "muted" }, `执行ID: ${run.run_id} | 时间: ${formatLocalTime(run.started_at)}`),
         h("p", null, `状态: ${runStatus}${isRunning ? "（执行中，自动刷新）" : ""}`),
-        run.completed_at ? h("p", { className: "muted" }, `完成时间: ${run.completed_at}`) : null,
+        run.completed_at ? h("p", { className: "muted" }, `完成时间: ${formatLocalTime(run.completed_at)}`) : null,
         run.error ? h("pre", { className: "error" }, run.error) : null,
         pollError ? h("p", { className: "warning" }, `轮询失败: ${pollError}`) : null,
         h("p", null, `需求: ${run.requirement_text}`)
@@ -1770,6 +1829,13 @@ function setupRunReact() {
                   { className: "flow-step-head" },
                   h("div", { className: "flow-step-title" }, phase.title),
                   h("div", { className: "flow-step-subtitle" }, phase.rawTitle),
+                h("div", { className: "flow-step-time" },
+                  phase.startedAt ? h("span", null, "开始: " + formatLocalTime(phase.startedAt)) : null,
+                  phase.completedAt ? h("span", null, " → 完成: " + formatLocalTime(phase.completedAt)) : null,
+                  !phase.startedAt && !phase.completedAt && phase.taskDurations && Object.keys(phase.taskDurations).length
+                    ? h("span", null, "耗时: " + Object.values(phase.taskDurations).map(function(d) { return (d / 1000).toFixed(0) + "s"; }).join(" + "))
+                    : null
+                ),
                   h(
                     "div",
                     { className: "flow-phase-badges" },
@@ -2050,7 +2116,10 @@ function setupRunReact() {
                             "div",
                             { className: "flow-composite-meta" },
                             ...(Array.isArray(card.meta) && card.meta.length ? [card.meta.join(" · ")] : [primary && primary.progressText ? primary.progressText : ""])
-                          )
+                          ),
+                          primary && primary.runtimeResult && primary.runtimeResult.duration
+                            ? h("div", { className: "flow-step-time" }, h("span", null, "耗时: " + (primary.runtimeResult.duration / 1000).toFixed(0) + "s"))
+                            : null
                         );
                       })
                     )
