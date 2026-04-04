@@ -248,7 +248,11 @@ class Orchestrator:
             # Auto-resolve any missing dependencies in the reused plan
             reuse_plan = engine._auto_resolve_dependencies(reuse_plan)
             result = engine.run_with_plan(
-                reuse_plan, context, executor, project_name, progress_callback=progress_callback
+                reuse_plan,
+                executor,
+                project_name,
+                available_artifacts=context.available_artifacts,
+                progress_callback=progress_callback,
             )
         else:
             result = engine.run(context, executor, project_name, progress_callback=progress_callback)
