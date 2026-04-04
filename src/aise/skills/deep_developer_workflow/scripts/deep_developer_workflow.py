@@ -2171,15 +2171,22 @@ class DeepDeveloperWorkflowSkill(Skill):
             if base not in used_names:
                 used_names.add(base)
                 return base
-            if fn_token:
-                candidate_with_suffix = f"{base}_{fn_token}"
-                candidate_with_suffix = candidate_with_suffix[:48].strip("_")
-                if candidate_with_suffix and candidate_with_suffix not in used_names:
-                    used_names.add(candidate_with_suffix)
-                    return candidate_with_suffix
+            # Name conflict — try semantic suffix from layer/component_type instead of SR-ID
+            role_suffix = self._role_suffix(layer=layer, component_type=component_type, fn_name=fn_name)
+            if role_suffix and not base.endswith(role_suffix):
+                candidate_with_role = f"{base}_{role_suffix}"[:48].strip("_")
+                if candidate_with_role and candidate_with_role not in used_names:
+                    used_names.add(candidate_with_role)
+                    return candidate_with_role
+            # Last resort: numeric suffix (avoids leaking SR-IDs into filenames)
+            for suffix_idx in range(2, 20):
+                candidate_num = f"{base}_{suffix_idx}"[:48].strip("_")
+                if candidate_num and candidate_num not in used_names:
+                    used_names.add(candidate_num)
+                    return candidate_num
 
         role_suffix = self._role_suffix(layer=layer, component_type=component_type, fn_name=fn_name) or "service"
-        fallback = f"{fn_token}_{role_suffix}" if fn_token else f"requirement_{index:02d}_{role_suffix}"
+        fallback = f"{subsystem_slug}_{role_suffix}_{index:02d}"
         fallback = fallback[:48].strip("_") or f"requirement_{index:02d}_{role_suffix}"
         used_names.add(fallback)
         return fallback
