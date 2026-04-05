@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
 from typing import Any
+
+import pytest
 
 from aise.core.agent import Agent, AgentRole
 from aise.core.artifact import Artifact, ArtifactStatus, ArtifactType

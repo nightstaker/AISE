@@ -11,9 +11,10 @@ Verifies that AIPlanner can:
 from __future__ import annotations
 
 import json
-import pytest
 from typing import Any
 from unittest.mock import MagicMock
+
+import pytest
 
 from aise.core.ai_planner import AIPlanner, ExecutionPlan, PlannerContext, PlanStep
 from aise.core.artifact import ArtifactType
