@@ -199,6 +199,9 @@ class Orchestrator:
         from .dynamic_engine import DynamicEngine
         from .process_registry import ProcessRegistry
 
+        logger.info("run_dynamic_workflow entered: project_name=%s, llm_client=%s",
+                    project_name, type(llm_client).__name__ if llm_client else None)
+
         registry = ProcessRegistry.build_default()
 
         # Auto-discover skills from registered agents

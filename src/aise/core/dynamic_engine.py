@@ -139,6 +139,7 @@ class DynamicEngine:
         start_time = time.monotonic()
 
         # Step 1: Generate initial plan (with optional process constraint)
+        logger.info("DynamicEngine.run: calling planner.generate_plan")
         plan = self.planner.generate_plan(context, selected_process_id=selected_process_id)
         logger.info(
             "Dynamic execution starting: goal=%s steps=%d project=%s",

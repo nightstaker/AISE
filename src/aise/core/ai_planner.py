@@ -414,7 +414,10 @@ class AIPlanner:
         messages = self._build_plan_messages(context, catalog, selected_process)
 
         try:
+            logger.info("generate_plan: calling _call_llm...")
             response = self._call_llm(messages)
+            logger.info("generate_plan: LLM returned, length=%d", len(response) if response else 0)
+            logger.info("generate_plan: calling _parse_plan_response...")
             plan = self._parse_plan_response(response)
             logger.info(
                 "AI plan generated: goal=%s steps=%d process=%s",
@@ -424,6 +427,7 @@ class AIPlanner:
             )
             return plan
         except Exception as exc:
+            logger.error("generate_plan: exception: %s: %s", type(exc).__name__, exc)
             # DISABLED FALLBACK: AI-First requires LLM-generated plan
             raise RuntimeError(
                 f"AI planner LLM failed and fallback is disabled (AI-First mode). "
@@ -548,8 +552,10 @@ class AIPlanner:
 
     def _parse_plan_response(self, response: str) -> ExecutionPlan:
         """Parse LLM response into an ExecutionPlan."""
+        logger.info("_parse_plan_response: response length=%d, head=%s...", len(response), response[:100])
         # Handle reasoning model responses: find largest valid JSON
         payload = self._extract_json(response)
+        logger.info("_parse_plan_response: JSON extracted, keys=%s", list(payload.keys()) if isinstance(payload, dict) else "NOT DICT")
 
         steps = []
         for step_data in payload.get("steps", []):
