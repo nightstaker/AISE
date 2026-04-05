@@ -2,6 +2,9 @@
 
 import pytest
 
+# Mark all tests in this file as slow (webhook server integration)
+pytestmark = pytest.mark.slow
+
 from aise.whatsapp.client import WhatsAppClient, WhatsAppConfig
 from aise.whatsapp.webhook import WebhookServer
 

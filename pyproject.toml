@@ -50,14 +50,5 @@ select = ["E", "F", "W", "I"]
 "tests/*" = ["E501"]  # Allow long lines in tests (strings, docstrings, heredocs)
 
 [tool.pytest.ini_options]
-testpaths = [
-    "tests/test_agents",
-    "tests/test_core",
-    "tests/test_e2e",
-    "tests/test_github",
-    "tests/test_langchain",
-    "tests/test_reliability",
-    "tests/test_skills",
-    "tests/test_system",
-]
+testpaths = ["tests"]
 pythonpath = ["src"]

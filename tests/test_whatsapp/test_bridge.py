@@ -1,5 +1,10 @@
 """Tests for the MessageBus-to-WhatsApp bridge."""
 
+import pytest
+
+# Mark all tests in this file as slow (MessageBus integration)
+pytestmark = pytest.mark.slow
+
 from aise.core.message import Message, MessageBus, MessageType
 from aise.whatsapp.bridge import WhatsAppBridge
 from aise.whatsapp.group import GroupChat, GroupMember, MemberRole

@@ -1,5 +1,10 @@
 """Tests for the WhatsApp group session."""
 
+import pytest
+
+# Mark all tests in this file as slow (session/orchestrator integration)
+pytestmark = pytest.mark.slow
+
 from aise.config import ProjectConfig
 from aise.main import create_team
 from aise.whatsapp.session import WhatsAppGroupSession

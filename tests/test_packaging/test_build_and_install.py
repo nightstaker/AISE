@@ -11,6 +11,9 @@ from pathlib import Path
 
 import pytest
 
+# Mark all tests in this file as slow (real subprocess operations)
+pytestmark = pytest.mark.slow
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 

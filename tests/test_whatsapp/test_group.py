@@ -2,6 +2,9 @@
 
 import pytest
 
+# Mark all tests in this file as slow (group chat integration)
+pytestmark = pytest.mark.slow
+
 from aise.whatsapp.group import GroupChat, GroupMember, MemberRole
 
 
