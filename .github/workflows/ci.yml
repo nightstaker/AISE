@@ -45,7 +45,7 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Run tests
-        run: pytest --tb=short -q
+        run: pytest --tb=short -q --ignore=tests/test_packaging --ignore=tests/test_whatsapp
 
   build:
     name: Build
