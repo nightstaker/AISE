@@ -14,6 +14,8 @@ import json
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
 from aise.core.ai_planner import AIPlanner, ExecutionPlan, PlannerContext, PlanStep
 from aise.core.artifact import ArtifactType
 from aise.core.process_registry import ProcessRegistry
@@ -200,16 +202,13 @@ class TestReasoningModelResponses:
         # Should pick the largest JSON (the real plan with 3 steps)
         assert len(plan.steps) == 3
 
-    def test_completely_invalid_response_falls_back(self):
+    def test_completely_invalid_response_raises(self):
+        """AI-First mode: completely invalid LLM response raises, no fallback."""
         client = _mock_llm_client("I don't understand the request, sorry!")
         planner = AIPlanner.from_llm_client(_make_registry(), client)
 
-        plan = planner.generate_plan(PlannerContext(user_requirements="Snake game"))
-        # Should use fallback plan
-        assert len(plan.steps) > 0
-        assert (
-            "Fallback" in plan.reasoning or "fallback" in plan.reasoning.lower() or "LLM unavailable" in plan.reasoning
-        )
+        with pytest.raises(RuntimeError, match="No valid JSON found in response"):
+            planner.generate_plan(PlannerContext(user_requirements="Snake game"))
 
 
 # ── Tests: Replan with LLM ───────────────────────────────────────────────
@@ -292,7 +291,8 @@ class TestReplanWithLLM:
         assert "Rate limit exceeded" in user_msg
         assert "deep_product_workflow" in user_msg
 
-    def test_replan_falls_back_on_llm_failure(self):
+    def test_replan_raises_on_llm_failure(self):
+        """AI-First mode: replan LLM failure raises, no fallback."""
         client = _mock_llm_client("")
         client.complete.side_effect = RuntimeError("Connection refused")
         planner = AIPlanner.from_llm_client(_make_registry(), client)
@@ -306,17 +306,13 @@ class TestReplanWithLLM:
             reasoning="Original",
         )
 
-        recovery = planner.replan(
-            original,
-            failed_step_id="deep_product_workflow",
-            error="Connection refused",
-            completed_artifacts={},
-        )
-
-        # Should contain the failed step + remaining
-        assert len(recovery.steps) >= 1
-        step_ids = [s.process_id for s in recovery.steps]
-        assert "deep_product_workflow" in step_ids
+        with pytest.raises(RuntimeError, match="AI replan LLM failed and fallback is disabled"):
+            planner.replan(
+                original,
+                failed_step_id="deep_product_workflow",
+                error="Connection refused",
+                completed_artifacts={},
+            )
 
 
 # ── Tests: Plan Validation ────────────────────────────────────────────────

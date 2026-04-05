@@ -312,15 +312,10 @@ class TestAIPlanner:
             goal_artifacts=[ArtifactType.SOURCE_CODE],
         )
 
+        # AI-First mode: LLM failure should raise, not fallback
         with patch.object(planner, "_call_llm", side_effect=Exception("LLM unavailable")):
-            plan = planner.generate_plan(context)
-
-        # Should fall back to registry's dependency chain
-        assert isinstance(plan, ExecutionPlan)
-        assert len(plan.steps) >= 1
-        process_ids = [s.process_id for s in plan.steps]
-        # Must include code_gen at minimum
-        assert "code_gen" in process_ids
+            with pytest.raises(RuntimeError, match="AI planner LLM failed and fallback is disabled"):
+                planner.generate_plan(context)
 
     def test_planner_prompt_includes_catalog(self, sample_registry):
         """The prompt sent to LLM must include the process catalog."""

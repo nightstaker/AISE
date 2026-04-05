@@ -147,13 +147,16 @@ class DynamicEngine:
             project_name,
         )
 
-        # Step 2: Validate and auto-resolve missing dependencies
+        # Step 2: Auto-resolve missing dependencies and validate
         plan = self._auto_resolve_dependencies(plan)
         errors = self.planner.validate_plan(plan)
         if errors:
-            logger.warning("Plan validation warnings: %s", errors)
-            # Try to fix or use fallback
-            plan = self.planner._fallback_plan(context)
+            # DISABLED FALLBACK: AI-First requires valid LLM-generated plan
+            raise ValueError(
+                f"AI-First plan validation failed with {len(errors)} error(s): "
+                f"{'; '.join(errors[:5])}. "
+                f"Fallback is disabled. Check AI planner output and process registry."
+            )
 
         # Step 3: Execute with replan loop
         all_results: list[StepResult] = []
