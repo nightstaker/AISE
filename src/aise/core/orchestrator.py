@@ -197,7 +197,6 @@ class Orchestrator:
         """
         from .ai_planner import AIPlanner, PlannerContext
         from .dynamic_engine import DynamicEngine
-        from .process_md_adapter import ProcessMdAdapter
         from .process_registry import ProcessRegistry
 
         registry = ProcessRegistry.build_default()
@@ -205,13 +204,10 @@ class Orchestrator:
         # Auto-discover skills from registered agents
         registry.auto_discover_from_agents(self._agents)
 
-        # Initialize MD adapter for process template support
-        md_adapter = ProcessMdAdapter()
-
         if llm_client is not None:
-            planner = AIPlanner.from_llm_client(registry, llm_client, md_adapter=md_adapter)
+            planner = AIPlanner.from_llm_client(registry, llm_client)
         else:
-            planner = AIPlanner(registry=registry, md_adapter=md_adapter)
+            planner = AIPlanner(registry=registry)
 
         engine = DynamicEngine(registry, planner, self.artifact_store, project_root=self.project_root)
 
