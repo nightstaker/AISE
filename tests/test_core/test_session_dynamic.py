@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from typing import Any
 
 from aise.core.agent import Agent, AgentRole
@@ -80,6 +81,7 @@ class TestDynamicCommand:
         assert result["status"] == "error"
         assert "requirements" in result["output"].lower()
 
+    @pytest.mark.slow
     def test_dynamic_with_requirements(self):
         session = _setup_session()
         # Add requirement first
@@ -89,6 +91,7 @@ class TestDynamicCommand:
         assert result["status"] == "ok"
         assert "AI-First" in result["output"]
 
+    @pytest.mark.slow
     def test_dynamic_shows_steps(self):
         session = _setup_session()
         session.handle_input("add Build a web app")
@@ -102,6 +105,7 @@ class TestDynamicCommand:
 
 
 class TestPreviewPlan:
+    @pytest.mark.slow
     def test_preview_text_format(self):
         orch = Orchestrator()
         bus = orch.message_bus
@@ -118,6 +122,7 @@ class TestPreviewPlan:
         )
         assert "AI Execution Plan" in result
 
+    @pytest.mark.slow
     def test_preview_mermaid_format(self):
         orch = Orchestrator()
         bus = orch.message_bus
@@ -134,6 +139,7 @@ class TestPreviewPlan:
         )
         assert "graph TD" in result
 
+    @pytest.mark.slow
     def test_preview_summary_format(self):
         orch = Orchestrator()
         bus = orch.message_bus
@@ -150,6 +156,7 @@ class TestPreviewPlan:
         )
         assert "steps" in result
 
+    @pytest.mark.slow
     def test_preview_confirm_format(self):
         orch = Orchestrator()
         bus = orch.message_bus

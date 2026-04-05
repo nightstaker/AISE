@@ -127,6 +127,7 @@ class TestProcessMdAdapter:
 class TestAIPlannerWithProcess:
     """Test AIPlanner with process template constraint."""
 
+    @pytest.mark.slow
     def test_plan_with_waterfall_process(self, registry: ProcessRegistry, md_adapter: ProcessMdAdapter) -> None:
         """AIPlanner should generate a plan that follows waterfall template."""
         planner = AIPlanner(registry=registry, md_adapter=md_adapter)
@@ -143,6 +144,7 @@ class TestAIPlannerWithProcess:
         assert plan is not None
         assert len(plan.steps) > 0
 
+    @pytest.mark.slow
     def test_plan_auto_selects_process(self, registry: ProcessRegistry, md_adapter: ProcessMdAdapter) -> None:
         """AIPlanner should auto-select process when no ID is given."""
         planner = AIPlanner(registry=registry, md_adapter=md_adapter)
@@ -157,6 +159,7 @@ class TestAIPlannerWithProcess:
         assert plan is not None
         assert len(plan.steps) > 0
 
+    @pytest.mark.slow
     def test_plan_includes_process_steps(self, registry: ProcessRegistry, md_adapter: ProcessMdAdapter) -> None:
         """Generated plan should include steps from the selected process."""
         planner = AIPlanner(registry=registry, md_adapter=md_adapter)
@@ -180,6 +183,7 @@ class TestAIPlannerWithProcess:
             f"Plan missing key phases. Steps: {step_process_ids}"
         )
 
+    @pytest.mark.slow
     def test_plan_respects_process_agent_constraints(
         self, registry: ProcessRegistry, md_adapter: ProcessMdAdapter
     ) -> None:

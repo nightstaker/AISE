@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from typing import Any
 
 from aise.core.agent import Agent, AgentRole
@@ -74,6 +76,7 @@ def _setup_orchestrator() -> Orchestrator:
 class TestOrchestratorDynamicWorkflow:
     """Test the AI-First dynamic workflow via Orchestrator."""
 
+    @pytest.mark.slow
     def test_dynamic_workflow_runs_without_llm(self):
         """Without LLM, falls back to dependency resolution."""
         orch = _setup_orchestrator()
@@ -88,6 +91,7 @@ class TestOrchestratorDynamicWorkflow:
         assert isinstance(result["plan"], dict)
         assert result["plan"]["goal"]
 
+    @pytest.mark.slow
     def test_dynamic_workflow_produces_artifacts(self):
         """Dynamic workflow should produce artifacts tracked in the store."""
         orch = _setup_orchestrator()
@@ -107,6 +111,7 @@ class TestOrchestratorDynamicWorkflow:
                 art = orch.artifact_store.get(step["artifact_id"])
                 assert art is not None
 
+    @pytest.mark.slow
     def test_dynamic_workflow_with_existing_artifacts(self):
         """When artifacts already exist, corresponding steps should be skipped."""
         orch = _setup_orchestrator()
@@ -132,6 +137,7 @@ class TestOrchestratorDynamicWorkflow:
             skipped = [s for s in result["step_results"] if s["status"] == "skipped"]
             assert len(skipped) > 0
 
+    @pytest.mark.slow
     def test_dynamic_workflow_with_goal_artifacts(self):
         """Custom goal artifacts change what the planner targets."""
         orch = _setup_orchestrator()
@@ -146,6 +152,7 @@ class TestOrchestratorDynamicWorkflow:
         # Plan should target architecture design
         assert "design" in result["plan"]["goal"].lower() or len(result["step_results"]) > 0
 
+    @pytest.mark.slow
     def test_dynamic_workflow_returns_plan_metadata(self):
         """Result includes the generated plan for transparency."""
         orch = _setup_orchestrator()
@@ -161,6 +168,7 @@ class TestOrchestratorDynamicWorkflow:
         assert "steps" in plan
         assert isinstance(plan["steps"], list)
 
+    @pytest.mark.slow
     def test_both_workflows_coexist(self):
         """run_default_workflow and run_dynamic_workflow can both be used."""
         orch = _setup_orchestrator()

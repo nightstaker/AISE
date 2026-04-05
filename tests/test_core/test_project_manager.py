@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 from pathlib import Path
 
 from aise.config import ProjectConfig
@@ -82,6 +83,7 @@ class TestProjectManagerGlobalConfig:
         assert config.default_model.provider == "anthropic"
         assert config.workflow.max_review_iterations == 5
 
+    @pytest.mark.slow
     def test_run_project_workflow_supports_deep_orchestrator_result(self, tmp_path):
         manager = ProjectManager(
             projects_root=tmp_path / "projects",
@@ -126,6 +128,7 @@ class TestProjectManagerGlobalConfig:
         assert rows[1]["tasks"]["architect.deep_architecture_workflow"]["status"] == "success"
         assert rows[2]["tasks"]["developer.deep_developer_workflow"]["status"] == "success"
 
+    @pytest.mark.slow
     def test_run_project_workflow_deep_error_maps_to_failed_row(self, tmp_path):
         manager = ProjectManager(
             projects_root=tmp_path / "projects",
@@ -157,6 +160,7 @@ class TestProjectManagerGlobalConfig:
         assert rows[0]["status"] == "failed"
         assert rows[0]["tasks"]["deep_orchestrator.run_workflow"]["status"] == "error"
 
+    @pytest.mark.slow
     def test_run_project_workflow_falls_back_when_deep_returns_empty(self, tmp_path):
         manager = ProjectManager(
             projects_root=tmp_path / "projects",
