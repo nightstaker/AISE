@@ -209,9 +209,9 @@ class Orchestrator:
         md_adapter = ProcessMdAdapter()
 
         if llm_client is not None:
-            planner = AIPlanner.from_llm_client(registry, llm_client, md_adapter=md_adapter)
+            planner = AIPlanner.from_llm_client(registry, llm_client)
         else:
-            planner = AIPlanner(registry=registry, md_adapter=md_adapter)
+            planner = AIPlanner(registry=registry)
 
         engine = DynamicEngine(registry, planner, self.artifact_store, project_root=self.project_root)
 
