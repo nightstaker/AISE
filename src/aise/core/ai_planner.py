@@ -183,55 +183,98 @@ Select only the processes that are actually needed for the given requirements.
 {catalog}
 
 ## Rules
-1. Each step must reference a process_id from the catalog.
-2. Set depends_on_steps to enforce ordering where needed (artifact dependencies).
-3. Prefer deep_workflow processes over their constituent steps when available
-   (e.g., use deep_product_workflow instead of requirement_analysis + user_story_writing + ...).
-4. Skip processes whose output artifacts are already available.
-5. Only include processes that contribute to the goal.
-6. Assign each step to an agent from the process's agent_roles list.
-7. Do NOT include on_demand_only processes unless explicitly requested.
-8. CRITICAL: Respect depends_on fields. If a process depends_on artifacts X, Y,
-   you MUST include a preceding step that produces X and Y. For a full SDLC project,
-   start with deep_product_workflow (or requirement_analysis) to produce REQUIREMENTS
-   and SYSTEM_REQUIREMENTS before architecture or implementation steps.
-9. For a typical software project, the MINIMUM viable plan is:
-   deep_product_workflow → deep_architecture_workflow → deep_developer_workflow.
-10. DEPENDENCY CHAIN EXAMPLE: If step B produces SOURCE_CODE and step C depends on SOURCE_CODE,
-    then step C's depends_on_steps MUST include step B's process_id. Never skip prerequisite steps.
-11. ARTIFACT FLOW: Always trace the artifact production chain. If your goal is SOURCE_CODE,
-    work backwards: SOURCE_CODE is produced by deep_developer_workflow, which needs ARCHITECTURE,
-    which needs REQUIREMENTS from deep_product_workflow. Include ALL steps in the chain.
+1. Each step must reference a process_id from the catalog exactly.
+2. Agent must be one of the agent_roles listed for that process.
+3. depends_on_steps lists process_ids of steps that MUST complete first.
+4. Order steps so that artifact dependencies are satisfied before use.
+5. Skip processes whose output artifacts are already available.
+6. Include a brief rationale explaining why each step is needed.
+7. For complex projects (multiple subsystems, integrations, authentication, etc.),
+   include ALL deep workflow phases: deep_product_workflow -> deep_architecture_workflow -> deep_developer_workflow.
+8. For simple projects (single-purpose scripts, small utilities), you may skip
+   phases that are not strictly necessary.
+9. MANDATORY DEPENDENCY CHAIN: If a step produces artifact A and another step
+   requires artifact A, the producer MUST come before the consumer in depends_on_steps.
+10. COMMON DEPENDENCY CHAIN for software projects:
+    - deep_product_workflow produces REQUIREMENTS and SYSTEM_REQUIREMENTS
+    - deep_architecture_workflow requires REQUIREMENTS and produces ARCHITECTURE_DESIGN
+    - deep_developer_workflow requires ARCHITECTURE_DESIGN and produces SOURCE_CODE
+    - deep_testing_workflow requires SOURCE_CODE and produces TEST_RESULTS
+    - NEVER skip a prerequisite step - always include the full chain
+11. ARTIFACT FLOW ANALYSIS: Before generating the plan, trace the artifact chain:
+    - What final artifact is needed? (e.g., SOURCE_CODE for a working app)
+    - What produces it? (e.g., deep_developer_workflow)
+    - What does that require? (e.g., ARCHITECTURE_DESIGN)
+    - What produces THAT? (e.g., deep_architecture_workflow)
+    - Continue until you reach the root (raw requirements)
+    - Include ALL steps in this chain
+12. PROJECT COMPLEXITY ASSESSMENT: Analyze the requirements to determine complexity:
+    - Simple: Single-purpose script, no UI, no data persistence (< 3 features)
+    - Medium: Web app with UI, basic CRUD, 3-10 features
+    - Complex: Multi-subsystem, authentication, APIs, integrations, > 10 features
+    - For Medium/Complex projects: ALWAYS include full deep workflow chain
+13. INPUT MAPPING: Set input_mapping to map artifact IDs from previous steps
+    to the expected input keys of the current step.
+
+## Artifact Types and Their Producers
+- REQUIREMENTS: produced by deep_product_workflow
+- SYSTEM_REQUIREMENTS: produced by deep_product_workflow
+- ARCHITECTURE_DESIGN: produced by deep_architecture_workflow
+- SUBSYSTEM_DESIGNS: produced by deep_architecture_workflow
+- SOURCE_CODE: produced by deep_developer_workflow
+- TEST_RESULTS: produced by deep_testing_workflow
 
 ## Example Plans
-GOOD (correct dependency chain for a web app):
-```
+
+GOOD (correct dependency chain for a Todo App):
+```json
 {{
-  "goal": "Build a web application",
+  "goal": "Build a Todo web application with user authentication",
+  "reasoning": "Medium complexity: needs UI, auth, data persistence. Full deep workflow required.",
   "steps": [
     {{
       "process_id": "deep_product_workflow",
       "agent": "product_manager",
-      "rationale": "Produces REQUIREMENTS and SYSTEM_REQUIREMENTS",
+      "rationale": "Produces REQUIREMENTS and SYSTEM_REQUIREMENTS from raw requirements",
+      "input_mapping": {{"raw_requirements": "user_input"}},
       "depends_on_steps": []
     }},
     {{
       "process_id": "deep_architecture_workflow",
       "agent": "architect",
-      "rationale": "Needs REQUIREMENTS from previous step",
+      "rationale": "Needs REQUIREMENTS from deep_product_workflow to produce ARCHITECTURE_DESIGN",
+      "input_mapping": {{"requirements": "<artifact_id_from_deep_product_workflow>"}},
       "depends_on_steps": ["deep_product_workflow"]
     }},
     {{
       "process_id": "deep_developer_workflow",
       "agent": "developer",
-      "rationale": "Needs ARCHITECTURE_DESIGN from previous step",
+      "rationale": "Needs ARCHITECTURE_DESIGN from deep_architecture_workflow to produce SOURCE_CODE",
+      "input_mapping": {{"architecture": "<artifact_id_from_deep_architecture_workflow>"}},
       "depends_on_steps": ["deep_architecture_workflow"]
     }}
   ]
 }}
 ```
 
-BAD (missing prerequisite steps):
+GOOD (Simple script project - can skip some phases):
+```json
+{{
+  "goal": "Create a Python script to convert PDF to text",
+  "reasoning": "Simple single-purpose utility. Only needs code generation, no architecture design needed.",
+  "steps": [
+    {{
+      "process_id": "code_generation",
+      "agent": "developer",
+      "rationale": "Direct code generation from requirements for simple script",
+      "input_mapping": {{"raw_requirements": "user_input"}},
+      "depends_on_steps": []
+    }}
+  ]
+}}
+```
+
+BAD (missing dependency chain - DO NOT DO THIS):
 ```
 {{
   "goal": "Build a web application",
@@ -239,19 +282,41 @@ BAD (missing prerequisite steps):
     {{
       "process_id": "deep_architecture_workflow",
       "agent": "architect",
-      "rationale": "..."
+      "rationale": "...",
+      "depends_on_steps": []
     }},
     {{
       "process_id": "deep_developer_workflow",
       "agent": "developer",
-      "rationale": "..."
+      "rationale": "...",
+      "depends_on_steps": ["deep_architecture_workflow"]
     }}
   ]
 }}
 ```
+This is BAD because deep_architecture_workflow requires REQUIREMENTS, but no step produces it.
+
+BAD (wrong dependency direction):
+```
+{{
+  "steps": [
+    {{
+      "process_id": "deep_developer_workflow",
+      "agent": "developer",
+      "depends_on_steps": []
+    }},
+    {{
+      "process_id": "deep_architecture_workflow",
+      "agent": "architect",
+      "depends_on_steps": ["deep_developer_workflow"]
+    }}
+  ]
+}}
+```
+This is BAD because developer needs architecture, not the reverse.
 
 ## Output Format
-Return STRICT JSON:
+Return STRICT JSON only (no markdown fences, no reasoning prefix):
 {{
   "goal": "...",
   "reasoning": "...",
