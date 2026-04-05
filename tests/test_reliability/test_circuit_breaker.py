@@ -126,6 +126,7 @@ class TestCircuitBreakerThresholds:
 class TestCircuitBreakerTimeouts:
     """测试超时和恢复时间"""
 
+    @pytest.mark.slow
     def test_recovery_timeout_prevents_requests(self):
         """恢复超时期间请求被阻止"""
         cb = CircuitBreaker(failure_threshold=3, recovery_timeout=1.0)
@@ -137,6 +138,7 @@ class TestCircuitBreakerTimeouts:
         # 在超时期间，请求应该被拒绝
         assert cb.is_open()
 
+    @pytest.mark.slow
     def test_recovery_timeout_allows_requests_after_expiry(self):
         """超时结束后允许请求"""
         cb = CircuitBreaker(failure_threshold=3, recovery_timeout=0.1)

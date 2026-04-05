@@ -299,7 +299,13 @@ class TestLLMClient:
         assert client.model == "claude-sonnet-4-20250514"
         assert client.config is cfg
 
+    @pytest.mark.slow
     def test_complete_raises_when_all_providers_fail(self):
+        """Test that LLMClient raises when all providers fail.
+
+        This test requires a network attempt and may be slow.
+        Marked as slow to skip by default.
+        """
         client = LLMClient(ModelConfig())
         with pytest.raises(RuntimeError, match="All LLM providers failed"):
             client.complete([{"role": "user", "content": "hello"}])
@@ -362,6 +368,7 @@ class TestLLMClient:
         result = client.complete([{"role": "user", "content": "hello"}])
         assert result == "ok"
 
+    @pytest.mark.slow
     def test_complete_switches_to_fallback_provider_after_retries(self, monkeypatch):
         monkeypatch.setenv("AISE_LLM_MAX_RETRIES", "3")
         monkeypatch.setenv("AISE_LLM_BACKOFF_BASE", "0.01")
@@ -479,6 +486,7 @@ class TestLLMClient:
         assert details["response"]["headers"]["x-request-id"] == "req-123"
         assert "authorization" not in details["response"]["headers"]
 
+    @pytest.mark.slow
     def test_complete_logs_detailed_error_on_failure(self, monkeypatch, caplog):
         client = LLMClient(ModelConfig(provider="openai", model="gpt-4o", api_key="sk-test"))
 

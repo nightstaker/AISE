@@ -62,6 +62,7 @@ class TimeoutHandler:
         self.on_timeout = on_timeout
         self.on_success = on_success
         self._executor = ThreadPoolExecutor(max_workers=1)
+        self._shutdown = False
 
     def execute(self, func: Callable[..., Any], *args, timeout: Optional[float] = None, **kwargs) -> Any:
         """执行函数，带超时控制
@@ -119,6 +120,31 @@ class TimeoutHandler:
                 self.on_timeout(func_name, timeout)
 
             raise TimeoutError(f"{func_name} timed out after {timeout:.2f} seconds")
+
+    def shutdown(self, wait: bool = True) -> None:
+        """清理线程池资源
+
+        Args:
+            wait: 是否等待挂起的任务完成
+        """
+        if not self._shutdown:
+            self._executor.shutdown(wait=wait)
+            self._shutdown = True
+
+    def __enter__(self) -> "TimeoutHandler":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        self.shutdown(wait=False)
+        return False
+
+    def __del__(self) -> None:
+        """析构时确保线程池被清理"""
+        try:
+            if not self._shutdown:
+                self._executor.shutdown(wait=False)
+        except Exception:
+            pass
 
 
 def timeout(
