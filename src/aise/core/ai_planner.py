@@ -424,8 +424,11 @@ class AIPlanner:
             )
             return plan
         except Exception as exc:
-            logger.warning("AI planner LLM failed, using fallback: error=%s", exc)
-            return self._fallback_plan(context)
+            # DISABLED FALLBACK: AI-First requires LLM-generated plan
+            raise RuntimeError(
+                f"AI planner LLM failed and fallback is disabled (AI-First mode). "
+                f"Error: {exc}. Check LLM API connectivity, model availability, and prompt validity."
+            ) from exc
 
     def replan(
         self,
@@ -464,40 +467,12 @@ class AIPlanner:
             logger.info("Recovery plan generated: steps=%d", len(plan.steps))
             return plan
         except Exception as exc:
-            logger.warning("Recovery plan LLM failed, using fallback: error=%s", exc)
-            # Fallback: retry the failed step + remaining steps
-            remaining = []
-            found_failed = False
-            for step in original_plan.steps:
-                if step.process_id == failed_step_id:
-                    found_failed = True
-                if found_failed:
-                    new_step = PlanStep(
-                        process_id=step.process_id,
-                        agent=step.agent,
-                        rationale=f"Retry/continue after failure: {error}",
-                        input_mapping=step.input_mapping,
-                        depends_on_steps=[
-                            d
-                            for d in step.depends_on_steps
-                            if d not in [s.process_id for s in original_plan.steps[: original_plan.steps.index(step)]]
-                            or d == failed_step_id
-                        ],
-                    )
-                    remaining.append(new_step)
-            # Fix dependencies: remove references to completed steps
-            completed_step_ids = set()
-            for step in original_plan.steps:
-                if step.process_id == failed_step_id:
-                    break
-                completed_step_ids.add(step.process_id)
-            for step in remaining:
-                step.depends_on_steps = [d for d in step.depends_on_steps if d not in completed_step_ids]
-            return ExecutionPlan(
-                goal=original_plan.goal,
-                steps=remaining,
-                reasoning=f"Fallback recovery after {failed_step_id} failed: {error}",
-            )
+            # DISABLED FALLBACK: AI-First requires LLM-generated replan
+            raise RuntimeError(
+                f"AI replan LLM failed and fallback is disabled (AI-First mode). "
+                f"Original plan failed at step '{failed_step_id}'. Error: {exc}. "
+                f"Check LLM API, model availability, and error context."
+            ) from exc
 
     def validate_plan(self, plan: ExecutionPlan) -> list[str]:
         """Validate a plan against the process registry."""

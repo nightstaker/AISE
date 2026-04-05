@@ -220,74 +220,53 @@ class ProjectManager:
         if project is None:
             raise ValueError(f"Project {project_id} not found")
 
-        logger.info("Project workflow started: project_id=%s name=%s", project_id, project.project_name)
+        logger.info("AI-First workflow started: project_id=%s name=%s", project_id, project.project_name)
         orchestrator = project.orchestrator
-
-        # --- AI-First path: dynamic workflow via AIPlanner ---
         base_orchestrator = getattr(orchestrator, "orchestrator", orchestrator)
-        if hasattr(base_orchestrator, "run_dynamic_workflow"):
-            try:
-                # Get an LLM client from any registered agent for the planner
-                llm_client = self._get_planner_llm_client(base_orchestrator)
-                logger.info(
-                    "Using AI-First dynamic workflow: project_id=%s name=%s",
-                    project_id,
-                    project.project_name,
-                )
-                # Reuse preview plan if available to avoid regenerating
-                preview_plan = getattr(project, "_dynamic_plan", None)
-                dynamic_result = base_orchestrator.run_dynamic_workflow(
-                    project_input=requirements,
-                    project_name=project.project_name,
-                    llm_client=llm_client,
-                    progress_callback=progress_callback,
-                    existing_plan=preview_plan,
-                    selected_process_id=selected_process_id,
-                )
-                # Store the dynamic plan on the project for UI access
-                project._dynamic_plan = dynamic_result.get("plan")  # type: ignore[attr-defined]
-                rows = self._normalize_dynamic_workflow_result(dynamic_result)
-                if rows:
-                    return rows
-                logger.warning(
-                    "Dynamic workflow returned empty result, falling back: project_id=%s",
-                    project_id,
-                )
-            except Exception:
-                logger.exception(
-                    "Dynamic workflow failed, falling back to static: project_id=%s",
-                    project_id,
-                )
 
-        # --- Fallback: DeepOrchestrator (LangGraph supervisor) ---
-        if hasattr(orchestrator, "run_workflow"):
-            deep_result = orchestrator.run_workflow(  # type: ignore[call-arg]
-                requirements,
-                project.project_name,
-            )
-            rows = self._normalize_deep_workflow_result(deep_result)
-            if rows:
-                return rows
+        if not hasattr(base_orchestrator, "run_dynamic_workflow"):
+            raise ValueError(f"Project {project_id} orchestrator does not support AI-First dynamic workflow")
 
-        # --- Fallback: classic static workflow ---
-        if hasattr(orchestrator, "run_default_workflow"):
-            logger.warning(
-                "Falling back to static default workflow: project_id=%s",
-                project_id,
-            )
-            return orchestrator.run_default_workflow(  # type: ignore[no-any-return]
-                requirements,
-                project.project_name,
+        # AI-First only: dynamic workflow via AIPlanner (NO FALLBACK)
+        # Get an LLM client from any registered agent for the planner
+        llm_client = self._get_planner_llm_client(base_orchestrator)
+        if llm_client is None:
+            raise ValueError(f"Project {project_id} has no LLM client available for AI planner")
+
+        logger.info("AI-First dynamic workflow: project_id=%s name=%s", project_id, project.project_name)
+
+        # Reuse preview plan if available to avoid regenerating
+        preview_plan = getattr(project, "_dynamic_plan", None)
+        dynamic_result = base_orchestrator.run_dynamic_workflow(
+            project_input=requirements,
+            project_name=project.project_name,
+            llm_client=llm_client,
+            progress_callback=progress_callback,
+            existing_plan=preview_plan,
+            selected_process_id=selected_process_id,
+        )
+
+        # Store the dynamic plan on the project for UI access
+        project._dynamic_plan = dynamic_result.get("plan")  # type: ignore[attr-defined]
+
+        # Validate result
+        step_results = dynamic_result.get("step_results", [])
+        if not step_results:
+            raise ValueError(
+                f"AI-First dynamic workflow returned no steps executed for project {project_id}. "
+                f"This indicates the AI planner or execution engine failed. "
+                f"Check logs for AI planner errors or LLM failures."
             )
 
-        base_orch = getattr(orchestrator, "orchestrator", None)
-        if base_orch is not None and hasattr(base_orch, "run_default_workflow"):
-            return base_orch.run_default_workflow(  # type: ignore[no-any-return]
-                requirements,
-                project.project_name,
+        rows = self._normalize_dynamic_workflow_result(dynamic_result)
+        if not rows:
+            raise ValueError(
+                f"AI-First dynamic workflow returned no phase results for project {project_id}. "
+                f"Steps were executed but normalization failed. Check _normalize_dynamic_workflow_result."
             )
 
-        raise ValueError(f"Project {project_id} orchestrator does not support workflow execution")
+        logger.info("AI-First workflow completed: project_id=%s phases=%d", project_id, len(rows))
+        return rows
 
     @staticmethod
     def _get_planner_llm_client(orchestrator: Any) -> Any:

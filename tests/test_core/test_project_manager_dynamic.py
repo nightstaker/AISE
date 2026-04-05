@@ -102,7 +102,8 @@ class TestRunProjectWorkflowDynamic:
         assert hasattr(project, "_dynamic_plan")
         assert project._dynamic_plan["reasoning"] == "Selected product and architecture workflows"
 
-    def test_fallback_on_dynamic_failure(self):
+    def test_dynamic_failure_raises_no_fallback(self):
+        """AI-First mode: dynamic workflow failure raises, no fallback."""
         pm = self._make_pm()
         project = self._make_project(has_dynamic=True)
         pm._projects["p1"] = project
@@ -110,16 +111,12 @@ class TestRunProjectWorkflowDynamic:
         base = project.orchestrator.orchestrator
         base.run_dynamic_workflow.side_effect = RuntimeError("LLM planning failed")
 
-        # Should fall back to run_workflow (DeepOrchestrator)
-        project.orchestrator.run_workflow.return_value = {
-            "messages": [],
-            "phase_results": {"requirements_product_manager": {"status": "completed"}},
-        }
+        # AI-First: should raise, NOT fallback
+        with pytest.raises(RuntimeError, match="LLM planning failed"):
+            pm.run_project_workflow("p1", {"raw_requirements": "test"})
 
-        pm.run_project_workflow("p1", {"raw_requirements": "test"})
-        project.orchestrator.run_workflow.assert_called_once()
-
-    def test_fallback_on_empty_dynamic_result(self):
+    def test_empty_dynamic_result_raises_no_fallback(self):
+        """AI-First mode: empty step_results raises, no fallback."""
         pm = self._make_pm()
         project = self._make_project(
             has_dynamic=True,
@@ -127,27 +124,19 @@ class TestRunProjectWorkflowDynamic:
         )
         pm._projects["p1"] = project
 
-        project.orchestrator.run_workflow.return_value = {
-            "messages": [],
-            "phase_results": {"requirements_product_manager": {"status": "completed"}},
-        }
+        # AI-First: empty results should raise ValueError
+        with pytest.raises(ValueError, match="no steps executed"):
+            pm.run_project_workflow("p1", {"raw_requirements": "test"})
 
-        pm.run_project_workflow("p1", {"raw_requirements": "test"})
-        # Dynamic returned empty → should try run_workflow fallback
-        project.orchestrator.run_workflow.assert_called_once()
-
-    def test_no_dynamic_uses_deep_orchestrator(self):
+    def test_no_dynamic_workflow_raises_no_deep_fallback(self):
+        """AI-First mode: missing run_dynamic_workflow raises, no DeepOrchestrator fallback."""
         pm = self._make_pm()
         project = self._make_project(has_dynamic=False)
         pm._projects["p1"] = project
 
-        project.orchestrator.run_workflow.return_value = {
-            "messages": [],
-            "phase_results": {"requirements_product_manager": {"status": "completed"}},
-        }
-
-        pm.run_project_workflow("p1", {"raw_requirements": "test"})
-        project.orchestrator.run_workflow.assert_called_once()
+        # AI-First: should raise, NOT fallback to DeepOrchestrator
+        with pytest.raises(ValueError, match="does not support AI-First dynamic workflow"):
+            pm.run_project_workflow("p1", {"raw_requirements": "test"})
 
     def test_project_not_found_raises(self):
         pm = self._make_pm()
