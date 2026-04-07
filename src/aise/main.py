@@ -5,10 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 
 from .agents import (
@@ -121,101 +119,36 @@ def create_team(
     return orchestrator
 
 
-def run_project(requirements: str, project_name: str = "My Project") -> list[dict]:
-    """Run the full SDLC workflow for given requirements.
+def run_project(requirements: str, project_name: str = "My Project") -> str:
+    """Run the full project workflow via RuntimeManager + ProjectSession.
+
+    The project_manager agent autonomously selects a process, assembles
+    a team, plans the workflow, and drives execution via A2A protocol.
 
     Args:
         requirements: Raw requirements text.
         project_name: Name of the project.
 
     Returns:
-        List of phase results.
+        The project_manager's delivery report.
     """
-    project_root = _prepare_run_project_root(project_name)
-    orchestrator = create_team(project_root=str(project_root))
-    return orchestrator.run_default_workflow(
-        project_input={"raw_requirements": requirements},
-        project_name=project_name,
-    )
+    from .runtime import ProjectSession, RuntimeManager
 
+    config = _load_cli_project_config(project_name)
+    manager = RuntimeManager(config=config)
+    manager.start()
+    try:
+        # Create project output directory
+        projects_root = Path("projects")
+        projects_root.mkdir(parents=True, exist_ok=True)
+        project_dir = projects_root / project_name.lower().replace(" ", "-")
+        project_dir.mkdir(parents=True, exist_ok=True)
 
-def run_project_dynamic(
-    requirements: str,
-    project_name: str = "My Project",
-    goal_artifacts: list[str] | None = None,
-) -> dict:
-    """Run an AI-planned dynamic workflow for given requirements.
+        session = ProjectSession(manager, project_root=str(project_dir))
+        return session.run(requirements)
+    finally:
+        manager.stop()
 
-    This is the AI-First alternative to run_project(). Instead of
-    following a fixed 4-phase pipeline, the AI planner dynamically
-    selects and orders processes based on the actual requirements.
-
-    Args:
-        requirements: Raw requirements text.
-        project_name: Name of the project.
-        goal_artifacts: Desired output artifact types (default: source_code).
-
-    Returns:
-        Dict with status, step_results, artifact_ids, plan metadata.
-    """
-    from .core.artifact import ArtifactType
-
-    project_root = _prepare_run_project_root(project_name)
-    orchestrator = create_team(project_root=str(project_root))
-
-    goals = None
-    if goal_artifacts:
-        goals = []
-        for name in goal_artifacts:
-            try:
-                goals.append(ArtifactType(name))
-            except ValueError:
-                pass
-
-    return orchestrator.run_dynamic_workflow(
-        project_input={"raw_requirements": requirements},
-        project_name=project_name,
-        goal_artifacts=goals,
-    )
-
-
-def _slugify_name(text: str) -> str:
-    chars: list[str] = []
-    prev_sep = False
-    for ch in text.lower().strip():
-        if ch.isalnum():
-            chars.append(ch)
-            prev_sep = False
-            continue
-        if not prev_sep:
-            chars.append("-")
-        prev_sep = True
-    value = "".join(chars).strip("-")
-    return value or "project"
-
-
-def _prepare_run_project_root(project_name: str) -> Path:
-    projects_root = Path("projects")
-    projects_root.mkdir(parents=True, exist_ok=True)
-    ts = int(datetime.now().timestamp())
-    run_root = projects_root / f"project_{_next_project_index(projects_root)}-{_slugify_name(project_name)}-{ts}"
-    run_root.mkdir(parents=True, exist_ok=True)
-    for subdir in ("docs", "src", "tests", "trace"):
-        (run_root / subdir).mkdir(parents=True, exist_ok=True)
-    return run_root
-
-
-def _next_project_index(projects_root: Path) -> int:
-    max_index = -1
-    pattern = re.compile(r"^project_(\d+)-")
-    for path in projects_root.iterdir():
-        if not path.is_dir():
-            continue
-        match = pattern.match(path.name)
-        if not match:
-            continue
-        max_index = max(max_index, int(match.group(1)))
-    return max_index + 1
 
 
 def start_demand_session(project_name: str = "My Project") -> OnDemandSession:
@@ -492,26 +425,38 @@ def main() -> None:
         config = _load_cli_project_config(args.project_name)
         _apply_github_config(args, config)
         configure_logging(config.logging, force=True)
-        project_root = _prepare_run_project_root(args.project_name)
-        orchestrator = create_team(config, project_root=str(project_root))
-        results = orchestrator.run_default_workflow(
-            project_input={"raw_requirements": requirements},
-            project_name=args.project_name,
-        )
+
+        from .runtime import RuntimeManager, ProjectSession
+
+        manager = RuntimeManager(config=config)
+        manager.start()
+
+        print(f"Agents initialized: {', '.join(manager.runtimes.keys())}")
+        print(f"Requirement: {requirements[:120]}{'...' if len(requirements) > 120 else ''}")
+        print()
+
+        session = ProjectSession(manager)
+        result = session.run(requirements)
 
         if args.output:
+            output = {
+                "result": result,
+                "task_log": session.task_log,
+            }
             with open(args.output, "w") as f:
-                json.dump(results, f, indent=2, default=str)
+                json.dump(output, f, indent=2, default=str, ensure_ascii=False)
             print(f"Results written to {args.output}")
         else:
-            print(f"Project root: {project_root}")
-            for result in results:
-                phase = result.get("phase", "unknown")
-                status = result.get("status", "unknown")
-                print(f"Phase: {phase} - Status: {status}")
-                tasks = result.get("tasks", {})
-                for task_key, task_result in tasks.items():
-                    print(f"  {task_key}: {task_result.get('status', 'unknown')}")
+            print(result)
+            if session.task_log:
+                print(f"\n--- A2A task log: {len(session.task_log)} messages ---")
+                for msg in session.task_log:
+                    direction = "->" if msg["type"] == "task_request" else "<-"
+                    agent = msg.get("to") if msg["type"] == "task_request" else msg.get("from")
+                    status = msg.get("status", "")
+                    print(f"  {direction} {agent} [{msg['type']}] {status}")
+
+        manager.stop()
 
     elif args.command == "demand":
         config = _load_cli_project_config(args.project_name)
@@ -568,14 +513,25 @@ def main() -> None:
     elif args.command == "team":
         config = _load_cli_project_config("AISE Team")
         configure_logging(config.logging, force=True)
-        orchestrator = create_team(config)
-        print("AISE Development Team")
+
+        from .runtime import RuntimeManager
+
+        manager = RuntimeManager(config=config)
+        manager.start()
+
+        print("AISE Development Team (Runtime)")
         print("=" * 40)
-        for name, agent in orchestrator.agents.items():
-            print(f"\n{agent.role.value.replace('_', ' ').title()}: {name}")
+        for status in manager.get_agents_status():
+            card = status.get("agent_card", {})
+            print(f"\n{status['role_display']}: {status['name']}  [{status['status']}]")
+            model = status.get("model", {})
+            if model.get("model"):
+                print(f"  Model: {model.get('provider', '')}/{model['model']}")
             if args.verbose:
-                for skill_name, skill in agent.skills.items():
-                    print(f"  - {skill_name}: {skill.description}")
+                for skill in card.get("skills", []):
+                    print(f"  - {skill['id']}: {skill.get('description', '')}")
+
+        manager.stop()
 
     elif args.command == "multi-project":
         config = _load_cli_project_config("Multi Project Session")

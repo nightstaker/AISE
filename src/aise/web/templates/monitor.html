@@ -1,0 +1,5 @@
+{% extends "layout.html" %}
+{% block content %}
+<script id="monitor-initial-data" type="application/json">{{ monitor_data|tojson }}</script>
+<section id="monitor-react-root"></section>
+{% endblock %}
