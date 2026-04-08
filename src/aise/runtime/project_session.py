@@ -63,9 +63,18 @@ def _make_safe_backend(project_root: str | Path) -> Any:
 
 
 _PYTEST_RUNNER_PATTERNS = (
-    "run_pytest", "pytest_runner", "pytest_run", "execute_pytest",
-    "run_tests", "test_runner", "pytest_capture", "pytest_script",
-    "pytest_exec", "test_run", "final_pytest", "py_test",
+    "run_pytest",
+    "pytest_runner",
+    "pytest_run",
+    "execute_pytest",
+    "run_tests",
+    "test_runner",
+    "pytest_capture",
+    "pytest_script",
+    "pytest_exec",
+    "test_run",
+    "final_pytest",
+    "py_test",
 )
 
 
@@ -75,7 +84,9 @@ def _is_pytest_runner_junk(filename: str) -> bool:
     if not lower.endswith((".py", ".sh", ".txt")):
         return False
     return any(p in lower for p in _PYTEST_RUNNER_PATTERNS) or lower in (
-        "test_output.txt", "pytest_output.txt", "output_pytest.txt",
+        "test_output.txt",
+        "pytest_output.txt",
+        "output_pytest.txt",
     )
 
 
@@ -116,7 +127,7 @@ def _normalize_path(path: str) -> str:
     for marker in ("/docs/", "/design/"):
         idx = p.rfind(marker)
         if idx >= 0:
-            sub = p[idx + len(marker):]
+            sub = p[idx + len(marker) :]
             return f"docs/{sub}"
     if p.startswith(("docs/", "design/")):
         sub = p.split("/", 1)[1] if "/" in p else ""
@@ -225,8 +236,7 @@ class ProjectSession:
         if self._pm_runtime is None:
             raise RuntimeError("project_manager runtime not available")
 
-        logger.info("ProjectSession started: session=%s requirement_len=%d",
-                     self._session_id, len(requirement))
+        logger.info("ProjectSession started: session=%s requirement_len=%d", self._session_id, len(requirement))
 
         prompt = (
             f"New project requirement:\n\n{requirement}\n\n"
@@ -239,7 +249,8 @@ class ProjectSession:
         )
 
         response = self._pm_runtime.handle_message(
-            prompt, thread_id=self._session_id,
+            prompt,
+            thread_id=self._session_id,
         )
 
         # Continuation loop: check if the workflow actually finished
@@ -250,7 +261,9 @@ class ProjectSession:
             missing = self._describe_missing_work()
             logger.info(
                 "ProjectSession continuation %d: session=%s reason=%s",
-                attempt + 1, self._session_id, missing,
+                attempt + 1,
+                self._session_id,
+                missing,
             )
 
             continuation_prompt = (
@@ -265,7 +278,8 @@ class ProjectSession:
             )
 
             response = self._pm_runtime.handle_message(
-                continuation_prompt, thread_id=self._session_id,
+                continuation_prompt,
+                thread_id=self._session_id,
             )
 
         logger.info("ProjectSession completed: session=%s", self._session_id)
@@ -297,10 +311,20 @@ class ProjectSession:
 
         # Response looks like a final report
         lower = response.lower()
-        has_completion_signal = any(kw in lower for kw in [
-            "delivery report", "completed", "final report", "summary",
-            "交付", "完成", "总结", "报告", "cycle_complete",
-        ])
+        has_completion_signal = any(
+            kw in lower
+            for kw in [
+                "delivery report",
+                "completed",
+                "final report",
+                "summary",
+                "交付",
+                "完成",
+                "总结",
+                "报告",
+                "cycle_complete",
+            ]
+        )
         if has_completion_signal and len(response.strip()) > 100:
             return True
 
@@ -394,10 +418,14 @@ class ProjectSession:
             """Emit a stage_update if entering a new stage."""
             if session._current_stage != stage:
                 session._current_stage = stage
-                session._emit({
-                    "type": "stage_update", "stage": stage,
-                    "status": "started", "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
+                session._emit(
+                    {
+                        "type": "stage_update",
+                        "stage": stage,
+                        "status": "started",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
 
         @tool
         def list_processes() -> str:
@@ -414,11 +442,15 @@ class ProjectSession:
                 info["file"] = f.name
                 processes.append(info)
 
-            session._emit({
-                "type": "tool_call", "tool": "list_processes",
-                "summary": f"Found {len(processes)} processes: {', '.join(p.get('process_id','') for p in processes)}",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            process_ids = ", ".join(p.get("process_id", "") for p in processes)
+            session._emit(
+                {
+                    "type": "tool_call",
+                    "tool": "list_processes",
+                    "summary": f"Found {len(processes)} processes: {process_ids}",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             return json.dumps({"processes": processes}, ensure_ascii=False)
 
         @tool
@@ -433,11 +465,14 @@ class ProjectSession:
             if not path.is_file():
                 return json.dumps({"error": f"Process file not found: {process_file}"})
             content = path.read_text(encoding="utf-8")
-            session._emit({
-                "type": "tool_call", "tool": "get_process",
-                "summary": f"Read {process_file} ({len(content)} chars)",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            session._emit(
+                {
+                    "type": "tool_call",
+                    "tool": "get_process",
+                    "summary": f"Read {process_file} ({len(content)} chars)",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             return content
 
         @tool
@@ -449,11 +484,14 @@ class ProjectSession:
                 if name == "project_manager":
                     continue  # exclude self
                 agents.append(rt.get_agent_card_dict())
-            session._emit({
-                "type": "tool_call", "tool": "list_agents",
-                "summary": f"Found {len(agents)} agents: {', '.join(a.get('name','') for a in agents)}",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            session._emit(
+                {
+                    "type": "tool_call",
+                    "tool": "list_agents",
+                    "summary": f"Found {len(agents)} agents: {', '.join(a.get('name', '') for a in agents)}",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             return json.dumps({"agents": agents}, ensure_ascii=False)
 
         @tool
@@ -472,23 +510,27 @@ class ProjectSession:
             current_dispatches = sum(1 for e in session._task_log if e.get("type") == "task_request")
             if current_dispatches >= session._MAX_TOTAL_DISPATCHES:
                 logger.warning("dispatch_task refused: cap reached (%d)", current_dispatches)
-                return json.dumps({
-                    "status": "failed",
-                    "error": (
-                        f"Maximum dispatches ({session._MAX_TOTAL_DISPATCHES}) reached. "
-                        "Workflow must finish now. Stop calling tools and produce the "
-                        "final delivery report as text."
-                    ),
-                })
+                return json.dumps(
+                    {
+                        "status": "failed",
+                        "error": (
+                            f"Maximum dispatches ({session._MAX_TOTAL_DISPATCHES}) reached. "
+                            "Workflow must finish now. Stop calling tools and produce the "
+                            "final delivery report as text."
+                        ),
+                    }
+                )
 
             # Use phase as stage name so each workflow phase shows separately
             _enter_stage(phase or "execution")
             rt = session._manager.get_runtime(agent_name)
             if rt is None:
-                return json.dumps({
-                    "status": "failed",
-                    "error": f"Agent '{agent_name}' not found",
-                })
+                return json.dumps(
+                    {
+                        "status": "failed",
+                        "error": f"Agent '{agent_name}' not found",
+                    }
+                )
 
             task_id = uuid.uuid4().hex[:10]
             request_msg = {
@@ -530,9 +572,7 @@ class ProjectSession:
                         "Keep code snippets under 10 lines."
                     )
                 else:
-                    file_rules = (
-                        "Write documents to docs/. Write source code to src/. Write tests to tests/."
-                    )
+                    file_rules = "Write documents to docs/. Write source code to src/. Write tests to tests/."
 
                 full_prompt = (
                     f"{task_description}\n\n"
@@ -658,12 +698,14 @@ class ProjectSession:
                 desc = t.get("task_description", "")
                 step = t.get("step_id", "")
                 ph = t.get("phase", "")
-                raw = dispatch_task.invoke({
-                    "agent_name": agent,
-                    "task_description": desc,
-                    "step_id": step,
-                    "phase": ph,
-                })
+                raw = dispatch_task.invoke(
+                    {
+                        "agent_name": agent,
+                        "task_description": desc,
+                        "step_id": step,
+                        "phase": ph,
+                    }
+                )
                 return json.loads(raw)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(tasks)) as pool:
@@ -677,12 +719,15 @@ class ProjectSession:
 
             ok = sum(1 for r in results if r.get("status") == "completed")
             fail = sum(1 for r in results if r.get("status") == "failed")
-            return json.dumps({
-                "parallel_results": results,
-                "total": len(results),
-                "completed": ok,
-                "failed": fail,
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "parallel_results": results,
+                    "total": len(results),
+                    "completed": ok,
+                    "failed": fail,
+                },
+                ensure_ascii=False,
+            )
 
         @tool
         def run_tdd_cycle(
@@ -711,15 +756,17 @@ class ProjectSession:
 
             # Single-use lock: run_tdd_cycle can only be called ONCE per session
             if getattr(session, "_tdd_cycle_called", False):
-                return json.dumps({
-                    "status": "failed",
-                    "error": (
-                        "run_tdd_cycle has already been called for this project. "
-                        "Implementation phase is DONE. Move to the next phase "
-                        "(QA integration testing) using dispatch_task to qa_engineer."
-                    ),
-                    "do_not_retry": True,
-                })
+                return json.dumps(
+                    {
+                        "status": "failed",
+                        "error": (
+                            "run_tdd_cycle has already been called for this project. "
+                            "Implementation phase is DONE. Move to the next phase "
+                            "(QA integration testing) using dispatch_task to qa_engineer."
+                        ),
+                        "do_not_retry": True,
+                    }
+                )
             session._tdd_cycle_called = True
 
             _enter_stage(phase)
@@ -751,12 +798,14 @@ class ProjectSession:
                     return False, f"pytest execution error: {exc}"
 
             for iteration in range(1, max_iterations + 1):
-                session._emit({
-                    "type": "stage_update",
-                    "stage": f"{phase}_tdd_{iteration}",
-                    "status": "started",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
+                session._emit(
+                    {
+                        "type": "stage_update",
+                        "stage": f"{phase}_tdd_{iteration}",
+                        "status": "started",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
 
                 if iteration == 1:
                     # TDD step 1+2: developer writes tests AND code
@@ -771,12 +820,14 @@ class ProjectSession:
                         f"3. Use write_file for ALL outputs. Use relative paths only.\n\n"
                         f"Do NOT skip tests. Do NOT write tests after code."
                     )
-                    dispatch_task.invoke({
-                        "agent_name": "developer",
-                        "task_description": tdd_desc,
-                        "step_id": "tdd_initial",
-                        "phase": phase,
-                    })
+                    dispatch_task.invoke(
+                        {
+                            "agent_name": "developer",
+                            "task_description": tdd_desc,
+                            "step_id": "tdd_initial",
+                            "phase": phase,
+                        }
+                    )
                 else:
                     # Fix iteration: real pytest output guides the fix
                     fix_desc = (
@@ -788,26 +839,33 @@ class ProjectSession:
                         f"3. Use write_file to save the corrected code\n"
                         f"Be efficient — do NOT read every file in the project."
                     )
-                    dispatch_task.invoke({
-                        "agent_name": "developer",
-                        "task_description": fix_desc,
-                        "step_id": f"tdd_fix_{iteration}",
-                        "phase": phase,
-                    })
+                    dispatch_task.invoke(
+                        {
+                            "agent_name": "developer",
+                            "task_description": fix_desc,
+                            "step_id": f"tdd_fix_{iteration}",
+                            "phase": phase,
+                        }
+                    )
 
                 # System runs pytest (no LLM)
                 all_pass, last_test_output = actually_run_pytest()
-                session._emit({
-                    "type": "tool_call", "tool": "pytest",
-                    "summary": f"TDD iter {iteration}: {'PASSED' if all_pass else 'FAILED'}",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
+                session._emit(
+                    {
+                        "type": "tool_call",
+                        "tool": "pytest",
+                        "summary": f"TDD iter {iteration}: {'PASSED' if all_pass else 'FAILED'}",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
 
-                iteration_results.append({
-                    "iteration": iteration,
-                    "all_tests_pass": all_pass,
-                    "pytest_output": last_test_output[:500],
-                })
+                iteration_results.append(
+                    {
+                        "iteration": iteration,
+                        "all_tests_pass": all_pass,
+                        "pytest_output": last_test_output[:500],
+                    }
+                )
 
                 if all_pass:
                     logger.info("TDD cycle passed at iteration %d", iteration)
@@ -820,19 +878,29 @@ class ProjectSession:
                 "TDD cycle complete: all unit tests pass. Proceed to QA integration testing phase."
                 if final_pass
                 else f"TDD cycle complete: max iterations ({max_iterations}) reached. "
-                     f"Implementation done. Proceed to next phase. Do NOT call run_tdd_cycle again."
+                f"Implementation done. Proceed to next phase. Do NOT call run_tdd_cycle again."
             )
-            return json.dumps({
-                "cycle_complete": True,
-                "all_tests_pass": final_pass,
-                "iterations": iteration_results,
-                "total_iterations": len(iteration_results),
-                "status": status_msg,
-                "do_not_retry": True,
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "cycle_complete": True,
+                    "all_tests_pass": final_pass,
+                    "iterations": iteration_results,
+                    "total_iterations": len(iteration_results),
+                    "status": status_msg,
+                    "do_not_retry": True,
+                },
+                ensure_ascii=False,
+            )
 
-        return [list_processes, get_process, list_agents, dispatch_task,
-                dispatch_tasks_parallel, run_tdd_cycle, write_project_file]
+        return [
+            list_processes,
+            get_process,
+            list_agents,
+            dispatch_task,
+            dispatch_tasks_parallel,
+            run_tdd_cycle,
+            write_project_file,
+        ]
 
     # -- Internal ------------------------------------------------------------
 
@@ -862,6 +930,7 @@ class ProjectSession:
 
             model_info = global_rt.definition.metadata.get("_model_info", {})
             from ..config import ModelConfig
+
             model_cfg = ModelConfig(
                 provider=model_info.get("provider", ""),
                 model=model_info.get("model", ""),
@@ -917,6 +986,7 @@ class ProjectSession:
         model_info = existing_rt.definition.metadata.get("_model_info", {})
 
         from ..config import ModelConfig
+
         model_cfg = ModelConfig(
             provider=model_info.get("provider", ""),
             model=model_info.get("model", ""),
@@ -960,7 +1030,9 @@ class ProjectSession:
         rt.evoke()
         logger.info(
             "ProjectSession PM runtime built: tools=%d trace_dir=%s session=%s",
-            len(tools), trace_dir, self._session_id,
+            len(tools),
+            trace_dir,
+            self._session_id,
         )
         return rt
 

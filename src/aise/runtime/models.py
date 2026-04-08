@@ -61,11 +61,13 @@ class AgentCard:
     url: str = ""
     version: str = "1.0.0"
     provider: ProviderInfo = field(default_factory=ProviderInfo)
-    capabilities: dict[str, bool] = field(default_factory=lambda: {
-        "streaming": False,
-        "pushNotifications": False,
-        "stateTransitionHistory": False,
-    })
+    capabilities: dict[str, bool] = field(
+        default_factory=lambda: {
+            "streaming": False,
+            "pushNotifications": False,
+            "stateTransitionHistory": False,
+        }
+    )
     skills: list[SkillInfo] = field(default_factory=list)
     default_input_modes: list[str] = field(default_factory=lambda: ["text"])
     default_output_modes: list[str] = field(default_factory=lambda: ["text"])

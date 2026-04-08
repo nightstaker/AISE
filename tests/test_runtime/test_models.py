@@ -19,8 +19,11 @@ class TestSkillInfo:
 
     def test_with_tags(self):
         skill = SkillInfo(
-            id="test", name="Test", description="desc",
-            tags=["qa", "testing"], examples=["example1"],
+            id="test",
+            name="Test",
+            description="desc",
+            tags=["qa", "testing"],
+            examples=["example1"],
         )
         assert skill.tags == ["qa", "testing"]
         assert skill.examples == ["example1"]

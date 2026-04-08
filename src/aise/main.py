@@ -150,7 +150,6 @@ def run_project(requirements: str, project_name: str = "My Project") -> str:
         manager.stop()
 
 
-
 def start_demand_session(project_name: str = "My Project") -> OnDemandSession:
     """Create and return an on-demand interactive session.
 

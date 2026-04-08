@@ -182,9 +182,7 @@ class WebProjectService:
                 raise ValueError(f"Project {project_id} not found")
             self._runs_by_project.pop(project_id, None)
             self._requirements_by_project.pop(project_id, None)
-            self._active_workflow_runs = {
-                (pid, rid) for pid, rid in self._active_workflow_runs if pid != project_id
-            }
+            self._active_workflow_runs = {(pid, rid) for pid, rid in self._active_workflow_runs if pid != project_id}
             self._save_state()
             logger.info("Web project deleted: project_id=%s", project_id)
 
@@ -213,9 +211,7 @@ class WebProjectService:
             # Clear in-memory state
             self._runs_by_project[project_id] = []
             self._requirements_by_project[project_id] = []
-            self._active_workflow_runs = {
-                (pid, rid) for pid, rid in self._active_workflow_runs if pid != project_id
-            }
+            self._active_workflow_runs = {(pid, rid) for pid, rid in self._active_workflow_runs if pid != project_id}
 
             # Clear project output directories on disk
             project_root = Path(project.project_root) if project.project_root else None
@@ -462,16 +458,18 @@ class WebProjectService:
                     default_provider = str(item.get("default_provider", refs[0])).strip()
                     if default_provider not in refs:
                         default_provider = refs[0]
-                normalized.append({
-                    "id": model_id,
-                    "name": str(item.get("name", model_id)).strip() or model_id,
-                    "api_model": str(item.get("api_model", model_id)).strip() or model_id,
-                    "default": bool(item.get("default", False)),
-                    "default_provider": default_provider,
-                    "is_local": is_local,
-                    "providers": refs,
-                    "extra": dict(item.get("extra", {})) if isinstance(item.get("extra"), dict) else {},
-                })
+                normalized.append(
+                    {
+                        "id": model_id,
+                        "name": str(item.get("name", model_id)).strip() or model_id,
+                        "api_model": str(item.get("api_model", model_id)).strip() or model_id,
+                        "default": bool(item.get("default", False)),
+                        "default_provider": default_provider,
+                        "is_local": is_local,
+                        "providers": refs,
+                        "extra": dict(item.get("extra", {})) if isinstance(item.get("extra"), dict) else {},
+                    }
+                )
             if normalized and not any(m["default"] for m in normalized):
                 normalized[0]["default"] = True
             current = self.project_manager._global_config
@@ -504,9 +502,7 @@ class WebProjectService:
                     agent_data["enabled"] = bool(item.get("enabled", True))
             payload["agents"] = agents_payload
             payload["agent_model_selection"] = {
-                str(k): str(v).strip()
-                for k, v in agent_model_selection.items()
-                if str(v).strip()
+                str(k): str(v).strip() for k, v in agent_model_selection.items() if str(v).strip()
             }
             updated = ProjectConfig.from_dict(payload)
             updated.to_json_file(self.project_manager._global_config_path)
@@ -672,8 +668,7 @@ class WebProjectService:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "runs_by_project": {
-                pid: [self._serialize_run(r) for r in runs]
-                for pid, runs in self._runs_by_project.items()
+                pid: [self._serialize_run(r) for r in runs] for pid, runs in self._runs_by_project.items()
             },
             "requirements_by_project": {
                 pid: [self._serialize_requirement(r) for r in reqs]
@@ -716,6 +711,7 @@ class WebProjectService:
 
 
 # -- OAuth helper ------------------------------------------------------------
+
 
 def _build_oauth() -> Any | None:
     if OAuth is None:
@@ -804,7 +800,8 @@ def create_app() -> FastAPI:
         if not user:
             return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
         return templates.TemplateResponse(
-            request, "dashboard.html",
+            request,
+            "dashboard.html",
             {"projects": service.list_projects(), "global_config_data": service.get_global_config_data(), "user": user},
         )
 
@@ -829,7 +826,8 @@ def create_app() -> FastAPI:
             "dev_login_enabled": dev_login_enabled,
         }
         return templates.TemplateResponse(
-            request, "login.html",
+            request,
+            "login.html",
             {"user": user, "configured": configured, "error": error, "local_admin_username": local_admin_username},
         )
 
@@ -840,8 +838,12 @@ def create_app() -> FastAPI:
         if username.strip() != local_admin_username or password != local_admin_password:
             return RedirectResponse(url="/login?error=用户名或���码错误", status_code=HTTP_303_SEE_OTHER)
         request.session["user"] = {
-            "id": "local-admin", "name": "System Admin", "email": "admin@aise.local",
-            "provider": "local", "role": "super_admin", "permissions": ["super_admin", "rd_director"],
+            "id": "local-admin",
+            "name": "System Admin",
+            "email": "admin@aise.local",
+            "provider": "local",
+            "role": "super_admin",
+            "permissions": ["super_admin", "rd_director"],
         }
         return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
 
@@ -850,8 +852,12 @@ def create_app() -> FastAPI:
         if not dev_login_enabled:
             raise HTTPException(status_code=404, detail="Not found")
         request.session["user"] = {
-            "id": "dev-user", "name": name, "email": email,
-            "provider": "dev", "role": "super_admin", "permissions": ["super_admin", "rd_director"],
+            "id": "dev-user",
+            "name": name,
+            "email": email,
+            "provider": "dev",
+            "role": "super_admin",
+            "permissions": ["super_admin", "rd_director"],
         }
         return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
 
@@ -888,8 +894,12 @@ def create_app() -> FastAPI:
                         "email": g.get("mail") or g.get("userPrincipalName", ""),
                     }
         request.session["user"] = {
-            "id": userinfo.get("sub", ""), "name": userinfo.get("name", "User"),
-            "email": userinfo.get("email", ""), "provider": provider, "role": "user", "permissions": [],
+            "id": userinfo.get("sub", ""),
+            "name": userinfo.get("name", "User"),
+            "email": userinfo.get("email", ""),
+            "provider": provider,
+            "role": "user",
+            "permissions": [],
         }
         return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
 
@@ -911,8 +921,10 @@ def create_app() -> FastAPI:
                 agent_models[key.replace("agent_model_", "", 1)] = str(value)
         try:
             project_id, run_id = service.create_project_with_initial_run(
-                project_name=project_name.strip(), development_mode=development_mode,
-                agent_models=agent_models, initial_requirement=initial_requirement,
+                project_name=project_name.strip(),
+                development_mode=development_mode,
+                agent_models=agent_models,
+                initial_requirement=initial_requirement,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -993,38 +1005,47 @@ def create_app() -> FastAPI:
                 selections: dict[str, str] = {}
                 for item in config_data["agents"]:
                     key = str(item["key"])
-                    agent_items.append({
-                        "key": key,
-                        "name": str(form.get(f"agent_name_{key}", key)),
-                        "enabled": str(form.get(f"agent_enabled_{key}", "")) == "on",
-                    })
+                    agent_items.append(
+                        {
+                            "key": key,
+                            "name": str(form.get(f"agent_name_{key}", key)),
+                            "enabled": str(form.get(f"agent_enabled_{key}", "")) == "on",
+                        }
+                    )
                     selections[key] = str(form.get(f"agent_model_{key}", "")).strip()
                 service.save_global_agents_data(
-                    agents=agent_items, agent_model_selection=selections,
+                    agents=agent_items,
+                    agent_model_selection=selections,
                 )
             elif section == "workspace":
-                service.save_global_workspace_data({
-                    "projects_root": str(form.get("projects_root", "projects")),
-                    "artifacts_root": str(form.get("artifacts_root", "artifacts")),
-                    "auto_create_dirs": str(form.get("auto_create_dirs", "")) == "on",
-                })
+                service.save_global_workspace_data(
+                    {
+                        "projects_root": str(form.get("projects_root", "projects")),
+                        "artifacts_root": str(form.get("artifacts_root", "artifacts")),
+                        "auto_create_dirs": str(form.get("auto_create_dirs", "")) == "on",
+                    }
+                )
             elif section == "workflow":
-                service.save_global_workflow_data({
-                    "max_review_iterations": int(str(form.get("max_review_iterations", "3")) or 3),
-                    "review_min_rounds": int(str(form.get("review_min_rounds", "2")) or 2),
-                    "review_max_rounds": int(str(form.get("review_max_rounds", "3")) or 3),
-                    "developer_sr_task_retry_attempts": int(
-                        str(form.get("developer_sr_task_retry_attempts", "2")) or 2
-                    ),
-                    "fail_on_review_rejection": str(form.get("fail_on_review_rejection", "")) == "on",
-                })
+                service.save_global_workflow_data(
+                    {
+                        "max_review_iterations": int(str(form.get("max_review_iterations", "3")) or 3),
+                        "review_min_rounds": int(str(form.get("review_min_rounds", "2")) or 2),
+                        "review_max_rounds": int(str(form.get("review_max_rounds", "3")) or 3),
+                        "developer_sr_task_retry_attempts": int(
+                            str(form.get("developer_sr_task_retry_attempts", "2")) or 2
+                        ),
+                        "fail_on_review_rejection": str(form.get("fail_on_review_rejection", "")) == "on",
+                    }
+                )
             elif section == "logging":
-                service.save_global_logging_data({
-                    "level": str(form.get("level", "INFO")),
-                    "log_dir": str(form.get("log_dir", "logs")),
-                    "json_format": str(form.get("json_format", "")) == "on",
-                    "rotate_daily": str(form.get("rotate_daily", "")) == "on",
-                })
+                service.save_global_logging_data(
+                    {
+                        "level": str(form.get("level", "INFO")),
+                        "log_dir": str(form.get("log_dir", "logs")),
+                        "json_format": str(form.get("json_format", "")) == "on",
+                        "rotate_daily": str(form.get("rotate_daily", "")) == "on",
+                    }
+                )
         except Exception as exc:
             error = str(exc)
         return templates.TemplateResponse(
@@ -1172,10 +1193,7 @@ def create_app() -> FastAPI:
             if "agents" in payload or "agent_model_selection" in payload:
                 service.save_global_agents_data(
                     agents=payload.get("agents", []),
-                    agent_model_selection={
-                        str(k): str(v)
-                        for k, v in payload.get("agent_model_selection", {}).items()
-                    },
+                    agent_model_selection={str(k): str(v) for k, v in payload.get("agent_model_selection", {}).items()},
                 )
             if "workspace" in payload:
                 service.save_global_workspace_data(payload["workspace"])

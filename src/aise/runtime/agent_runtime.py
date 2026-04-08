@@ -71,8 +71,7 @@ class AgentRuntime:
     ) -> None:
         if create_deep_agent is None:
             raise RuntimeError(
-                "deepagents package is required but not installed. "
-                "Install it with: pip install deepagents>=0.4.3"
+                "deepagents package is required but not installed. Install it with: pip install deepagents>=0.4.3"
             )
 
         self._id = uuid.uuid4().hex[:12]
@@ -175,8 +174,7 @@ class AgentRuntime:
 
         if self._state not in (AgentState.CREATED, AgentState.STOPPED):
             raise RuntimeError(
-                f"Cannot evoke agent in state {self._state.value}. "
-                "Agent must be in CREATED or STOPPED state."
+                f"Cannot evoke agent in state {self._state.value}. Agent must be in CREATED or STOPPED state."
             )
 
         self._state = AgentState.ACTIVE
@@ -214,17 +212,17 @@ class AgentRuntime:
             RuntimeError: If the agent is not in ACTIVE state.
         """
         if self._state != AgentState.ACTIVE:
-            raise RuntimeError(
-                f"Agent is not active (state={self._state.value}). "
-                "Call evoke() first."
-            )
+            raise RuntimeError(f"Agent is not active (state={self._state.value}). Call evoke() first.")
 
         self._call_seq += 1
         call_id = f"{self._id}_{self._call_seq:04d}"
 
         logger.info(
             "Message received: agent=%s call=%s thread=%s length=%d",
-            self.name, call_id, thread_id or "default", len(content),
+            self.name,
+            call_id,
+            thread_id or "default",
+            len(content),
         )
 
         config: dict[str, Any] = {}
@@ -246,24 +244,34 @@ class AgentRuntime:
                 diag = _diagnose_empty_response(result)
                 logger.warning(
                     "Empty response: agent=%s call=%s diagnosis=%s",
-                    self.name, call_id, diag,
+                    self.name,
+                    call_id,
+                    diag,
                 )
 
             logger.info(
                 "Message processed: agent=%s call=%s response_length=%d",
-                self.name, call_id, len(response),
+                self.name,
+                call_id,
+                len(response),
             )
             return response
 
         except Exception as exc:
             logger.error(
                 "Message processing failed: agent=%s call=%s error=%s",
-                self.name, call_id, exc,
+                self.name,
+                call_id,
+                exc,
             )
             raise
 
     def _write_trace(
-        self, call_id: str, input_text: str, raw_result: Any, response: str,
+        self,
+        call_id: str,
+        input_text: str,
+        raw_result: Any,
+        response: str,
     ) -> None:
         """Write a JSON trace file for this LLM call."""
         if not self._trace_dir:
@@ -404,8 +412,7 @@ def _dump_messages(result: Any) -> list[dict[str, Any]]:
         tool_calls = getattr(msg, "tool_calls", None)
         if isinstance(tool_calls, list) and tool_calls:
             entry["tool_calls"] = [
-                {"name": tc.get("name", ""), "args_keys": sorted(tc.get("args", {}).keys())}
-                for tc in tool_calls
+                {"name": tc.get("name", ""), "args_keys": sorted(tc.get("args", {}).keys())} for tc in tool_calls
             ]
         name = getattr(msg, "name", None)
         if name:

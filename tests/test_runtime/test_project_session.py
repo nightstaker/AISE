@@ -29,13 +29,17 @@ class TestParseProcessHeader:
 def started_manager():
     """A RuntimeManager with agents loaded (all LLM calls mocked)."""
     from langchain_core.messages import AIMessage
+
     mock_agent = MagicMock()
     mock_agent.invoke.return_value = {"messages": [AIMessage(content="Done")]}
     mock_llm = MagicMock()
 
-    with patch("aise.runtime.agent_runtime.create_deep_agent", return_value=mock_agent), \
-         patch("aise.runtime.manager._build_llm", return_value=mock_llm):
+    with (
+        patch("aise.runtime.agent_runtime.create_deep_agent", return_value=mock_agent),
+        patch("aise.runtime.manager._build_llm", return_value=mock_llm),
+    ):
         from aise.runtime.manager import RuntimeManager
+
         mgr = RuntimeManager()
         mgr.start()
         yield mgr
@@ -89,12 +93,16 @@ class TestProjectSessionTools:
     def test_dispatch_task_tool(self, session):
         tools = session._make_tools()
         dispatch = next(t for t in tools if t.name == "dispatch_task")
-        result = json.loads(dispatch.invoke({
-            "agent_name": "developer",
-            "task_description": "Generate user model code",
-            "step_id": "impl_1",
-            "phase": "implementation",
-        }))
+        result = json.loads(
+            dispatch.invoke(
+                {
+                    "agent_name": "developer",
+                    "task_description": "Generate user model code",
+                    "step_id": "impl_1",
+                    "phase": "implementation",
+                }
+            )
+        )
         assert result["type"] == "task_response"
         assert result["from"] == "developer"
         assert result["status"] == "completed"
@@ -102,20 +110,26 @@ class TestProjectSessionTools:
     def test_dispatch_task_agent_not_found(self, session):
         tools = session._make_tools()
         dispatch = next(t for t in tools if t.name == "dispatch_task")
-        result = json.loads(dispatch.invoke({
-            "agent_name": "nonexistent",
-            "task_description": "do something",
-        }))
+        result = json.loads(
+            dispatch.invoke(
+                {
+                    "agent_name": "nonexistent",
+                    "task_description": "do something",
+                }
+            )
+        )
         assert result["status"] == "failed"
         assert "not found" in result["error"]
 
     def test_task_log_recorded(self, session):
         tools = session._make_tools()
         dispatch = next(t for t in tools if t.name == "dispatch_task")
-        dispatch.invoke({
-            "agent_name": "developer",
-            "task_description": "test task",
-        })
+        dispatch.invoke(
+            {
+                "agent_name": "developer",
+                "task_description": "test task",
+            }
+        )
         # stage_update (execution) + task_request + task_response
         types = [e["type"] for e in session.task_log]
         assert "stage_update" in types
@@ -127,21 +141,30 @@ class TestProjectSessionRun:
     def test_run_calls_pm_runtime(self, session):
         # Simulate a complete workflow: PM dispatches a task, then returns a report
         call_count = [0]
+
         def mock_handle(msg, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
                 # First call: simulate PM doing work — inject fake events
-                session._task_log.extend([
-                    {"type": "stage_update", "stage": "process_selection"},
-                    {"type": "tool_call", "tool": "list_processes", "summary": "Found 3"},
-                    {"type": "stage_update", "stage": "team_assembly"},
-                    {"type": "tool_call", "tool": "list_agents", "summary": "Found 6"},
-                    {"type": "stage_update", "stage": "design"},
-                    {"type": "task_request", "to": "architect", "payload": {"task": "design"}},
-                    {"type": "task_response", "from": "architect", "status": "completed", "payload": {"output": "done"}},
-                ])
+                session._task_log.extend(
+                    [
+                        {"type": "stage_update", "stage": "process_selection"},
+                        {"type": "tool_call", "tool": "list_processes", "summary": "Found 3"},
+                        {"type": "stage_update", "stage": "team_assembly"},
+                        {"type": "tool_call", "tool": "list_agents", "summary": "Found 6"},
+                        {"type": "stage_update", "stage": "design"},
+                        {"type": "task_request", "to": "architect", "payload": {"task": "design"}},
+                        {
+                            "type": "task_response",
+                            "from": "architect",
+                            "status": "completed",
+                            "payload": {"output": "done"},
+                        },
+                    ]
+                )
                 return "Project delivery report: all phases completed successfully. Requirements analyzed, architecture designed, code implemented, tests passed."
             return ""
+
         session._pm_runtime.handle_message.side_effect = mock_handle
 
         result = session.run("Build a REST API")

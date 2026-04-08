@@ -247,11 +247,13 @@ def _extract_skills(body: str) -> list[SkillInfo]:
                 if tag_match:
                     tags = [t.strip() for t in tag_match.group(1).split(",")]
                     rest = rest[: tag_match.start()].strip()
-                skills.append(SkillInfo(
-                    id=skill_id,
-                    name=skill_id.replace("_", " ").replace("-", " ").title(),
-                    description=rest,
-                    tags=tags,
-                ))
+                skills.append(
+                    SkillInfo(
+                        id=skill_id,
+                        name=skill_id.replace("_", " ").replace("-", " ").title(),
+                        description=rest,
+                        tags=tags,
+                    )
+                )
 
     return skills

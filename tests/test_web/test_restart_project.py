@@ -136,7 +136,9 @@ class TestRestartProjectDiskCleanup:
     def test_clears_in_memory_state(self, service):
         svc, root = service
         svc._runs_by_project["project_0"] = [
-            WorkflowRun(run_id="old_run", requirement_text="old", started_at=datetime.now(timezone.utc), status="completed"),
+            WorkflowRun(
+                run_id="old_run", requirement_text="old", started_at=datetime.now(timezone.utc), status="completed"
+            ),
         ]
         svc._requirements_by_project["project_0"] = [
             RequirementEntry(requirement_id="r1", text="old req", created_at=datetime.now(timezone.utc)),

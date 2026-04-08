@@ -34,8 +34,10 @@ def mock_create_deep_agent():
 
     mock_llm = MagicMock()
 
-    with patch("aise.runtime.agent_runtime.create_deep_agent", return_value=mock_agent), \
-         patch("aise.runtime.manager._build_llm", return_value=mock_llm):
+    with (
+        patch("aise.runtime.agent_runtime.create_deep_agent", return_value=mock_agent),
+        patch("aise.runtime.manager._build_llm", return_value=mock_llm),
+    ):
         yield
 
 
@@ -82,6 +84,7 @@ class TestRuntimeManager:
 
     def test_runtimes_are_agent_runtime_instances(self, mock_create_deep_agent):
         from aise.runtime.agent_runtime import AgentRuntime
+
         manager = RuntimeManager()
         manager.start()
         for rt in manager.runtimes.values():

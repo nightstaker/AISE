@@ -108,23 +108,25 @@ class RuntimeManager:
             # Enrich card with model details from the definition metadata
             model_info = defn.metadata.get("_model_info", {})
 
-            result.append({
-                "agent_id": f"runtime__{name}",
-                "name": name,
-                "role": name,
-                "role_display": card.name.replace("_", " ").title() if card.name else name,
-                "project_id": "",
-                "project_name": "",
-                "source": "runtime",
-                "model": model_info,
-                "skills": [s.id for s in card.skills],
-                "status": _map_state(rt.state),
-                "current_task": None,
-                "agent_card": {
-                    **card_dict,
+            result.append(
+                {
+                    "agent_id": f"runtime__{name}",
+                    "name": name,
+                    "role": name,
+                    "role_display": card.name.replace("_", " ").title() if card.name else name,
+                    "project_id": "",
+                    "project_name": "",
+                    "source": "runtime",
                     "model": model_info,
-                },
-            })
+                    "skills": [s.id for s in card.skills],
+                    "status": _map_state(rt.state),
+                    "current_task": None,
+                    "agent_card": {
+                        **card_dict,
+                        "model": model_info,
+                    },
+                }
+            )
         return result
 
     # -- Internal ------------------------------------------------------------
