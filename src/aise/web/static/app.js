@@ -157,6 +157,23 @@ function setupDashboardReact() {
       }
     }
 
+    async function restartProject(project, e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const projectId = String(project.project_id || "");
+      if (!projectId) return;
+      if (!window.confirm(`确认重新开始项目「${project.project_name || projectId}」？\n将清除所有执行记录，重新提交原始需求。`)) return;
+      setError("");
+      try {
+        const result = await fetchJson(`/api/projects/${encodeURIComponent(projectId)}/restart`, { method: "POST" });
+        if (result.run_id) {
+          window.location.href = `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(result.run_id)}`;
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "重启失败");
+      }
+    }
+
     function defaultModelId() {
       const byFlag = catalog.find((item) => !!item.default && item.id);
       if (byFlag) return String(byFlag.id);
@@ -227,8 +244,14 @@ function setupDashboardReact() {
                 value: formData.initial_requirement,
                 onChange: (e) => setFormData((prev) => ({ ...prev, initial_requirement: e.target.value })),
               }),
-              h("h3", null, "Agent 模型选择"),
-              h(
+              h("div", { className: "agent-model-toggle-row" },
+                h("button", {
+                  type: "button",
+                  className: "btn secondary btn-sm",
+                  onClick: () => setFormData((prev) => ({ ...prev, _showAgentModels: !prev._showAgentModels })),
+                }, formData._showAgentModels ? "\u25BC \u6536\u8D77 Agent \u6A21\u578B\u914D\u7F6E" : "\u25B6 \u81EA\u5B9A\u4E49 Agent \u6A21\u578B"),
+              ),
+              formData._showAgentModels ? h(
                 "div",
                 { className: "agent-grid" },
                 ...availableAgents.flatMap((agent) => [
@@ -247,7 +270,7 @@ function setupDashboardReact() {
                     ...selectOptionsFor(agent)
                   ),
                 ])
-              ),
+              ) : null,
               error ? h("p", { className: "warning" }, error) : null,
               h(
                 "div",
@@ -313,11 +336,19 @@ function setupDashboardReact() {
                   h(
                     "button",
                     {
-                      className: "project-card-delete",
+                      className: "project-card-action project-card-restart",
+                      onClick: (e) => restartProject(project, e),
+                    },
+                    "\u21BB"
+                  ),
+                  h(
+                    "button",
+                    {
+                      className: "project-card-action project-card-delete",
                       disabled: deletingProjectId === String(project.project_id),
                       onClick: (e) => deleteProject(project, e),
                     },
-                    deletingProjectId === String(project.project_id) ? "删除中..." : "删除"
+                    deletingProjectId === String(project.project_id) ? "..." : "\u2715"
                   )
                 )
               )
@@ -419,6 +450,19 @@ function setupProjectReact() {
       }
     }
 
+    async function restartCurrentProject() {
+      if (!window.confirm(`确认重新开始项目「${project.info.project_name || projectId}」？\n将清除所有执行记录，重新提交原始需求。`)) return;
+      setError("");
+      try {
+        const result = await fetchJson(`/api/projects/${encodeURIComponent(projectId)}/restart`, { method: "POST" });
+        if (result.run_id) {
+          window.location.href = `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(result.run_id)}`;
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "重启失败");
+      }
+    }
+
     const [view, setView] = window.React.useState("default");
 
     // Auto-redirect to latest run if available
@@ -451,15 +495,27 @@ function setupProjectReact() {
         { className: "card card-glow project-header-card" },
         h("h1", null, project.info.project_name),
         h("p", { className: "muted" }, `ID: ${project.info.project_id} | 状态: ${project.info.status} | 模式: ${project.info.development_mode}`),
-        h(
-          "button",
-          {
-            type: "button",
-            className: "btn danger",
-            disabled: deleting || projectMissing,
-            onClick: deleteCurrentProject,
-          },
-          deleting ? "删除中..." : "删除项目"
+        h("div", { style: { display: "flex", gap: "8px", marginTop: "8px" } },
+          h(
+            "button",
+            {
+              type: "button",
+              className: "btn secondary",
+              disabled: projectMissing,
+              onClick: restartCurrentProject,
+            },
+            "\u21BB \u91CD\u65B0\u5F00\u59CB"
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              className: "btn danger",
+              disabled: deleting || projectMissing,
+              onClick: deleteCurrentProject,
+            },
+            deleting ? "\u5220\u9664\u4E2D..." : "\u5220\u9664\u9879\u76EE"
+          ),
         )
       ),
       projectMissing
@@ -601,1857 +657,231 @@ function setupRunReact() {
   const initial = readScriptJson("run-initial-data", { project: null, run: null });
   if (!initial.project || !initial.run) return;
 
+  const STAGE_LABELS = {
+    process_selection: "流程选择",
+    team_assembly: "团队组建",
+    workflow_planning: "流程规划",
+    execution: "任务执行",
+    phase_1_requirement: "需求分析",
+    phase_2_design: "架构设计",
+    phase_3_implementation: "开发实现",
+    phase_4_verification: "测试验证",
+    requirement: "需求分析",
+    design: "架构设计",
+    implementation: "开发实现",
+    testing: "测试验证",
+    sprint_planning: "迭代规划",
+    sprint_execution: "快速开发",
+    sprint_review: "迭代评审",
+  };
+
+  // Dynamic stage label resolver (handles implementation_cycle_1, etc.)
+  function resolveStageLabel(stage) {
+    if (STAGE_LABELS[stage]) return STAGE_LABELS[stage];
+    var cycleMatch = stage.match(/^(.+)_cycle_(\d+)$/);
+    if (cycleMatch) {
+      var base = STAGE_LABELS[cycleMatch[1]] || cycleMatch[1];
+      return base + " #" + cycleMatch[2];
+    }
+    return stage;
+  }
+
+  const EVENT_ICONS = {
+    stage_update: "▶",
+    tool_call: "⚙",
+    task_request: "→",
+    task_response: "←",
+    parallel_start: "≡",
+  };
+
   function RunApp() {
     const h = window.React.createElement;
     const project = initial.project;
     const [run, setRun] = window.React.useState(initial.run);
-    const [pollError, setPollError] = window.React.useState("");
-    const [selectedTask, setSelectedTask] = window.React.useState(null);
-    const [taskLogsByKey, setTaskLogsByKey] = window.React.useState({});
-    const [taskLogError, setTaskLogError] = window.React.useState("");
-    const [taskLogLoading, setTaskLogLoading] = window.React.useState(false);
-    const [expandedTraceLogIds, setExpandedTraceLogIds] = window.React.useState({});
-    const [taskStateDetail, setTaskStateDetail] = window.React.useState(null);
-    const [taskStateLoading, setTaskStateLoading] = window.React.useState(false);
-    const [taskStateError, setTaskStateError] = window.React.useState("");
-    const [taskMemoryExpanded, setTaskMemoryExpanded] = window.React.useState(false);
-    const [retryMode, setRetryMode] = window.React.useState("current");
-    const [retrySubmitting, setRetrySubmitting] = window.React.useState(false);
-    const [retryError, setRetryError] = window.React.useState("");
-    const [retryNotice, setRetryNotice] = window.React.useState("");
-    const phases = Array.isArray(run.phase_results) ? run.phase_results : [];
-    const liveTaskStates = run && run.live_task_states && typeof run.live_task_states === "object" ? run.live_task_states : {};
-    const taskStateSummary =
-      run && run.task_state_summary && typeof run.task_state_summary === "object" ? run.task_state_summary : {};
-    const activeOperation = run && run.active_operation && typeof run.active_operation === "object" ? run.active_operation : null;
+    const [stageFilter, setStageFilter] = window.React.useState(null);
     const runStatus = String(run.status || "pending");
     const isRunning = runStatus === "pending" || runStatus === "running";
-    const workflowNodes = Array.isArray(project.workflow_nodes) ? project.workflow_nodes : [];
-
-    const phaseNameMap = {
-      requirements: "需求分析",
-      design: "架构设计",
-      implementation: "开发实现",
-      testing: "测试验收",
-    };
+    const taskLog = Array.isArray(run.task_log) ? run.task_log : [];
 
     window.React.useEffect(() => {
+      if (!isRunning) return;
       let active = true;
-      async function refreshRun() {
-        try {
-          const latest = await fetchJson(
-            `/api/projects/${encodeURIComponent(project.info.project_id)}/runs/${encodeURIComponent(run.run_id)}`
-          );
-          if (!active) return;
-          setRun(latest);
-          setPollError("");
-        } catch (err) {
-          if (!active) return;
-          setPollError(err instanceof Error ? err.message : "刷新失败");
-        }
-      }
-
-      if (!isRunning) return () => {};
-      refreshRun();
-      const timer = window.setInterval(refreshRun, 3000);
-      return () => {
-        active = false;
-        window.clearInterval(timer);
+      const poll = () => {
+        fetchJson("/api/projects/" + encodeURIComponent(project.info.project_id) + "/runs/" + encodeURIComponent(run.run_id))
+          .then((d) => { if (active) setRun(d); })
+          .catch(() => {});
       };
+      const tid = setInterval(poll, 2000);
+      return () => { active = false; clearInterval(tid); };
     }, [project.info.project_id, run.run_id, isRunning]);
 
-    function normalizePhaseState(status) {
-      if (status === "completed") return "completed";
-      if (status === "failed") return "failed";
-      if (status === "in_progress" || status === "in_review") return "running";
-      return "pending";
-    }
-
-    function toTaskLabel(taskKey) {
-      const parts = String(taskKey || "").split(".");
-      return parts.length > 1 ? parts[1] : String(taskKey || "");
-    }
-
-    function laneKind(agentName) {
-      const name = String(agentName || "").toLowerCase();
-      if (name.includes("reviewer")) return "review";
-      if (name.includes("designer") || name.includes("architect")) return "design";
-      if (name.includes("programmer") || name.includes("developer")) return "build";
-      if (name.includes("qa")) return "qa";
-      return "task";
-    }
-
-    function isParallelLane(agentName) {
-      return String(agentName || "").includes("[*]");
-    }
-
-    function buildPhaseRelations(phaseKey, agentTasks) {
-      const lanes = Array.isArray(agentTasks) ? agentTasks : [];
-      const badges = [];
-      const hints = [];
-      const hasManyLanes = lanes.length > 1;
-      const hasWildcardLane = lanes.some((lane) => isParallelLane(lane.agent));
-      const hasReviewer = lanes.some((lane) => String(lane.agent || "").toLowerCase().includes("reviewer"));
-      const hasDesignerOrBuilder = lanes.some((lane) => {
-        const n = String(lane.agent || "").toLowerCase();
-        return n.includes("designer") || n.includes("architect") || n.includes("programmer");
-      });
-      const allTasks = lanes.flatMap((lane) => (Array.isArray(lane.tasks) ? lane.tasks : []));
-      const hasSrGroupedDev = allTasks.some((task) =>
-        String(task && task.name ? task.name : "").includes("sr_group_parallel_development")
-      );
-      const hasSubsystemBatchReview = allTasks.some((task) =>
-        String(task && task.name ? task.name : "").includes("subsystem_batch_code_and_test_review")
-      );
-
-      if (hasManyLanes) {
-        badges.push({ type: "split", label: `任务拆分 ${lanes.length} 路` });
-        hints.push("阶段内任务已按角色/子代理拆分");
+    // Derive stages and tag each event with its stage
+    const stages = [];
+    const stageSet = new Set();
+    let curStage = null;
+    const evStages = taskLog.map((ev) => {
+      if (ev.type === "stage_update" && ev.stage) {
+        curStage = ev.stage;
+        if (!stageSet.has(ev.stage)) { stageSet.add(ev.stage); stages.push(ev.stage); }
       }
-      if (hasWildcardLane || lanes.length >= 2) {
-        badges.push({ type: "parallel", label: "并发执行" });
-        hints.push("不同 lane 可并行推进，等待阶段汇总");
-      }
-      if (hasReviewer && hasDesignerOrBuilder) {
-        badges.push({ type: "collab", label: "设计/开发-评审协同" });
-        hints.push("设计/开发与评审形成往返反馈回路");
-      }
-      if (!badges.length) {
-        badges.push({ type: "sequence", label: "串行执行" });
-      } else {
-        badges.push({ type: "sequence", label: "阶段内有序编排" });
-      }
-      if (phaseKey === "implementation" && hasSrGroupedDev) {
-        badges.push({ type: "split", label: "同 SR 合并任务" });
-        hints.push("子系统内同一 SR 的多个 FN 合并为一次开发任务，降低任务切换成本");
-        hints.push("同一子系统内多个 SR 按顺序串行开发，便于复用文件与代码上下文");
-        hints.push("不同子系统之间并行开发，提升整体吞吐");
-      }
-      if (phaseKey === "implementation" && hasSubsystemBatchReview) {
-        hints.push("代码评审按子系统批量进行，开发完成后统一评审与修订");
-      }
-      if (phaseKey === "testing") {
-        hints.push("QA 阶段先产出测试设计，再执行测试自动化与验收评审");
-      }
-      return { badges, hints };
-    }
+      return curStage;
+    });
+    const requests = taskLog.filter((e) => e.type === "task_request");
+    const responses = taskLog.filter((e) => e.type === "task_response");
+    const completed = responses.filter((e) => e.status === "completed").length;
+    const failed = responses.filter((e) => e.status === "failed").length;
+    const filteredLog = stageFilter ? taskLog.filter((_, i) => evStages[i] === stageFilter) : taskLog;
 
-    function buildAgentTasksFromTaskItems(taskItems) {
-      const grouped = {};
-      const order = [];
-      taskItems.forEach((taskKey) => {
-        const parts = String(taskKey || "").split(".");
-        const agent = parts[0] || "unknown";
-        if (!grouped[agent]) {
-          grouped[agent] = [];
-          order.push(agent);
-        }
-        grouped[agent].push({
-          key: taskKey,
-          name: parts.length > 1 ? parts.slice(1).join(".") : String(taskKey || ""),
-          input_hints: [],
-        });
-      });
-      return order.map((agent) => ({ agent, tasks: grouped[agent] }));
-    }
+    const statusCls = runStatus === "completed" ? "run-status-completed"
+      : runStatus === "failed" ? "run-status-failed"
+      : runStatus === "running" ? "run-status-running" : "run-status-pending";
+    const toggleStage = (s) => setStageFilter((prev) => prev === s ? null : s);
 
-    function normalizeTaskState(taskResult, phaseState) {
-      if (taskResult && typeof taskResult === "object") {
-        const s = String(taskResult.status || "");
-        if (s === "success" || s === "completed") return "completed";
-        if (s === "running" || s === "in_progress") return "running";
-        if (s === "pending" || s === "waiting") return "pending";
-        if (s === "skipped") return "completed";
-        if (s === "failed" || s === "error") return "failed";
-        // Unknown status with a result object — treat as failed
-        return s ? "failed" : "pending";
-      }
-      if (phaseState === "completed") return "completed";
-      if (phaseState === "failed") return "pending";
-      if (phaseState === "running") return "pending";
-      return "pending";
-    }
-
-    function isTerminalTaskStatus(status) {
-      return status === "completed" || status === "failed";
-    }
-
-    function rebalanceLaneTaskStatuses(agentTasks, phaseState) {
-      if (!Array.isArray(agentTasks) || phaseState !== "running") return agentTasks;
-      return agentTasks.map((lane) => {
-        const tasks = Array.isArray(lane.tasks) ? lane.tasks.slice() : [];
-        if (!tasks.length) return lane;
-        if (lane.parallelized) {
-          return { ...lane, tasks };
-        }
-
-        const explicitRunningIndex = tasks.findIndex(
-          (task) => task && task.status === "running" && task.statusSource !== "phase_fallback"
-        );
-
-        let activeIndex = explicitRunningIndex;
-        if (activeIndex < 0) {
-          activeIndex = tasks.findIndex((task) => task && !isTerminalTaskStatus(String(task.status || "")));
-        }
-
-        const normalizedTasks = tasks.map((task, index) => {
-          if (!task || typeof task !== "object") return task;
-          if (isTerminalTaskStatus(String(task.status || ""))) return task;
-          if (task.statusSource !== "phase_fallback") {
-            if (explicitRunningIndex >= 0 && index > explicitRunningIndex && task.status === "running") {
-              return { ...task, status: "pending" };
-            }
-            return task;
-          }
-          return { ...task, status: index === activeIndex ? "running" : "pending" };
-        });
-
-        return { ...lane, tasks: normalizedTasks };
-      });
-    }
-
-    function resolveTaskResult(taskStatusMap, agentName, phaseKey, taskKey) {
-      if (taskStatusMap[taskKey]) {
-        return { result: taskStatusMap[taskKey], resultKey: taskKey };
-      }
-      const phaseScopedKey = `${agentName}.${phaseKey}`;
-      if (taskStatusMap[phaseScopedKey]) {
-        return { result: taskStatusMap[phaseScopedKey], resultKey: phaseScopedKey };
-      }
-      // Deep PM subagent virtual tasks map back to PM phase/skill runtime keys.
-      if (String(taskKey).startsWith("product_manager.deep_product_workflow")) {
-        const deepSkillKey = "product_manager.deep_product_workflow";
-        if (taskStatusMap[deepSkillKey]) {
-          return { result: taskStatusMap[deepSkillKey], resultKey: deepSkillKey };
-        }
-        const phaseKeyAlias = "product_manager.requirements";
-        if (taskStatusMap[phaseKeyAlias]) {
-          return { result: taskStatusMap[phaseKeyAlias], resultKey: phaseKeyAlias };
-        }
-      }
-      if (String(taskKey).startsWith("architect.deep_architecture_workflow")) {
-        const deepSkillKey = "architect.deep_architecture_workflow";
-        if (taskStatusMap[deepSkillKey]) {
-          return { result: taskStatusMap[deepSkillKey], resultKey: deepSkillKey };
-        }
-        const phaseKeyAlias = "architect.design";
-        if (taskStatusMap[phaseKeyAlias]) {
-          return { result: taskStatusMap[phaseKeyAlias], resultKey: phaseKeyAlias };
-        }
-      }
-      if (String(taskKey).startsWith("developer.deep_developer_workflow")) {
-        const deepSkillKey = "developer.deep_developer_workflow";
-        if (taskStatusMap[deepSkillKey]) {
-          return { result: taskStatusMap[deepSkillKey], resultKey: deepSkillKey };
-        }
-        const phaseKeyAlias = "developer.implementation";
-        if (taskStatusMap[phaseKeyAlias]) {
-          return { result: taskStatusMap[phaseKeyAlias], resultKey: phaseKeyAlias };
-        }
-      }
-      return { result: null, resultKey: "" };
-    }
-
-    function getLiveTaskState(phaseKey, taskKey) {
-      const key = `${phaseKey}::${taskKey}`;
-      const value = liveTaskStates[key];
-      return value && typeof value === "object" ? value : null;
-    }
-
-    function getTaskStateSummaryItem(phaseKey, taskKey) {
-      const key = `${phaseKey}::${taskKey}`;
-      const value = taskStateSummary[key];
-      return value && typeof value === "object" ? value : null;
-    }
-
-    function summarizeLiveTaskProgress(liveState) {
-      if (!liveState || typeof liveState !== "object") return "";
-      const evt = liveState.last_event && typeof liveState.last_event === "object" ? liveState.last_event : null;
-      if (!evt) return "";
-      const meta = evt.purpose_meta && typeof evt.purpose_meta === "object" ? evt.purpose_meta : {};
-      const parts = [];
-      if (meta.subagent) parts.push(String(meta.subagent));
-      if (meta.step) parts.push(String(meta.step));
-      if (meta.fn) parts.push(`fn:${String(meta.fn)}`);
-      if (meta.subsystem) parts.push(`subsys:${String(meta.subsystem)}`);
-      const prefix = parts.length ? `${parts.join(" · ")} · ` : "";
-      return `${prefix}${String(evt.message || "")}`.slice(0, 160);
-    }
-
-    function taskStatusLabel(status) {
-      return status === "completed" ? "✓ 完成" : status === "running" ? "◉ 执行中" : status === "failed" ? "✕ 失败" : "○ 待执行";
-    }
-
-    function selectTaskByCardTask(task, event) {
-      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
-      if (!task) return;
-      setSelectedTask({ phaseKey: task.phaseKey, taskKey: task.key });
-    }
-
-    function isVisibleTaskLogEvent(evt) {
-      const source = String((evt && evt.source) || "");
-      return source === "runtime" || source === "trace";
-    }
-
-    function getTaskLogDetailsForDisplay(evt) {
-      const details = evt && evt.details && typeof evt.details === "object" ? evt.details : null;
-      if (!details) return null;
-      const source = String((evt && evt.source) || "");
-      const out = { ...details };
-      if (source === "aise.log") {
-        delete out.logger;
-        delete out.line;
-      }
-      return out;
-    }
-
-    function traceMarkdownFromEvent(evt) {
-      const details = evt && evt.details && typeof evt.details === "object" ? evt.details : null;
-      if (!details) return "";
-      const providerMeta =
-        details.provider_response_meta && typeof details.provider_response_meta === "object"
-          ? details.provider_response_meta
-          : {};
-      const sections = [];
-      const title = String(evt.message || "").trim();
-      if (title) sections.push(`## LLM Call\n\n${title}`);
-      const bullets = [];
-      ["agent", "skill", "model", "provider"].forEach((k) => {
-        if (details[k]) bullets.push(`- **${k}**: ${details[k]}`);
-      });
-      if (providerMeta.finish_reason) bullets.push(`- **finish_reason**: ${providerMeta.finish_reason}`);
-      if (providerMeta.total_tokens) bullets.push(`- **total_tokens**: ${providerMeta.total_tokens}`);
-      if (bullets.length) sections.push(bullets.join("\n"));
-
-      const inputMessages = Array.isArray(details.input_messages) ? details.input_messages : [];
-      const inputKwargs =
-        details.input_kwargs && typeof details.input_kwargs === "object" ? details.input_kwargs : null;
-      if (inputMessages.length) {
-        sections.push("### Input Messages");
-        sections.push(`\`\`\`json\n${JSON.stringify(inputMessages, null, 2)}\n\`\`\``);
-      }
-      if (inputKwargs && Object.keys(inputKwargs).length) {
-        sections.push("### Input Kwargs");
-        sections.push(`\`\`\`json\n${JSON.stringify(inputKwargs, null, 2)}\n\`\`\``);
-      }
-
-      const fullOutput = String(details.output || "").trim();
-      const preview = String(details.output_preview || "").trim();
-      const outputText = fullOutput || preview;
-      if (outputText) {
-        sections.push(fullOutput ? "### Output" : "### Output Preview");
-        sections.push(formatTraceOutputPreviewMarkdown(outputText));
-      }
-      return sections.join("\n\n").trim();
-    }
-
-    function formatTraceOutputPreviewMarkdown(preview) {
-      const text = String(preview || "").trim();
-      if (!text) return "";
-      const candidate = text.startsWith("```")
-        ? text
-        : text;
-      if (!candidate.startsWith("```")) {
-        try {
-          const parsed = JSON.parse(candidate);
-          return `\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
-        } catch (err) {
-          // non-JSON preview, render as markdown text
-        }
-      }
-      return text;
-    }
-
-    function simpleMarkdownToHtml(md) {
-      const escapeHtml = (s) =>
-        String(s)
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;");
-      const inline = (s) =>
-        escapeHtml(s)
-          .replace(/`([^`]+)`/g, "<code>$1</code>")
-          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-          .replace(/\*([^*]+)\*/g, "<em>$1</em>");
-      const lines = String(md || "").replace(/\r\n/g, "\n").split("\n");
-      const out = [];
-      let inCode = false;
-      let codeLines = [];
-      let inList = false;
-      const closeList = () => {
-        if (inList) {
-          out.push("</ul>");
-          inList = false;
-        }
-      };
-      const closeCode = () => {
-        if (inCode) {
-          out.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
-          inCode = false;
-          codeLines = [];
-        }
-      };
-      for (const line of lines) {
-        if (String(line).startsWith("```")) {
-          if (inCode) closeCode();
-          else {
-            closeList();
-            inCode = true;
-          }
-          continue;
-        }
-        if (inCode) {
-          codeLines.push(String(line));
-          continue;
-        }
-        if (!String(line).trim()) {
-          closeList();
-          continue;
-        }
-        const hm = String(line).match(/^(#{1,3})\s+(.*)$/);
-        if (hm) {
-          closeList();
-          const level = Math.min(3, hm[1].length);
-          out.push(`<h${level}>${inline(hm[2])}</h${level}>`);
-          continue;
-        }
-        const lm = String(line).match(/^\s*[-*]\s+(.*)$/);
-        if (lm) {
-          if (!inList) {
-            out.push("<ul>");
-            inList = true;
-          }
-          out.push(`<li>${inline(lm[1])}</li>`);
-          continue;
-        }
-        closeList();
-        out.push(`<p>${inline(String(line))}</p>`);
-      }
-      closeCode();
-      closeList();
-      return out.join("");
-    }
-
-    function flattenPhaseTasks(agentTasks) {
-      return (Array.isArray(agentTasks) ? agentTasks : []).flatMap((agentBlock) =>
-        Array.isArray(agentBlock && agentBlock.tasks) ? agentBlock.tasks : []
-      );
-    }
-
-    function pickPhaseTask(agentTasks, taskKey) {
-      const key = String(taskKey || "");
-      return flattenPhaseTasks(agentTasks).find((t) => String(t && t.key) === key) || null;
-    }
-
-    function readWorkflowSummary(task) {
-      const item = task && task.taskStateItem && typeof task.taskStateItem === "object" ? task.taskStateItem : null;
-      const outputs = item && item.latest_outputs && typeof item.latest_outputs === "object" ? item.latest_outputs : null;
-      const summary = outputs && outputs.workflow_summary && typeof outputs.workflow_summary === "object" ? outputs.workflow_summary : null;
-      return summary || null;
-    }
-
-    function readWorkflowSummaryFromTasks() {
-      const tasks = Array.from(arguments);
-      let fallbackSummary = null;
-      for (const task of tasks) {
-        const summary = readWorkflowSummary(task);
-        if (!summary) continue;
-        const subsystems = Array.isArray(summary.subsystems) ? summary.subsystems : [];
-        if (subsystems.length) return summary;
-        if (!fallbackSummary) fallbackSummary = summary;
-      }
-      return fallbackSummary;
-    }
-
-    function readRoundCount(task, stepKey) {
-      const summary = readWorkflowSummary(task);
-      const rounds = summary && summary.rounds && typeof summary.rounds === "object" ? summary.rounds : null;
-      const value = rounds ? rounds[stepKey] : null;
-      return Number.isFinite(Number(value)) ? Number(value) : 0;
-    }
-
-    function mergeTaskStatus(a, b) {
-      const sa = a ? String(a.status || "") : "pending";
-      const sb = b ? String(b.status || "") : "pending";
-      if (sa === "failed" || sb === "failed") return "failed";
-      if (sa === "running" || sb === "running") return "running";
-      if (sa === "completed" && sb === "completed") return "completed";
-      if (sa === "completed" || sb === "completed") return "running";
-      return "pending";
-    }
-
-    function pairedRoleDisplayStatus(task, counterpartTask, role) {
-      if (!task) return "pending";
-      const raw = String(task.status || "pending");
-      if (raw !== "running") return raw;
-
-      const liveStatus =
-        task.liveState && typeof task.liveState.status === "string" ? String(task.liveState.status) : "";
-      const hasLiveRunning = liveStatus === "running";
-      if (hasLiveRunning) return "running";
-
-      const statusSource = String(task.statusSource || "");
-      // If the task is explicitly running (task_state/live_state/runtime), preserve running for design/build roles.
-      // Only keep the delayed-review visualization rule for review roles.
-      if (role !== "review" && statusSource && statusSource !== "phase_fallback") {
-        return "running";
-      }
-
-      // Deep loop tasks may be pre-marked running via task_state as soon as the parent loop starts.
-      // For paired cards, only show review running after there is actual review live progress.
-      if (role === "review") {
-        const designDone = counterpartTask && String(counterpartTask.status || "") === "completed";
-        return designDone ? "pending" : "pending";
-      }
-      return "pending";
-    }
-
-    function inferLiveRound(task) {
-      const meta =
-        task &&
-        task.liveState &&
-        task.liveState.last_event &&
-        task.liveState.last_event.purpose_meta &&
-        typeof task.liveState.last_event.purpose_meta === "object"
-          ? task.liveState.last_event.purpose_meta
-          : null;
-      const roundText = meta && meta.round ? String(meta.round) : "";
-      const roundNum = Number(roundText);
-      return Number.isFinite(roundNum) ? roundNum : 0;
-    }
-
-    function inferLiveSubsystem(task) {
-      const meta =
-        task &&
-        task.liveState &&
-        task.liveState.last_event &&
-        task.liveState.last_event.purpose_meta &&
-        typeof task.liveState.last_event.purpose_meta === "object"
-          ? task.liveState.last_event.purpose_meta
-          : null;
-      return meta && meta.subsystem ? String(meta.subsystem) : "";
-    }
-
-    function inferLiveSr(task) {
-      const meta =
-        task &&
-        task.liveState &&
-        task.liveState.last_event &&
-        task.liveState.last_event.purpose_meta &&
-        typeof task.liveState.last_event.purpose_meta === "object"
-          ? task.liveState.last_event.purpose_meta
-          : null;
-      return meta && meta.sr ? String(meta.sr) : "";
-    }
-
-    function normalizeSubsystemMatchKey(value) {
-      return String(value || "")
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "_")
-        .replace(/^_+|_+$/g, "");
-    }
-
-    function extractDeveloperSrFailureTarget(task) {
-      if (!task || typeof task !== "object") return null;
-      const candidates = [];
-      if (task.taskStateItem && typeof task.taskStateItem === "object") {
-        if (task.taskStateItem.last_error) candidates.push(String(task.taskStateItem.last_error));
-      }
-      if (task.runtimeResult && typeof task.runtimeResult === "object") {
-        ["error", "message", "detail"].forEach((k) => {
-          if (task.runtimeResult[k]) candidates.push(String(task.runtimeResult[k]));
-        });
-      }
-      const text = candidates.find((x) => /sr_group=|subsystem=/.test(String(x))) || candidates[0] || "";
-      if (!text) return null;
-      const subsystemMatch = text.match(/\bsubsystem=([a-zA-Z0-9_.-]+)/);
-      const srGroupMatch = text.match(/\bsr_group=([A-Za-z0-9_-]+)/);
-      const fnMatch = text.match(/\b(FN-[A-Z0-9-]+)\b/);
-      if (!subsystemMatch && !srGroupMatch && !fnMatch) return null;
-      return {
-        subsystem: subsystemMatch ? String(subsystemMatch[1]) : "",
-        srGroup: srGroupMatch ? String(srGroupMatch[1]) : "",
-        fnId: fnMatch ? String(fnMatch[1]) : "",
-        message: text,
-      };
-    }
-
-    function subsystemCardState(baseTask, subsystemRef, options) {
-      if (!baseTask) return "pending";
-      const baseStatus = String(baseTask.status || "pending");
-      if (baseStatus === "failed") {
-        const failure = extractDeveloperSrFailureTarget(baseTask);
-        if (!failure || !failure.subsystem) return "failed";
-        const failureKey = normalizeSubsystemMatchKey(failure.subsystem);
-        const candidates = [];
-        if (subsystemRef && typeof subsystemRef === "object") {
-          candidates.push(subsystemRef.subsystemSlug, subsystemRef.subsystemId, subsystemRef.subsystemName);
-        } else {
-          candidates.push(subsystemRef);
-        }
-        const matched = candidates.some((item) => normalizeSubsystemMatchKey(item) === failureKey);
-        return matched ? "failed" : "pending";
-      }
-      const preserveRunningForNonLive = !!(options && options.preserveRunningForNonLive);
-      const liveSubsystem = inferLiveSubsystem(baseTask);
-      if (baseStatus === "running") {
-        const liveKey = normalizeSubsystemMatchKey(liveSubsystem);
-        const candidates = [];
-        if (subsystemRef && typeof subsystemRef === "object") {
-          candidates.push(subsystemRef.subsystemSlug, subsystemRef.subsystemId, subsystemRef.subsystemName);
-        } else {
-          candidates.push(subsystemRef);
-        }
-        const matched = liveKey
-          ? candidates.some((item) => normalizeSubsystemMatchKey(item) === liveKey)
-          : false;
-        if (matched) return "running";
-        return preserveRunningForNonLive ? "running" : "pending";
-      }
-      return baseStatus;
-    }
-
-    function srGroupCardState(baseTask, subsystemRef, srRef) {
-      if (!baseTask) return "pending";
-      const baseStatus = String(baseTask.status || "pending");
-      if (baseStatus === "failed") {
-        const failure = extractDeveloperSrFailureTarget(baseTask);
-        if (!failure || !(failure.subsystem || failure.srGroup)) return "failed";
-        const failureSubsystemKey = normalizeSubsystemMatchKey(failure.subsystem);
-        const failureSrKey = normalizeSubsystemMatchKey(failure.srGroup);
-        const subsystemCandidates = [];
-        if (subsystemRef && typeof subsystemRef === "object") {
-          subsystemCandidates.push(subsystemRef.subsystemSlug, subsystemRef.subsystemId, subsystemRef.subsystemName);
-        } else {
-          subsystemCandidates.push(subsystemRef);
-        }
-        const srCandidates = [];
-        if (srRef && typeof srRef === "object") {
-          srCandidates.push(srRef.srId, srRef.srKey);
-        } else {
-          srCandidates.push(srRef);
-        }
-        const subsystemMatched = failureSubsystemKey
-          ? subsystemCandidates.some((item) => normalizeSubsystemMatchKey(item) === failureSubsystemKey)
-          : true;
-        const srMatched = failureSrKey ? srCandidates.some((item) => normalizeSubsystemMatchKey(item) === failureSrKey) : true;
-        return subsystemMatched && srMatched ? "failed" : "pending";
-      }
-      if (baseStatus !== "running") return baseStatus;
-      const liveSubsystemKey = normalizeSubsystemMatchKey(inferLiveSubsystem(baseTask));
-      const liveSrKey = normalizeSubsystemMatchKey(inferLiveSr(baseTask));
-      const subsystemCandidates = [];
-      if (subsystemRef && typeof subsystemRef === "object") {
-        subsystemCandidates.push(subsystemRef.subsystemSlug, subsystemRef.subsystemId, subsystemRef.subsystemName);
-      } else {
-        subsystemCandidates.push(subsystemRef);
-      }
-      const srCandidates = [];
-      if (srRef && typeof srRef === "object") {
-        srCandidates.push(srRef.srId, srRef.srKey);
-      } else {
-        srCandidates.push(srRef);
-      }
-      const subsystemMatched = liveSubsystemKey
-        ? subsystemCandidates.some((item) => normalizeSubsystemMatchKey(item) === liveSubsystemKey)
-        : false;
-      const srMatched = liveSrKey ? srCandidates.some((item) => normalizeSubsystemMatchKey(item) === liveSrKey) : false;
-      if (subsystemMatched && srMatched) return "running";
-      return "pending";
-    }
-
-    function buildCompositeTaskCards(phaseKey, agentTasks) {
-      const cards = [];
-      const get = (key) => pickPhaseTask(agentTasks, key);
-
-      if (phaseKey === "requirements") {
-        const step1 = get("product_manager.deep_product_workflow.step1");
-        if (step1) {
-          cards.push({
-            type: "single",
-            key: `${phaseKey}::step1`,
-            title: "需求澄清扩展",
-            primaryTask: step1,
-            status: String(step1.status || "pending"),
-            meta: [`输入: ${(step1.inputHints || []).slice(0, 2).join(", ") || "-"}`],
-          });
-        }
-        const step2Design = get("product_manager.deep_product_workflow.step2.design");
-        const step2Review = get("product_manager.deep_product_workflow.step2.review");
-        if (step2Design || step2Review) {
-          cards.push({
-            type: "paired",
-            key: `${phaseKey}::step2`,
-            title: "产品设计迭代",
-            primaryTask: step2Design || step2Review,
-            designTask: step2Design,
-            reviewTask: step2Review,
-            status: mergeTaskStatus(step2Design, step2Review),
-            designRoundTotal: readRoundCount(step2Design || step2Review, "step2"),
-            reviewRoundTotal: readRoundCount(step2Design || step2Review, "step2"),
-            designRoundCurrent: inferLiveRound(step2Design),
-            reviewRoundCurrent: inferLiveRound(step2Review),
-          });
-        }
-        const step3Design = get("product_manager.deep_product_workflow.step3.design");
-        const step3Review = get("product_manager.deep_product_workflow.step3.review");
-        if (step3Design || step3Review) {
-          cards.push({
-            type: "paired",
-            key: `${phaseKey}::step3`,
-            title: "系统需求设计迭代",
-            primaryTask: step3Design || step3Review,
-            designTask: step3Design,
-            reviewTask: step3Review,
-            status: mergeTaskStatus(step3Design, step3Review),
-            designRoundTotal: readRoundCount(step3Design || step3Review, "step3"),
-            reviewRoundTotal: readRoundCount(step3Design || step3Review, "step3"),
-            designRoundCurrent: inferLiveRound(step3Design),
-            reviewRoundCurrent: inferLiveRound(step3Review),
-          });
-        }
-        return cards;
-      }
-
-      if (phaseKey === "design") {
-        const archDesign = get("architect.deep_architecture_workflow.step1.design");
-        const archReview = get("architect.deep_architecture_workflow.step1.review");
-        if (archDesign || archReview) {
-          cards.push({
-            type: "paired",
-            key: `${phaseKey}::step1`,
-            title: "系统架构设计迭代",
-            primaryTask: archDesign || archReview,
-            designTask: archDesign,
-            reviewTask: archReview,
-            status: mergeTaskStatus(archDesign, archReview),
-            designRoundTotal: readRoundCount(archDesign || archReview, "step1"),
-            reviewRoundTotal: readRoundCount(archDesign || archReview, "step1"),
-            designRoundCurrent: inferLiveRound(archDesign),
-            reviewRoundCurrent: inferLiveRound(archReview),
-          });
-        }
-        const splitTask = get("architect.deep_architecture_workflow.step2_3");
-        if (splitTask) {
-          cards.push({
-            type: "single",
-            key: `${phaseKey}::step2_3`,
-            title: "架构引导代码与子系统拆分",
-            primaryTask: splitTask,
-            status: String(splitTask.status || "pending"),
-          });
-        }
-        const subDesign = get("architect.deep_architecture_workflow.step4.design");
-        const subReview = get("architect.deep_architecture_workflow.step4.review");
-        const subInit = get("architect.deep_architecture_workflow.step5");
-        const subSummary = readWorkflowSummaryFromTasks(subDesign, subReview, splitTask);
-        const subsystems = subSummary && Array.isArray(subSummary.subsystems) ? subSummary.subsystems : [];
-        const subRoundsEach =
-          subSummary && subSummary.subsystem_rounds_each && typeof subSummary.subsystem_rounds_each === "object"
-            ? subSummary.subsystem_rounds_each
-            : {};
-        if (subDesign || subReview) {
-          cards.push({
-            type: "subsystem_group",
-            key: `${phaseKey}::step4`,
-            title: "子系统详细设计与评审",
-            primaryTask: subDesign || subReview,
-            designTask: subDesign,
-            reviewTask: subReview,
-            status: mergeTaskStatus(subDesign, subReview),
-            cards: subsystems.map((sub) => {
-              const subsystemId = String((sub && sub.subsystem_id) || "");
-              return {
-                subsystemId,
-                subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
-                subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
-                srIds: Array.isArray(sub && sub.assigned_sr_ids) ? sub.assigned_sr_ids.map((x) => String(x)) : [],
-                designStatus: subsystemCardState(subDesign, {
-                  subsystemId,
-                  subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
-                  subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
-                }),
-                reviewStatus: subsystemCardState(subReview, {
-                  subsystemId,
-                  subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
-                  subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
-                }),
-                designRoundTotal: Number(subRoundsEach[subsystemId] || 0),
-                reviewRoundTotal: Number(subRoundsEach[subsystemId] || 0),
-                designRoundCurrent:
-                  inferLiveSubsystem(subDesign) === subsystemId ? inferLiveRound(subDesign) : 0,
-                reviewRoundCurrent:
-                  inferLiveSubsystem(subReview) === subsystemId ? inferLiveRound(subReview) : 0,
-              };
-            }),
-            tailTask: subInit || null,
-          });
-        }
-        if (subInit && !(subDesign || subReview)) {
-          cards.push({
-            type: "single",
-            key: `${phaseKey}::step5`,
-            title: "子系统源码初始化",
-            primaryTask: subInit,
-            status: String(subInit.status || "pending"),
-          });
-        }
-        return cards;
-      }
-
-      if (phaseKey === "implementation") {
-        const assignment = get("developer.deep_developer_workflow.step1");
-        if (assignment) {
-          cards.push({
-            type: "single",
-            key: `${phaseKey}::step1`,
-            title: "子系统任务分配",
-            primaryTask: assignment,
-            status: String(assignment.status || "pending"),
-          });
-        }
-        const devTask = get("developer.deep_developer_workflow.step2.develop");
-        const reviewTask = get("developer.deep_developer_workflow.step2.review");
-        const revisionTask = get("developer.deep_developer_workflow.step2.revision");
-        const mergeTask = get("developer.deep_developer_workflow.step2.merge");
-        const devSummary = readWorkflowSummaryFromTasks(devTask, reviewTask, revisionTask, mergeTask, assignment);
-        const subsystems = devSummary && Array.isArray(devSummary.subsystems) ? devSummary.subsystems : [];
-        if (devTask || reviewTask) {
-          cards.push({
-            type: "subsystem_group",
-            key: `${phaseKey}::step2`,
-            title: "子系统开发与评审轮次",
-            primaryTask: devTask || reviewTask,
-            designTask: devTask,
-            reviewTask,
-            status: mergeTaskStatus(devTask, reviewTask),
-            cards: subsystems.map((sub) => {
-              const subsystemId = String((sub && sub.subsystem_id) || "");
-              return {
-                subsystemId,
-                subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
-                subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
-                srIds: Array.isArray(sub && sub.assigned_sr_ids) ? sub.assigned_sr_ids.map((x) => String(x)) : [],
-                designStatus: subsystemCardState(devTask, {
-                  subsystemId,
-                  subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
-                  subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
-                }, { preserveRunningForNonLive: true }),
-                reviewStatus: subsystemCardState(reviewTask, {
-                  subsystemId,
-                  subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
-                  subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
-                }, { preserveRunningForNonLive: true }),
-                designRoundTotal: readRoundCount(devTask || reviewTask, "step2"),
-                reviewRoundTotal: readRoundCount(devTask || reviewTask, "step2"),
-                designRoundCurrent:
-                  inferLiveSubsystem(devTask) === subsystemId ? inferLiveRound(devTask) : 0,
-                reviewRoundCurrent:
-                  inferLiveSubsystem(reviewTask) === subsystemId ? inferLiveRound(reviewTask) : 0,
-                srGroups: (Array.isArray(sub && (sub.srs || sub.sr_groups)) ? (sub.srs || sub.sr_groups) : []).map((sr) => {
-                  const srId = String((sr && (sr.sr_id || sr.sr_key || sr.id)) || "");
-                  const subsystemRef = {
-                    subsystemId,
-                    subsystemName: String((sub && (sub.subsystem_name || sub.subsystem)) || subsystemId),
-                    subsystemSlug: String((sub && (sub.subsystem_slug || sub.subsystem_english_name || "")) || ""),
-                  };
-                  return {
-                    srId,
-                    fnIds: Array.isArray(sr && sr.fn_ids) ? sr.fn_ids.map((x) => String(x)) : [],
-                    fnCount: Number(sr && sr.fn_count) || 0,
-                    designStatus: srGroupCardState(devTask, subsystemRef, { srId }),
-                    reviewStatus: srGroupCardState(reviewTask, subsystemRef, { srId }),
-                    designRoundTotal: readRoundCount(devTask || reviewTask, "step2"),
-                    reviewRoundTotal: readRoundCount(devTask || reviewTask, "step2"),
-                    designRoundCurrent:
-                      inferLiveSubsystem(devTask) === subsystemId && inferLiveSr(devTask) === srId ? inferLiveRound(devTask) : 0,
-                    reviewRoundCurrent:
-                      inferLiveSubsystem(reviewTask) === subsystemId && inferLiveSr(reviewTask) === srId
-                        ? inferLiveRound(reviewTask)
-                        : 0,
-                  };
-                }),
-                extraStatus: revisionTask ? taskStatusLabel(revisionTask.status) : "",
-              };
-            }),
-            tailTask: mergeTask || revisionTask || null,
-          });
-        }
-        if (mergeTask && !(devTask || reviewTask)) {
-          cards.push({
-            type: "single",
-            key: `${phaseKey}::step2.merge`,
-            title: "批量合并",
-            primaryTask: mergeTask,
-            status: String(mergeTask.status || "pending"),
-          });
-        }
-        return cards;
-      }
-
-      return [];
-    }
-
-    function buildFlowData() {
-      const phaseResultMap = {};
-      phases.forEach((p) => {
-        phaseResultMap[String(p.phase || "")] = p;
-      });
-
-      let hasBlockingPending = false;
-      return workflowNodes.map((node) => {
-        const phaseKey = String(node.name || "");
-        const phaseResult = phaseResultMap[phaseKey];
-        let phaseState = "pending";
-        if (phaseResult) {
-          phaseState = normalizePhaseState(String(phaseResult.status || ""));
-        } else if (!hasBlockingPending && isRunning) {
-          phaseState = "running";
-          hasBlockingPending = true;
-        }
-        if (phaseState === "pending") {
-          hasBlockingPending = true;
-        }
-
-        const taskStatusMap = phaseResult && phaseResult.tasks && typeof phaseResult.tasks === "object" ? phaseResult.tasks : {};
-        const taskItems = Array.isArray(node.tasks) ? node.tasks : [];
-        const tasks = taskItems.map((taskKey) => {
-          const { result: taskResult } = resolveTaskResult(taskStatusMap, String(taskKey || "").split(".")[0] || "", phaseKey, taskKey);
-          const status = normalizeTaskState(taskResult, phaseState);
-          return {
-            key: taskKey,
-            label: toTaskLabel(taskKey),
-            status,
-          };
-        });
-
-        const rawAgentTasks = Array.isArray(node.agent_tasks) ? node.agent_tasks : buildAgentTasksFromTaskItems(taskItems);
-        const agentTasks = rawAgentTasks.map((entry) => {
-          const agent = String(entry.agent || "");
-          const entryTasks = Array.isArray(entry.tasks) ? entry.tasks : [];
-          const laneType = laneKind(agent);
-          return {
-            agent,
-            laneType,
-            parallelized: isParallelLane(agent),
-            tasks: entryTasks.map((task) => {
-              const taskKey = String(task.key || "");
-              const taskName = String(task.name || toTaskLabel(taskKey));
-              const inputHints = Array.isArray(task.input_hints) ? task.input_hints : [];
-              const { result: taskResult, resultKey } = resolveTaskResult(taskStatusMap, agent, phaseKey, taskKey);
-              const liveState = getLiveTaskState(phaseKey, taskKey);
-              const taskStateItem = getTaskStateSummaryItem(phaseKey, taskKey);
-              const resolvedStatus =
-                taskStateItem && typeof taskStateItem.latest_status === "string" && taskStateItem.latest_status
-                  ? String(taskStateItem.latest_status)
-                  : liveState && typeof liveState.status === "string" && liveState.status
-                  ? String(liveState.status)
-                  : normalizeTaskState(taskResult, phaseState);
-              const statusSource =
-                taskStateItem && typeof taskStateItem.latest_status === "string" && taskStateItem.latest_status
-                  ? "task_state"
-                  : liveState && typeof liveState.status === "string" && liveState.status
-                  ? "live_state"
-                  : taskResult && typeof taskResult === "object"
-                  ? "runtime_result"
-                  : "phase_fallback";
-              return {
-                phaseKey,
-                phaseTitle: phaseNameMap[phaseKey] || phaseKey,
-                agent,
-                key: taskKey,
-                name: taskName,
-                inputHints,
-                status: resolvedStatus,
-                runtimeResult: taskResult,
-                runtimeTaskKey: resultKey,
-                liveState,
-                taskStateItem,
-                progressText: summarizeLiveTaskProgress(liveState),
-                statusSource,
-                parallelized: isParallelLane(agent),
-                laneType,
-              };
-            }),
-          };
-        });
-        const normalizedAgentTasks = rebalanceLaneTaskStatuses(agentTasks, phaseState);
-        const relations = buildPhaseRelations(phaseKey, agentTasks);
-        const compositeTaskCards = buildCompositeTaskCards(phaseKey, normalizedAgentTasks);
-
-        // Extract timing from phase result tasks
-        let phaseStartedAt = null;
-        let phaseCompletedAt = null;
-        if (phaseResult) {
-          // Phase-level timestamps (if backend provides them)
-          if (phaseResult.started_at) phaseStartedAt = phaseResult.started_at;
-          if (phaseResult.completed_at) phaseCompletedAt = phaseResult.completed_at;
-        }
-
-        return {
-          key: phaseKey,
-          title: phaseNameMap[phaseKey] || phaseKey,
-          rawTitle: phaseKey,
-          status: phaseState,
-          startedAt: phaseStartedAt,
-          completedAt: phaseCompletedAt,
-          tasks,
-          agentTasks: normalizedAgentTasks,
-          compositeTaskCards,
-          relations,
-          // Collect task durations for display
-          taskDurations: Object.entries(taskStatusMap).reduce((acc, [k, v]) => {
-            if (v && typeof v === "object" && v.duration) acc[k] = v.duration;
-            return acc;
-          }, {}),
-        };
-      });
-    }
-
-    const flowData = buildFlowData();
-    const selectedTaskDetail = selectedTask
-      ? flowData
-          .flatMap((phase) => phase.agentTasks || [])
-          .flatMap((agentBlock) => agentBlock.tasks || [])
-          .find((item) => item.phaseKey === selectedTask.phaseKey && item.key === selectedTask.taskKey) || null
-      : null;
-    const selectedTaskStoreKey = selectedTaskDetail
-      ? `${selectedTaskDetail.phaseKey}::${selectedTaskDetail.key}`
-      : "";
-    const selectedTaskLogs = selectedTaskStoreKey ? taskLogsByKey[selectedTaskStoreKey] || [] : [];
-    const visibleTaskLogs = selectedTaskLogs.filter(isVisibleTaskLogEvent);
-
-    window.React.useEffect(() => {
-      if (selectedTask) return;
-      const candidates = flowData
-        .flatMap((phase) => phase.agentTasks || [])
-        .flatMap((agentBlock) => agentBlock.tasks || []);
-      const preferred =
-        candidates.find((item) => item.status === "running" && item.liveState && item.liveState.last_event) ||
-        candidates.find((item) => item.status === "running") ||
-        candidates.find((item) => item.liveState && item.liveState.last_event) ||
-        null;
-      if (preferred) {
-        setSelectedTask({ phaseKey: preferred.phaseKey, taskKey: preferred.key });
-      }
-    }, [selectedTask, flowData]);
-
-    window.React.useEffect(() => {
-      let active = true;
-      if (!selectedTaskDetail) {
-        setTaskLogError("");
-        setTaskLogLoading(false);
-        return () => {
-          active = false;
-        };
-      }
-
-      async function refreshTaskLogs() {
-        setTaskLogLoading(true);
-        try {
-          const payload = await fetchJson(
-            `/api/projects/${encodeURIComponent(project.info.project_id)}/runs/${encodeURIComponent(
-              run.run_id
-            )}/task-logs?phase_key=${encodeURIComponent(selectedTaskDetail.phaseKey)}&task_key=${encodeURIComponent(
-              selectedTaskDetail.key
-            )}&limit=250`
-          );
-          if (!active) return;
-          const incoming = Array.isArray(payload.events) ? payload.events : [];
-          setTaskLogsByKey((prev) => {
-            const existing = Array.isArray(prev[selectedTaskStoreKey]) ? prev[selectedTaskStoreKey] : [];
-            const merged = [...existing];
-            const seen = new Set(existing.map((item) => String(item.id || "")));
-            incoming.forEach((item) => {
-              const id = String(item && item.id ? item.id : "");
-              if (!id || seen.has(id)) return;
-              seen.add(id);
-              merged.push(item);
-            });
-            merged.sort((a, b) => String(a.ts || "").localeCompare(String(b.ts || "")));
-            return { ...prev, [selectedTaskStoreKey]: merged };
-          });
-          setTaskLogError("");
-        } catch (err) {
-          if (!active) return;
-          setTaskLogError(err instanceof Error ? err.message : "任务日志加载失败");
-        } finally {
-          if (active) setTaskLogLoading(false);
-        }
-      }
-
-      refreshTaskLogs();
-      const timer = window.setInterval(refreshTaskLogs, isRunning ? 2500 : 6000);
-      return () => {
-        active = false;
-        window.clearInterval(timer);
-      };
-    }, [
-      project.info.project_id,
-      run.run_id,
-      isRunning,
-      selectedTaskStoreKey,
-      selectedTaskDetail && selectedTaskDetail.phaseKey,
-      selectedTaskDetail && selectedTaskDetail.key,
-    ]);
-
-    window.React.useEffect(() => {
-      let active = true;
-      if (!selectedTaskDetail) {
-        setTaskStateDetail(null);
-        setTaskStateError("");
-        setTaskStateLoading(false);
-        setTaskMemoryExpanded(false);
-        return () => {
-          active = false;
-        };
-      }
-      setTaskMemoryExpanded(false);
-      async function refreshTaskState() {
-        setTaskStateLoading(true);
-        try {
-          const payload = await fetchJson(
-            `/api/projects/${encodeURIComponent(project.info.project_id)}/runs/${encodeURIComponent(
-              run.run_id
-            )}/task-state?phase_key=${encodeURIComponent(selectedTaskDetail.phaseKey)}&task_key=${encodeURIComponent(
-              selectedTaskDetail.key
-            )}`
-          );
-          if (!active) return;
-          setTaskStateDetail(payload);
-          setTaskStateError("");
-        } catch (err) {
-          if (!active) return;
-          setTaskStateDetail(null);
-          setTaskStateError(err instanceof Error ? err.message : "任务记忆体加载失败");
-        } finally {
-          if (active) setTaskStateLoading(false);
-        }
-      }
-      refreshTaskState();
-      const timer = window.setInterval(refreshTaskState, isRunning ? 3000 : 6000);
-      return () => {
-        active = false;
-        window.clearInterval(timer);
-      };
-    }, [
-      project.info.project_id,
-      run.run_id,
-      isRunning,
-      selectedTaskDetail && selectedTaskDetail.phaseKey,
-      selectedTaskDetail && selectedTaskDetail.key,
-    ]);
-
-    async function submitRetry() {
-      if (!selectedTaskDetail || retrySubmitting) return;
-      setRetrySubmitting(true);
-      setRetryError("");
-      setRetryNotice("");
-      try {
-        const payload = await fetchJson(
-          `/api/projects/${encodeURIComponent(project.info.project_id)}/runs/${encodeURIComponent(run.run_id)}/task-retries`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              phase_key: selectedTaskDetail.phaseKey,
-              task_key: selectedTaskDetail.key,
-              mode: retryMode === "downstream" ? "downstream" : "current",
-            }),
-          }
-        );
-        setRun((prev) => {
-          if (!prev || typeof prev !== "object") return prev;
-          return {
-            ...prev,
-            status: "running",
-            error: "",
-            completed_at: "",
-            active_operation: {
-              op_id: String(payload && payload.op_id ? payload.op_id : ""),
-              type: "task_retry",
-              status: "running",
-              phase_key: selectedTaskDetail.phaseKey,
-              task_key: selectedTaskDetail.key,
-              mode: retryMode === "downstream" ? "downstream" : "current",
-            },
-          };
-        });
-        setRetryNotice(`已提交重试: ${payload.op_id || ""}`);
-      } catch (err) {
-        setRetryError(err instanceof Error ? err.message : "任务重试提交失败");
-      } finally {
-        setRetrySubmitting(false);
-      }
-    }
-
-    return h(
-      "div",
-      { className: "run-layout" },
-      h(
-        "section",
-        { className: "card card-glow run-summary-card" },
-        h("h1", null, "⚡ 工作流执行详情"),
-        h(
-          "p",
-          null,
-          "项目: ",
-          h("a", { href: `/projects/${encodeURIComponent(project.info.project_id)}` }, project.info.project_name)
+    return h("div", { className: "run-container" },
+      h("div", { className: "run-header" },
+        h("div", { className: "run-header-left" },
+          h("a", { className: "run-back-link", href: "/projects/" + project.info.project_id }, "\u2190 " + (project.info.name || "Project")),
+          h("h1", { className: "run-title" }, "\u6267\u884c\u8be6\u60c5"),
+          h("span", { className: "run-id-label" }, run.run_id),
         ),
-        h("p", { className: "muted" }, `执行ID: ${run.run_id} | 时间: ${formatLocalTime(run.started_at)}`),
-        h("p", null, `状态: ${runStatus}${isRunning ? "（执行中，自动刷新）" : ""}`),
-        run.completed_at ? h("p", { className: "muted" }, `完成时间: ${formatLocalTime(run.completed_at)}`) : null,
-        run.error ? h("pre", { className: "error" }, run.error) : null,
-        pollError ? h("p", { className: "warning" }, `轮询失败: ${pollError}`) : null,
-        h("p", null, `需求: ${run.requirement_text}`)
+        h("span", { className: "run-status-badge " + statusCls },
+          isRunning ? h("span", { className: "monitor-task-pulse" }) : null,
+          runStatus === "completed" ? "\u5df2\u5b8c\u6210" : runStatus === "failed" ? "\u5931\u8d25" : runStatus === "running" ? "\u8fd0\u884c\u4e2d" : "\u7b49\u5f85",
+        ),
       ),
-      h(
-        "div",
-        { className: "run-main-grid" },
-        h(
-          "section",
-          { className: "card run-flow-card" },
-          h("h2", null, "端到端流程图"),
-          h(
-            "div",
-            { className: "flow-chart-track" },
-            ...flowData.map((phase, index) =>
-              h(
-                "div",
-                {
-                  key: `${phase.key}-${index}`,
-                  className: `flow-step ${phase.status} ${index < flowData.length - 1 ? "has-next" : ""}`,
-                },
-                h("div", { className: "flow-step-dot" }, phase.status === "completed" ? "✓" : index + 1),
-                h(
-                  "div",
-                  { className: "flow-step-head" },
-                  h("div", { className: "flow-step-title" }, phase.title),
-                  h("div", { className: "flow-step-subtitle" }, phase.rawTitle),
-                h("div", { className: "flow-step-time" },
-                  phase.startedAt ? h("span", null, "开始: " + formatLocalTime(phase.startedAt)) : null,
-                  phase.completedAt ? h("span", null, " → 完成: " + formatLocalTime(phase.completedAt)) : null,
-                  !phase.startedAt && !phase.completedAt && phase.taskDurations && Object.keys(phase.taskDurations).length
-                    ? h("span", null, "耗时: " + Object.values(phase.taskDurations).map(function(d) { return (d / 1000).toFixed(0) + "s"; }).join(" + "))
-                    : null
-                ),
-                  h(
-                    "div",
-                    { className: "flow-phase-badges" },
-                    ...((phase.relations && phase.relations.badges) || []).map((badge) =>
-                      h(
-                        "span",
-                        {
-                          key: `${phase.key}-${badge.type}-${badge.label}`,
-                          className: `flow-badge ${badge.type}`,
-                        },
-                        badge.label
-                      )
-                    )
-                  )
-                ),
-                phase.relations && Array.isArray(phase.relations.hints) && phase.relations.hints.length
-                  ? h(
-                      "ul",
-                      { className: "flow-relation-hints" },
-                      ...phase.relations.hints.map((hint, hintIdx) =>
-                        h("li", { key: `${phase.key}-hint-${hintIdx}` }, hint)
-                      )
-                    )
-                  : null,
-                phase.compositeTaskCards && phase.compositeTaskCards.length
-                  ? h(
-                      "div",
-                      { className: "flow-composite-list" },
-                      ...phase.compositeTaskCards.map((card) => {
-                        const primary = card.primaryTask || null;
-                        const selected =
-                          primary &&
-                          selectedTask &&
-                          selectedTask.phaseKey === primary.phaseKey &&
-                          selectedTask.taskKey === primary.key;
-                        const onSelect = () =>
-                          primary ? setSelectedTask({ phaseKey: primary.phaseKey, taskKey: primary.key }) : null;
-
-                        const renderDualStatus = (designTask, reviewTask, row) =>
-                          h(
-                            "div",
-                            { className: "flow-dual-status" },
-                            h(
-                              "span",
-                              {
-                                className: `flow-dual-pill design clickable ${String(
-                                  (row && row.designStatus) ||
-                                    (row ? "pending" : pairedRoleDisplayStatus(designTask, reviewTask, "design"))
-                                )}${
-                                  designTask ? " is-action" : ""
-                                }`,
-                                title: designTask ? `设计任务: ${designTask.name}` : "设计状态",
-                                role: designTask ? "button" : undefined,
-                                tabIndex: designTask ? 0 : undefined,
-                                onClick: designTask ? (e) => selectTaskByCardTask(designTask, e) : undefined,
-                                onKeyDown: designTask
-                                  ? (e) => {
-                                      if (e.key === "Enter" || e.key === " ") {
-                                        e.preventDefault();
-                                        selectTaskByCardTask(designTask, e);
-                                      }
-                                    }
-                                  : undefined,
-                              },
-                              `设 ${taskStatusLabel(
-                                String(
-                                  (row && row.designStatus) ||
-                                    (row ? "pending" : pairedRoleDisplayStatus(designTask, reviewTask, "design"))
-                                )
-                              )}${
-                                (row && row.designRoundCurrent) || card.designRoundCurrent
-                                  ? ` · R${(row && row.designRoundCurrent) || card.designRoundCurrent}`
-                                  : (row && row.designRoundTotal) || card.designRoundTotal
-                                    ? ` · ${((row && row.designRoundTotal) || card.designRoundTotal)}轮`
-                                    : ""
-                              }`
-                            ),
-                            h(
-                              "span",
-                              {
-                                className: `flow-dual-pill review clickable ${String(
-                                  (row && row.reviewStatus) ||
-                                    (row ? "pending" : pairedRoleDisplayStatus(reviewTask, designTask, "review"))
-                                )}${
-                                  reviewTask ? " is-action" : ""
-                                }`,
-                                title: reviewTask ? `Review任务: ${reviewTask.name}` : "Review状态",
-                                role: reviewTask ? "button" : undefined,
-                                tabIndex: reviewTask ? 0 : undefined,
-                                onClick: reviewTask ? (e) => selectTaskByCardTask(reviewTask, e) : undefined,
-                                onKeyDown: reviewTask
-                                  ? (e) => {
-                                      if (e.key === "Enter" || e.key === " ") {
-                                        e.preventDefault();
-                                        selectTaskByCardTask(reviewTask, e);
-                                      }
-                                    }
-                                  : undefined,
-                              },
-                              `审 ${taskStatusLabel(
-                                String(
-                                  (row && row.reviewStatus) ||
-                                    (row ? "pending" : pairedRoleDisplayStatus(reviewTask, designTask, "review"))
-                                )
-                              )}${
-                                (row && row.reviewRoundCurrent) || card.reviewRoundCurrent
-                                  ? ` · R${(row && row.reviewRoundCurrent) || card.reviewRoundCurrent}`
-                                  : (row && row.reviewRoundTotal) || card.reviewRoundTotal
-                                    ? ` · ${((row && row.reviewRoundTotal) || card.reviewRoundTotal)}轮`
-                                    : ""
-                              }`
-                            )
-                          );
-
-                        if (card.type === "subsystem_group") {
-                          return h(
-                            "section",
-                            {
-                              key: card.key,
-                              className: `flow-composite-card subsystem-group ${card.status || "pending"}${selected ? " active" : ""}`,
-                            },
-                            h(
-                              "button",
-                              {
-                                type: "button",
-                                className: "flow-composite-head",
-                                onClick: onSelect,
-                              },
-                              h("span", { className: "flow-composite-title" }, card.title),
-                              renderDualStatus(card.designTask, card.reviewTask, null)
-                            ),
-                            h(
-                              "div",
-                              { className: "flow-subsystem-card-list" },
-                              ...((card.cards || []).length
-                                ? card.cards
-                                : [
-                                    {
-                                      subsystemId: "",
-                                      subsystemName: "（等待子系统拆分结果）",
-                                      srIds: [],
-                                      designStatus: card.designTask ? card.designTask.status : "pending",
-                                      reviewStatus: card.reviewTask ? card.reviewTask.status : "pending",
-                                    },
-                                  ]).map((row, idx) =>
-                                h(
-                                  "div",
-                                  { className: "flow-subsystem-card", key: `${card.key}-sub-${idx}-${row.subsystemId || "na"}` },
-                                  h(
-                                    "div",
-                                    { className: "flow-subsystem-card-top" },
-                                    h(
-                                      "div",
-                                      { className: "flow-subsystem-title-wrap" },
-                                      h("span", { className: "flow-subsystem-title" }, row.subsystemName || row.subsystemId || "subsystem"),
-                                      row.subsystemId
-                                        ? h("span", { className: "flow-subsystem-id" }, row.subsystemId)
-                                        : null
-                                    ),
-                                    renderDualStatus(card.designTask, card.reviewTask, row)
-                                  ),
-                                  h(
-                                    "div",
-                                    { className: "flow-subsystem-meta" },
-                                    row.srIds && row.srIds.length
-                                      ? `SR: ${row.srIds.join(", ")}`
-                                      : "SR: （待分配）",
-                                    row.extraStatus ? ` · 修订: ${row.extraStatus}` : "",
-                                    card.tailTask ? ` · 后续: ${taskStatusLabel(card.tailTask.status)}` : ""
-                                  ),
-                                  (card.designTask && card.designTask.progressText) ||
-                                  (card.reviewTask && card.reviewTask.progressText)
-                                    ? h(
-                                        "div",
-                                        { className: "flow-subsystem-progress" },
-                                        inferLiveSubsystem(card.designTask) === row.subsystemId && card.designTask && card.designTask.progressText
-                                          ? card.designTask.progressText
-                                          : inferLiveSubsystem(card.reviewTask) === row.subsystemId &&
-                                              card.reviewTask &&
-                                              card.reviewTask.progressText
-                                            ? card.reviewTask.progressText
-                                            : ""
-                                      )
-                                    : null
-                                  ,
-                                  row.srGroups && row.srGroups.length
-                                    ? h(
-                                        "div",
-                                        { className: "flow-subsystem-sr-list" },
-                                        ...row.srGroups.map((sr, srIdx) =>
-                                          h(
-                                            "div",
-                                            {
-                                              className: `flow-subsystem-sr-item ${String(sr.designStatus || "pending")}`,
-                                              key: `${card.key}-sub-${idx}-sr-${srIdx}-${sr.srId || "na"}`,
-                                            },
-                                            h(
-                                              "div",
-                                              { className: "flow-subsystem-sr-head" },
-                                              h("span", { className: "flow-subsystem-sr-title" }, sr.srId || "SR"),
-                                              h(
-                                                "span",
-                                                { className: `flow-dual-pill design ${String(sr.designStatus || "pending")}` },
-                                                `开 ${taskStatusLabel(String(sr.designStatus || "pending"))}${
-                                                  sr.designRoundCurrent
-                                                    ? ` · R${sr.designRoundCurrent}`
-                                                    : sr.designRoundTotal
-                                                      ? ` · ${sr.designRoundTotal}轮`
-                                                      : ""
-                                                }`
-                                              ),
-                                              h(
-                                                "span",
-                                                { className: `flow-dual-pill review ${String(sr.reviewStatus || "pending")}` },
-                                                `审 ${taskStatusLabel(String(sr.reviewStatus || "pending"))}${
-                                                  sr.reviewRoundCurrent
-                                                    ? ` · R${sr.reviewRoundCurrent}`
-                                                    : sr.reviewRoundTotal
-                                                      ? ` · ${sr.reviewRoundTotal}轮`
-                                                      : ""
-                                                }`
-                                              )
-                                            ),
-                                            null
-                                          )
-                                        )
-                                      )
-                                    : null
-                                )
-                              )
-                            )
-                          );
-                        }
-
-                        if (card.type === "paired") {
-                          return h(
-                            "button",
-                            {
-                              type: "button",
-                              key: card.key,
-                              className: `flow-composite-card paired ${card.status || "pending"}${selected ? " active" : ""}`,
-                              onClick: onSelect,
-                            },
-                            h(
-                              "div",
-                              { className: "flow-composite-card-top" },
-                              h("span", { className: "flow-composite-title" }, card.title),
-                              renderDualStatus(card.designTask, card.reviewTask, null)
-                            ),
-                            h(
-                              "div",
-                              { className: "flow-composite-meta" },
-                              card.designTask && card.designTask.inputHints && card.designTask.inputHints.length
-                                ? `输入: ${card.designTask.inputHints.slice(0, 2).join(", ")}`
-                                : "输入: -",
-                              card.designTask && card.designTask.liveState && typeof card.designTask.liveState.event_count === "number"
-                                ? ` · 轨迹:${card.designTask.liveState.event_count}`
-                                : ""
-                            )
-                          );
-                        }
-
-                        return h(
-                          "button",
-                          {
-                            type: "button",
-                            key: card.key,
-                            className: `flow-composite-card single ${card.status || "pending"}${selected ? " active" : ""}`,
-                            onClick: onSelect,
-                          },
-                          h(
-                            "div",
-                            { className: "flow-composite-card-top" },
-                            h("span", { className: "flow-composite-title" }, card.title),
-                            h("span", { className: `flow-task-node-state ${card.status || "pending"}` }, taskStatusLabel(card.status))
-                          ),
-                          h(
-                            "div",
-                            { className: "flow-composite-meta" },
-                            ...(Array.isArray(card.meta) && card.meta.length ? [card.meta.join(" · ")] : [primary && primary.progressText ? primary.progressText : ""])
-                          ),
-                          primary && primary.runtimeResult && primary.runtimeResult.duration
-                            ? h("div", { className: "flow-step-time" }, h("span", null, "耗时: " + (primary.runtimeResult.duration / 1000).toFixed(0) + "s"))
-                            : null
-                        );
-                      })
-                    )
-                  : phase.agentTasks && phase.agentTasks.length
-                  ? h(
-                      "div",
-                      { className: "flow-lane-grid" },
-                      ...phase.agentTasks.map((agentBlock) =>
-                        h(
-                          "section",
-                          {
-                            className: `flow-lane ${agentBlock.laneType || "task"}${
-                              agentBlock.parallelized ? " parallel" : ""
-                            }`,
-                            key: `${phase.key}-${agentBlock.agent}`,
-                          },
-                          h(
-                            "div",
-                            { className: "flow-lane-header" },
-                            h("div", { className: "flow-agent-label" }, agentBlock.agent),
-                            h(
-                              "div",
-                              { className: "flow-lane-meta" },
-                              h("span", { className: "flow-lane-kind" }, agentBlock.laneType || "task"),
-                              agentBlock.parallelized ? h("span", { className: "flow-lane-kind parallel" }, "并发实例") : null
-                            )
-                          ),
-                          h(
-                            "ol",
-                            { className: "flow-lane-task-list" },
-                            ...(agentBlock.tasks || []).map((task) => {
-                              const selected =
-                                selectedTask && selectedTask.phaseKey === task.phaseKey && selectedTask.taskKey === task.key;
-                              return h(
-                                "li",
-                                { key: `${task.phaseKey}-${task.key}` },
-                                h(
-                                  "button",
-                                  {
-                                    type: "button",
-                                    className: `flow-task-node ${task.status}${selected ? " active" : ""}`,
-                                    onClick: () => setSelectedTask({ phaseKey: task.phaseKey, taskKey: task.key }),
-                                  },
-                                  h(
-                                    "span",
-                                    { className: "flow-task-node-top" },
-                                    h("span", { className: "flow-task-node-name" }, task.name),
-                                    h(
-                                      "span",
-                                      { className: `flow-task-node-state ${task.status}` },
-                                      taskStatusLabel(task.status)
-                                    )
-                                  ),
-                                  h(
-                                    "span",
-                                    { className: "flow-task-node-meta" },
-                                    task.parallelized ? "并发节点" : "串行节点",
-                                    task.liveState && typeof task.liveState.event_count === "number"
-                                      ? ` · 轨迹:${task.liveState.event_count}`
-                                      : "",
-                                    task.inputHints && task.inputHints.length
-                                      ? ` · 输入: ${task.inputHints.slice(0, 2).join(", ")}`
-                                      : ""
-                                  ),
-                                  task.progressText
-                                    ? h(
-                                        "span",
-                                        { className: "flow-task-node-progress", title: task.progressText },
-                                        task.progressText
-                                      )
-                                    : null
-                                )
-                              );
-                            })
-                          )
-                        )
-                      )
-                    )
-                  : h(
-                      "div",
-                      { className: "flow-task-list" },
-                      ...phase.tasks.map((task) =>
-                        h(
-                          "span",
-                          {
-                            key: `${phase.key}-${task.key}`,
-                            className: `flow-task-chip ${task.status}`,
-                          },
-                          task.label
-                        )
-                      )
-                    )
-              )
-            )
-          )
+      h("div", { className: "run-section" },
+        h("div", { className: "run-section-title" }, "\u9700\u6c42"),
+        h("div", { className: "run-requirement-text" }, run.requirement_text || ""),
+      ),
+      h("div", { className: "run-stats" },
+        h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, stages.length), h("span", { className: "run-stat-label" }, "\u9636\u6bb5")),
+        h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, requests.length), h("span", { className: "run-stat-label" }, "\u4efb\u52a1\u6d3e\u53d1")),
+        h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, completed), h("span", { className: "run-stat-label" }, "\u5df2\u5b8c\u6210")),
+        failed > 0 ? h("div", { className: "run-stat run-stat-error" }, h("span", { className: "run-stat-value" }, failed), h("span", { className: "run-stat-label" }, "\u5931\u8d25")) : null,
+      ),
+      stages.length > 0 ? h("div", { className: "run-section" },
+        h("div", { className: "run-section-title" }, "\u9636\u6bb5\u8fdb\u5ea6" + (stageFilter ? " \u2014 \u70b9\u51fb\u53d6\u6d88\u7b5b\u9009" : "")),
+        h("div", { className: "run-stages-flow" },
+          stages.map((s, i) => {
+            var lastStageIdx = stages.length - 1;
+            var isDone = isRunning ? i < lastStageIdx : true;
+            var isCurrent = isRunning && i === lastStageIdx;
+            var isCycle = /_cycle_\d+$/.test(s);
+            var cls = "run-stage-chip run-stage-clickable"
+              + (isCycle ? " run-stage-cycle" : "")
+              + (stageFilter === s ? " run-stage-selected" : "")
+              + (isDone && !isCurrent ? " run-stage-done" : "")
+              + (isCurrent ? " run-stage-active" : "");
+            return h(window.React.Fragment, { key: s },
+              i > 0 ? h("span", { className: "run-stage-arrow" + (isDone ? " run-stage-arrow-done" : "") }, "\u2192") : null,
+              h("span", { className: cls, onClick: function() { toggleStage(s); } }, resolveStageLabel(s) || s),
+            );
+          }),
         ),
-        h(
-          "section",
-          { className: "card run-task-card" },
-        h("h2", null, "任务详细信息"),
-        h(
-          "div",
-          { className: "task-detail-panel" },
-          selectedTaskDetail
-            ? h(
-                "div",
-                null,
-                h("p", null, `阶段: ${selectedTaskDetail.phaseTitle} (${selectedTaskDetail.phaseKey})`),
-                h("p", null, `Agent: ${selectedTaskDetail.agent}`),
-                h("p", null, `任务: ${selectedTaskDetail.name}`),
-                h("p", null, `任务Key: ${selectedTaskDetail.key}`),
-                h("p", null, `状态: ${selectedTaskDetail.status}`),
-                selectedTaskDetail.taskStateItem
-                  ? h(
-                      "p",
-                      { className: "muted" },
-                      `重试记录: ${selectedTaskDetail.taskStateItem.attempt_count || 0} 次 · 最新Attempt #${
-                        selectedTaskDetail.taskStateItem.latest_attempt_no || 0
-                      }`
-                    )
-                  : null,
-                h(
-                  "div",
-                  { className: "task-retry-controls" },
-                  h(
-                    "label",
-                    { className: "task-retry-mode" },
-                    "重试模式",
-                    h(
-                      "select",
-                      {
-                        value: retryMode,
-                        onChange: (e) => setRetryMode(String(e.target.value || "current")),
-                        disabled: !!(activeOperation && activeOperation.status === "running") || retrySubmitting,
-                      },
-                      h("option", { value: "current" }, "仅当前任务"),
-                      h("option", { value: "downstream" }, "当前任务 + 后续任务（跨阶段）")
-                    )
-                  ),
-                  h(
-                    "button",
-                    {
-                      type: "button",
-                      className: "secondary",
-                      onClick: submitRetry,
-                      disabled: !!(activeOperation && activeOperation.status === "running") || retrySubmitting,
-                    },
-                    retrySubmitting ? "提交中..." : "重试任务"
-                  )
-                ),
-                activeOperation && activeOperation.status === "running"
-                  ? h(
-                      "p",
-                      { className: "warning" },
-                      `当前有执行中的重试: ${activeOperation.phase_key || ""} / ${activeOperation.task_key || ""}`
-                    )
-                  : null,
-                retryError ? h("p", { className: "warning" }, retryError) : null,
-                retryNotice ? h("p", { className: "muted" }, retryNotice) : null,
-                selectedTaskDetail.liveState && selectedTaskDetail.liveState.last_event
-                  ? h(
-                      "div",
-                      { className: "task-live-summary" },
-                      h("p", null, "最近进展"),
-                      h(
-                        "pre",
-                        { className: "task-detail-json" },
-                        JSON.stringify(selectedTaskDetail.liveState.last_event, null, 2)
-                      )
-                    )
-                  : null,
-                selectedTaskDetail.runtimeTaskKey
-                  ? h("p", { className: "muted" }, `运行时匹配任务: ${selectedTaskDetail.runtimeTaskKey}`)
-                  : null,
-                selectedTaskDetail.inputHints && selectedTaskDetail.inputHints.length
-                  ? h("p", null, `推荐输入字段: ${selectedTaskDetail.inputHints.join(", ")}`)
-                  : h("p", { className: "muted" }, "推荐输入字段: 无"),
-                selectedTaskDetail.runtimeResult && selectedTaskDetail.runtimeResult.artifact_id
-                  ? h("p", null, `产物ID: ${selectedTaskDetail.runtimeResult.artifact_id}`)
-                  : null,
-                selectedTaskDetail.runtimeResult && selectedTaskDetail.runtimeResult.error
-                  ? h("pre", { className: "error" }, String(selectedTaskDetail.runtimeResult.error))
-                  : null,
-                h(
-                  "div",
-                  { className: "task-memory-panel" },
-                  h(
-                    "div",
-                    { className: "task-memory-header" },
-                    h("h3", null, "任务记忆体"),
-                    h(
-                      "button",
-                      {
-                        type: "button",
-                        className: "task-memory-toggle",
-                        onClick: () => setTaskMemoryExpanded((v) => !v),
-                        "aria-expanded": taskMemoryExpanded ? "true" : "false",
-                      },
-                      taskMemoryExpanded ? "收起" : "展开"
-                    )
-                  ),
-                  taskMemoryExpanded
-                    ? [
-                        taskStateLoading ? h("p", { className: "muted", key: "loading" }, "加载中...") : null,
-                        taskStateError ? h("p", { className: "warning", key: "err" }, `加载失败: ${taskStateError}`) : null,
-                        taskStateDetail && taskStateDetail.task_state
-                          ? h(
-                              "div",
-                              { key: "json" },
-                              h(
-                                "pre",
-                                { className: "task-detail-json" },
-                                JSON.stringify(taskStateDetail.task_state, null, 2)
-                              )
-                            )
-                          : !taskStateLoading && !taskStateError
-                            ? h("p", { className: "muted", key: "empty" }, "暂无任务记忆体（首次重试后将生成）。")
-                            : null,
-                      ]
-                    : h(
-                        "p",
-                        { className: "muted" },
-                        taskStateLoading
-                          ? "任务记忆体加载中（默认折叠）"
-                          : taskStateDetail && taskStateDetail.task_state
-                            ? "任务记忆体已加载（默认折叠）"
-                            : "任务记忆体默认折叠"
-                      )
-                ),
-                h(
-                  "div",
-                  { className: "task-log-panel" },
-                  h(
-                    "div",
-                    { className: "task-log-header" },
-                    h("h3", null, "任务日志"),
-                    h(
-                      "p",
-                      { className: "muted" },
-                      `${taskLogLoading ? "刷新中" : "已同步"} · ${visibleTaskLogs.length} 条（步骤/LLM）`
-                    )
-                  ),
-                  taskLogError ? h("p", { className: "warning" }, `日志加载失败: ${taskLogError}`) : null,
-                  visibleTaskLogs.length
-                    ? h(
-                        "div",
-                        { className: "task-log-list" },
-                        ...visibleTaskLogs.map((evt) => {
-                          const evtId = String(evt.id || `${evt.ts}-${evt.message}`);
-                          const isTrace = String(evt.source || "") === "trace";
-                          const expanded = !!expandedTraceLogIds[evtId];
-                          const details = getTaskLogDetailsForDisplay(evt);
-                          return h(
-                            "article",
-                            {
-                              key: evtId,
-                              className: `task-log-item ${String(evt.level || "info")}`,
-                            },
-                            h(
-                              "div",
-                              { className: "task-log-item-head" },
-                              h("span", { className: "task-log-ts" }, String(evt.ts || "")),
-                              h("span", { className: "task-log-source" }, isTrace ? "LLM" : "步骤"),
-                              h("span", { className: `task-log-level ${String(evt.level || "info")}` }, String(evt.level || "info"))
-                            ),
-                            h("div", { className: "task-log-message" }, String(evt.message || "")),
-                            isTrace && details
-                              ? (() => {
-                                  const meta = details.purpose_meta && typeof details.purpose_meta === "object" ? details.purpose_meta : {};
-                                  const providerMeta =
-                                    details.provider_response_meta && typeof details.provider_response_meta === "object"
-                                      ? details.provider_response_meta
-                                      : {};
-                                  const tags = [];
-                                  ["subagent", "step", "round", "subsystem", "fn", "module", "reviewer", "owner"].forEach((k) => {
-                                    if (meta[k]) tags.push(`${k}:${meta[k]}`);
-                                  });
-                                  if (providerMeta.finish_reason) tags.push(`finish:${providerMeta.finish_reason}`);
-                                  return h(
-                                    "div",
-                                    { className: "task-log-trace-block" },
-                                    tags.length
-                                      ? h(
-                                          "div",
-                                          { className: "task-log-tags" },
-                                          ...tags.map((tag) => h("span", { key: `${evtId}-${tag}`, className: "task-log-tag" }, tag))
-                                        )
-                                      : null,
-                                    h(
-                                      "button",
-                                      {
-                                        type: "button",
-                                        className: "task-log-toggle",
-                                        onClick: () =>
-                                          setExpandedTraceLogIds((prev) => ({ ...prev, [evtId]: !prev[evtId] })),
-                                      },
-                                      expanded ? "收起 LLM 记录" : "展开 LLM 记录"
-                                    ),
-                                    expanded
-                                      ? h(
-                                          "div",
-                                          {
-                                            className: "task-log-markdown",
-                                            dangerouslySetInnerHTML: {
-                                              __html: simpleMarkdownToHtml(traceMarkdownFromEvent(evt)),
-                                            },
-                                          }
-                                        )
-                                      : null
-                                  );
-                                })()
-                              : null,
-                            !isTrace && details && Object.keys(details).length
-                              ? h("pre", { className: "task-log-details" }, JSON.stringify(details, null, 2))
-                              : null
-                          );
-                        })
-                      )
-                    : h("p", { className: "muted" }, "暂无执行步骤/LLM调用日志，等待任务启动或 trace 写入。")
-                ),
-                selectedTaskDetail.runtimeResult
-                  ? h(
-                      "pre",
-                      { className: "task-detail-json" },
-                      JSON.stringify(selectedTaskDetail.runtimeResult, null, 2)
-                    )
-                  : null
-              )
-            : h("p", { className: "muted" }, "点击上方任意任务以查看详细信息。")
-        )
-      )
-      )
+      ) : null,
+      h("div", { className: "run-section" },
+        h("div", { className: "run-section-title" }, "A2A \u4efb\u52a1\u65e5\u5fd7 (" + filteredLog.length + (stageFilter ? " / " + taskLog.length : "") + ")"),
+        filteredLog.length === 0
+          ? h("div", { className: "run-log-empty" }, isRunning ? "\u7b49\u5f85\u4efb\u52a1\u6d3e\u53d1..." : "\u65e0\u4efb\u52a1\u65e5\u5fd7")
+          : h("div", { className: "run-task-log" }, filteredLog.map((ev, idx) => h(RunLogEntry, { key: idx, event: ev }))),
+      ),
+      run.result ? h("div", { className: "run-section" },
+        h("div", { className: "run-section-title" }, "\u4ea4\u4ed8\u62a5\u544a"),
+        h("pre", { className: "run-result-text" }, run.result),
+      ) : null,
+      run.error ? h("div", { className: "run-section run-error-section" },
+        h("div", { className: "run-section-title" }, "\u9519\u8bef"),
+        h("pre", { className: "run-error-text" }, run.error),
+      ) : null,
+    );
+  }
+
+  function RunLogEntry({ event }) {
+    const h = window.React.createElement;
+    const [expanded, setExpanded] = window.React.useState(false);
+    const ev = event;
+    const ts = ev.timestamp ? formatLocalTime(ev.timestamp) : "";
+
+    if (ev.type === "stage_update") {
+      return h("div", { className: "run-log-entry run-log-stage", onClick: function() { setExpanded(!expanded); } },
+        h("div", { className: "run-log-row" },
+          h("span", { className: "run-log-toggle" }, expanded ? "▼" : "▶"),
+          h("span", { className: "run-log-stage-label" }, resolveStageLabel(ev.stage) || ev.stage),
+          h("span", { className: "run-log-ts" }, ts),
+        ),
+        expanded ? h("div", { className: "run-log-body run-log-stage-detail" },
+          h("div", { className: "run-log-meta" }, "Stage: " + ev.stage),
+          ev.status ? h("div", { className: "run-log-meta" }, "Status: " + ev.status) : null,
+        ) : null,
+      );
+    }
+
+    if (ev.type === "tool_call") {
+      return h("div", { className: "run-log-entry run-log-tool" },
+        h("div", { className: "run-log-row" },
+          h("span", { className: "run-log-icon" }, EVENT_ICONS.tool_call),
+          h("span", { className: "run-log-tool-name" }, ev.tool || "tool"),
+          h("span", { className: "run-log-detail" }, ev.summary || ""),
+          h("span", { className: "run-log-ts" }, ts),
+        ),
+      );
+    }
+
+    if (ev.type === "task_request") {
+      var payload = ev.payload || {};
+      var fullTask = payload.task || "";
+      var preview = fullTask.length > 120 ? fullTask.substring(0, 120) + "..." : fullTask;
+      return h("div", { className: "run-log-entry run-log-request" + (expanded ? " run-log-expanded" : ""), onClick: function() { setExpanded(!expanded); } },
+        h("div", { className: "run-log-row" },
+          h("span", { className: "run-log-toggle" }, expanded ? "\u25bc" : "\u25b6"),
+          h("span", { className: "run-log-icon" }, EVENT_ICONS.task_request),
+          h("span", { className: "run-log-agent" }, ev.to),
+          payload.phase ? h("span", { className: "run-log-phase-tag" }, payload.phase) : null,
+          h("span", { className: "run-log-detail" }, expanded ? "" : preview),
+          h("span", { className: "run-log-ts" }, ts),
+        ),
+        expanded ? h("div", { className: "run-log-body" },
+          h("div", { className: "run-log-response-meta" },
+            ev.taskId ? h("span", null, "Task: " + ev.taskId) : null,
+            payload.step ? h("span", null, "Step: " + payload.step) : null,
+            payload.phase ? h("span", null, "Phase: " + payload.phase) : null,
+          ),
+          fullTask ? h("pre", { className: "run-log-full-text" }, fullTask) : null,
+        ) : null,
+      );
+    }
+
+    if (ev.type === "task_response") {
+      var payload = ev.payload || {};
+      var statusCls = ev.status === "completed" ? "log-completed" : ev.status === "failed" ? "log-failed" : "";
+      var outputText = String(payload.output_preview || payload.output || payload.error || "");
+      var outputLen = payload.output_length || outputText.length;
+      var savedTo = payload.saved_to || "";
+      var preview = outputText.length > 200 ? outputText.substring(0, 200) + "..." : outputText;
+      return h("div", { className: "run-log-entry run-log-response " + statusCls + (expanded ? " run-log-expanded" : ""), onClick: function() { setExpanded(!expanded); } },
+        h("div", { className: "run-log-row" },
+          h("span", { className: "run-log-toggle" }, expanded ? "\u25bc" : "\u25b6"),
+          h("span", { className: "run-log-icon" }, EVENT_ICONS.task_response),
+          h("span", { className: "run-log-agent" }, ev.from),
+          h("span", { className: "run-log-status-tag" }, ev.status),
+          h("span", { className: "run-log-detail" }, expanded ? "" : preview),
+          h("span", { className: "run-log-ts" }, ts),
+        ),
+        expanded ? h("div", { className: "run-log-body" },
+          h("div", { className: "run-log-response-meta" },
+            ev.taskId ? h("span", null, "Task: " + ev.taskId) : null,
+            outputLen > 0 ? h("span", null, "Output: " + outputLen + " chars") : null,
+            savedTo ? h("span", null, "\u2713 " + savedTo) : null,
+          ),
+          outputText ? h("pre", { className: "run-log-full-text" }, outputText) : h("div", { className: "run-log-meta" }, "No text output (agent used write_file to save files directly)"),
+        ) : null,
+      );
+    }
+
+    return h("div", { className: "run-log-entry" },
+      h("span", { className: "run-log-icon" }, "\u00b7"),
+      h("span", null, ev.type || "event"),
+      h("span", { className: "run-log-ts" }, ts),
     );
   }
 
@@ -2721,6 +1151,297 @@ function setupModelsConfigPage() {
   });
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   Monitor Page — Real-time agent status dashboard
+   ═══════════════════════════════════════════════════════════════ */
+
+function setupMonitorReact() {
+  const initial = readScriptJson("monitor-initial-data", { agents: [], active_runs: 0, active_retries: 0 });
+
+  const ROLE_LABELS = {
+    product_manager: "Product Manager",
+    architect: "Architect",
+    developer: "Developer",
+    qa_engineer: "QA Engineer",
+    project_manager: "Project Manager",
+    rd_director: "R&D Director",
+    reviewer: "Reviewer",
+  };
+
+  const ROLE_ICONS = {
+    product_manager: "\uD83D\uDCCB",
+    architect: "\uD83C\uDFD7\uFE0F",
+    developer: "\uD83D\uDCBB",
+    qa_engineer: "\uD83D\uDD0D",
+    project_manager: "\uD83D\uDCC8",
+    rd_director: "\uD83C\uDFAF",
+    reviewer: "\uD83D\uDCDD",
+  };
+
+  const STATUS_META = {
+    working: { label: "\u6267\u884C\u4E2D", cls: "monitor-status-working" },
+    idle:    { label: "\u7A7A\u95F2",       cls: "monitor-status-idle" },
+    standby: { label: "\u5F85\u547D",       cls: "monitor-status-standby" },
+  };
+
+  function MonitorApp() {
+    const h = window.React.createElement;
+    const [data, setData] = window.React.useState(initial);
+    const [selected, setSelected] = window.React.useState(null);
+    const [filter, setFilter] = window.React.useState(null); // null = all, "working" / "idle" / "standby"
+
+    window.React.useEffect(() => {
+      let active = true;
+      const poll = () => {
+        fetchJson("/api/monitor")
+          .then((d) => { if (active) setData(d); })
+          .catch(() => {});
+      };
+      const tid = setInterval(poll, 3000);
+      return () => { active = false; clearInterval(tid); };
+    }, []);
+
+    const agents = Array.isArray(data.agents) ? data.agents : [];
+    const workingCount = agents.filter((a) => a.status === "working").length;
+    const idleCount = agents.filter((a) => a.status === "idle").length;
+    const standbyCount = agents.filter((a) => a.status === "standby").length;
+    const filtered = filter ? agents.filter((a) => a.status === filter) : agents;
+
+    const toggle = (status) => setFilter((prev) => prev === status ? null : status);
+
+    return h("div", { className: "monitor-container" },
+      // Header
+      h("div", { className: "monitor-header" },
+        h("h1", { className: "monitor-title" }, "Agent Monitor"),
+        h("p", { className: "monitor-subtitle" }, "\u5B9E\u65F6\u67E5\u770B Agent \u72B6\u6001\u4E0E\u4EFB\u52A1"),
+      ),
+
+      // Summary cards (clickable filter)
+      h("div", { className: "monitor-summary" },
+        h(SummaryCard, { label: "Agent \u603B\u6570", value: agents.length, cls: "summary-total", active: filter === null, onClick: () => setFilter(null) }),
+        h(SummaryCard, { label: "\u6267\u884C\u4E2D", value: workingCount, cls: "summary-working", active: filter === "working", onClick: () => toggle("working") }),
+        h(SummaryCard, { label: "\u7A7A\u95F2", value: idleCount, cls: "summary-idle", active: filter === "idle", onClick: () => toggle("idle") }),
+        h(SummaryCard, { label: "\u5F85\u547D", value: standbyCount, cls: "summary-standby", active: filter === "standby", onClick: () => toggle("standby") }),
+        h(SummaryCard, { label: "\u6D3B\u8DC3\u8FD0\u884C", value: data.active_runs || 0, cls: "summary-runs summary-info" }),
+      ),
+
+      // Agent grid (filtered)
+      filtered.length === 0
+        ? h("div", { className: "monitor-empty" },
+            filter
+              ? "\u6CA1\u6709\u5904\u4E8E\u201C" + (STATUS_META[filter] || {}).label + "\u201D\u72B6\u6001\u7684 Agent"
+              : "\u6682\u65E0\u6D3B\u8DC3 Agent\u3002\u8BF7\u5148\u521B\u5EFA\u9879\u76EE\u5E76\u63D0\u4EA4\u9700\u6C42\u3002",
+          )
+        : h("div", { className: "monitor-grid" },
+            filtered.map((agent) => h(AgentCard, { key: agent.agent_id, agent: agent, onSelect: setSelected })),
+          ),
+
+      // Detail modal
+      selected ? h(AgentDetailModal, { agent: selected, onClose: () => setSelected(null) }) : null,
+    );
+  }
+
+  function SummaryCard({ label, value, cls, active, onClick }) {
+    const h = window.React.createElement;
+    const classes = "monitor-summary-card " + (cls || "") + (active ? " monitor-summary-active" : "") + (onClick ? " monitor-summary-clickable" : "");
+    return h("div", { className: classes, onClick: onClick || null },
+      h("div", { className: "monitor-summary-value" }, value),
+      h("div", { className: "monitor-summary-label" }, label),
+    );
+  }
+
+  function AgentCard({ agent, onSelect }) {
+    const h = window.React.createElement;
+    const statusMeta = STATUS_META[agent.status] || STATUS_META.standby;
+    const roleLabel = agent.role_display || ROLE_LABELS[agent.role] || agent.role;
+    const roleIcon = ROLE_ICONS[agent.role] || "\uD83E\uDD16";
+    const modelStr = agent.model && agent.model.model ? agent.model.model : "\u672A\u914D\u7F6E";
+    const task = agent.current_task;
+    const isRuntime = agent.source === "runtime";
+
+    return h("div", {
+      className: "monitor-agent-card monitor-agent-card-clickable " + statusMeta.cls,
+      onClick: () => onSelect && onSelect(agent),
+    },
+      // Card header
+      h("div", { className: "monitor-agent-header" },
+        h("span", { className: "monitor-agent-icon" }, roleIcon),
+        h("div", { className: "monitor-agent-identity" },
+          h("div", { className: "monitor-agent-name" },
+            agent.name,
+            isRuntime ? h("span", { className: "monitor-source-tag" }, "Runtime") : null,
+          ),
+          h("div", { className: "monitor-agent-role" }, roleLabel),
+        ),
+        h("span", { className: "monitor-agent-status-badge" }, statusMeta.label),
+      ),
+
+      // Card body
+      h("div", { className: "monitor-agent-body" },
+        // Project (only for project-bound agents)
+        agent.project_id
+          ? h("div", { className: "monitor-agent-field" },
+              h("span", { className: "monitor-field-label" }, "\u9879\u76EE"),
+              h("span", { className: "monitor-field-value" },
+                h("a", { href: "/projects/" + agent.project_id }, agent.project_name),
+              ),
+            )
+          : null,
+        // Model
+        h("div", { className: "monitor-agent-field" },
+          h("span", { className: "monitor-field-label" }, "\u6A21\u578B"),
+          h("span", { className: "monitor-field-value monitor-model-tag" }, modelStr),
+        ),
+        // Skills
+        h("div", { className: "monitor-agent-field" },
+          h("span", { className: "monitor-field-label" }, "\u6280\u80FD"),
+          h("div", { className: "monitor-skills-list" },
+            (agent.skills || []).length > 0
+              ? agent.skills.map((s) => h("span", { key: s, className: "monitor-skill-tag" }, s))
+              : h("span", { className: "monitor-field-muted" }, "\u65E0"),
+          ),
+        ),
+      ),
+
+      // Current task
+      task
+        ? h("div", { className: "monitor-agent-task" },
+            h("div", { className: "monitor-task-header" },
+              h("span", { className: "monitor-task-pulse" }),
+              h("span", null, "\u5F53\u524D\u4EFB\u52A1"),
+            ),
+            h("div", { className: "monitor-task-name" }, task.display_name || task.task_key),
+            task.phase
+              ? h("div", { className: "monitor-task-phase" }, "\u9636\u6BB5: " + task.phase)
+              : null,
+          )
+        : null,
+    );
+  }
+
+  function AgentDetailModal({ agent, onClose }) {
+    const h = window.React.createElement;
+    const card = agent.agent_card || {};
+    const roleLabel = agent.role_display || ROLE_LABELS[agent.role] || agent.role;
+    const roleIcon = ROLE_ICONS[agent.role] || "\uD83E\uDD16";
+    const skills = card.skills || [];
+    const caps = card.capabilities || {};
+    const modelInfo = card.model || agent.model || {};
+    const provider = card.provider || {};
+
+    return h("div", { className: "monitor-modal-overlay", onClick: (e) => { if (e.target === e.currentTarget) onClose(); } },
+      h("div", { className: "monitor-modal" },
+        // Modal header
+        h("div", { className: "monitor-modal-header" },
+          h("div", { className: "monitor-modal-title-row" },
+            h("span", { className: "monitor-agent-icon" }, roleIcon),
+            h("div", null,
+              h("h2", { className: "monitor-modal-title" }, card.name || agent.name),
+              h("div", { className: "monitor-modal-role" }, roleLabel),
+            ),
+          ),
+          h("button", { className: "monitor-modal-close", onClick: onClose }, "\u00D7"),
+        ),
+
+        // Modal body
+        h("div", { className: "monitor-modal-body" },
+
+          // Description
+          card.description
+            ? h("div", { className: "monitor-modal-section" },
+                h("div", { className: "monitor-modal-section-title" }, "Description"),
+                h("p", { className: "monitor-modal-text" }, card.description),
+              )
+            : null,
+
+          // Model info
+          h("div", { className: "monitor-modal-section" },
+            h("div", { className: "monitor-modal-section-title" }, "Model"),
+            h("div", { className: "monitor-modal-kv-grid" },
+              h("span", { className: "monitor-modal-kv-label" }, "Provider"),
+              h("span", { className: "monitor-modal-kv-value" }, modelInfo.provider || "-"),
+              h("span", { className: "monitor-modal-kv-label" }, "Model"),
+              h("code", { className: "monitor-modal-kv-value monitor-model-tag" }, modelInfo.model || "-"),
+              modelInfo.temperature != null
+                ? [
+                    h("span", { key: "t-l", className: "monitor-modal-kv-label" }, "Temperature"),
+                    h("span", { key: "t-v", className: "monitor-modal-kv-value" }, modelInfo.temperature),
+                  ]
+                : null,
+              modelInfo.maxTokens != null
+                ? [
+                    h("span", { key: "m-l", className: "monitor-modal-kv-label" }, "Max Tokens"),
+                    h("span", { key: "m-v", className: "monitor-modal-kv-value" }, modelInfo.maxTokens),
+                  ]
+                : null,
+            ),
+          ),
+
+          // Capabilities
+          h("div", { className: "monitor-modal-section" },
+            h("div", { className: "monitor-modal-section-title" }, "Capabilities"),
+            h("div", { className: "monitor-modal-caps" },
+              Object.entries(caps).map(([k, v]) =>
+                h("span", { key: k, className: "monitor-modal-cap-tag " + (v ? "cap-on" : "cap-off") },
+                  (v ? "\u2713 " : "\u2717 ") + k,
+                ),
+              ),
+            ),
+          ),
+
+          // Provider
+          provider.organization
+            ? h("div", { className: "monitor-modal-section" },
+                h("div", { className: "monitor-modal-section-title" }, "Provider"),
+                h("div", { className: "monitor-modal-text" }, provider.organization + (provider.url ? " \u00B7 " + provider.url : "")),
+              )
+            : null,
+
+          // Protocol info
+          h("div", { className: "monitor-modal-section" },
+            h("div", { className: "monitor-modal-section-title" }, "Protocol"),
+            h("div", { className: "monitor-modal-kv-grid" },
+              h("span", { className: "monitor-modal-kv-label" }, "Version"),
+              h("span", { className: "monitor-modal-kv-value" }, card.version || "1.0.0"),
+              h("span", { className: "monitor-modal-kv-label" }, "Input Modes"),
+              h("span", { className: "monitor-modal-kv-value" }, (card.defaultInputModes || ["text"]).join(", ")),
+              h("span", { className: "monitor-modal-kv-label" }, "Output Modes"),
+              h("span", { className: "monitor-modal-kv-value" }, (card.defaultOutputModes || ["text"]).join(", ")),
+            ),
+          ),
+
+          // Skills detail table
+          h("div", { className: "monitor-modal-section" },
+            h("div", { className: "monitor-modal-section-title" }, "Skills (" + skills.length + ")"),
+            skills.length > 0
+              ? h("table", { className: "monitor-modal-skills-table" },
+                  h("thead", null,
+                    h("tr", null,
+                      h("th", null, "ID"),
+                      h("th", null, "Name"),
+                      h("th", null, "Description"),
+                    ),
+                  ),
+                  h("tbody", null,
+                    skills.map((s) =>
+                      h("tr", { key: s.id },
+                        h("td", null, h("code", null, s.id)),
+                        h("td", null, s.name),
+                        h("td", null, s.description || "-"),
+                      ),
+                    ),
+                  ),
+                )
+              : h("div", { className: "monitor-field-muted" }, "\u65E0\u6280\u80FD"),
+          ),
+        ),
+      ),
+    );
+  }
+
+  mountReact("monitor-react-root", () => window.React.createElement(MonitorApp));
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   setupDashboardReact();
   setupProjectReact();
@@ -2728,4 +1449,5 @@ document.addEventListener("DOMContentLoaded", () => {
   setupTaskReact();
   setupLoginReact();
   setupModelsConfigPage();
+  setupMonitorReact();
 });

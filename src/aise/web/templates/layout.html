@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title or "AISE Web" }}</title>
+  <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@500;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap">
@@ -18,11 +19,15 @@
           <span class="brand-text">AISE</span>
         </a>
         <nav class="sidebar-nav">
-          <a class="sidebar-link active" href="/">
+          <a class="sidebar-link{{ ' active' if request.url.path == '/' }}" href="/">
             <span class="sidebar-link-icon">📊</span>
             <span>Dashboard</span>
           </a>
-          <a class="sidebar-link" href="/config/global/models">
+          <a class="sidebar-link{{ ' active' if request.url.path == '/monitor' }}" href="/monitor">
+            <span class="sidebar-link-icon">🖥️</span>
+            <span>Monitor</span>
+          </a>
+          <a class="sidebar-link{{ ' active' if request.url.path.startswith('/config') }}" href="/config/global/models">
             <span class="sidebar-link-icon">⚙️</span>
             <span>Settings</span>
           </a>

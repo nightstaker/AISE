@@ -35,7 +35,7 @@ class Project:
         self,
         project_id: str,
         config: ProjectConfig,
-        orchestrator: Orchestrator,
+        orchestrator: Orchestrator | None = None,
         project_root: str | None = None,
     ) -> None:
         """Initialize a project container.
@@ -43,7 +43,7 @@ class Project:
         Args:
             project_id: Unique identifier for this project
             config: Project configuration (includes name, GitHub settings, agent counts)
-            orchestrator: Orchestrator instance for this project (with its own bus/store)
+            orchestrator: Optional orchestrator instance (None for runtime-managed projects)
             project_root: Optional root directory path for persisted project files
         """
         self.project_id = project_id
@@ -62,6 +62,8 @@ class Project:
     @property
     def agent_count(self) -> int:
         """Get total number of agents in this project."""
+        if self.orchestrator is None:
+            return 0
         return len(self.orchestrator.agents)
 
     @property
