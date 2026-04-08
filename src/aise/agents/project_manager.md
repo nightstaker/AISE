@@ -136,6 +136,15 @@ Coordination rules:
 - Agent outputs are AUTO-SAVED to the project directory. Do NOT copy agent output into write_project_file
 - Use `write_project_file` ONLY for your own short content: execution plans, summaries, delivery reports
 
+### Strict Prohibitions
+
+- NEVER dispatch tasks like "run pytest", "execute_pytest", "pytest_run", "test_runner" — pytest is automatically run by `run_tdd_cycle`. Asking developer to run pytest is wasteful.
+- NEVER call `run_tdd_cycle` more than once. If it returns `do_not_retry: true`, DO NOT call it again. Move on to QA integration testing.
+- After `run_tdd_cycle` returns (whether passed or not), proceed DIRECTLY to:
+  1. ONE `dispatch_task` to qa_engineer for integration testing
+  2. ONE final delivery report
+- Total dispatches across the entire project should be ≤ 10. The hard limit is 15 (further dispatches will be REFUSED).
+
 #### Parallel Execution and Dev-Test Cycle
 
 The implementation and testing phases are SEQUENTIAL, not parallel:

@@ -62,35 +62,57 @@ def _make_safe_backend(project_root: str | Path) -> Any:
     return base
 
 
+_PYTEST_RUNNER_PATTERNS = (
+    "run_pytest", "pytest_runner", "pytest_run", "execute_pytest",
+    "run_tests", "test_runner", "pytest_capture", "pytest_script",
+    "pytest_exec", "test_run", "final_pytest", "py_test",
+)
+
+
+def _is_pytest_runner_junk(filename: str) -> bool:
+    """Detect filenames that are LLM-generated pytest runner junk."""
+    lower = filename.lower()
+    if not lower.endswith((".py", ".sh", ".txt")):
+        return False
+    return any(p in lower for p in _PYTEST_RUNNER_PATTERNS) or lower in (
+        "test_output.txt", "pytest_output.txt", "output_pytest.txt",
+    )
+
+
 def _normalize_path(path: str) -> str:
     """Strip absolute path prefixes and collapse to relative project paths.
 
     Routing rules (in order):
-    1. Files containing /docs/ or /design/ → docs/
-    2. Files containing /tests/ → tests/ (rightmost wins)
-    3. Files containing /src/ → src/ (rightmost wins, after tests check)
-    4. Files containing /runs/ → runs/
-    5. Loose test_*.py files → tests/
-    6. Loose *.md files (no extension match in src/) → docs/
-    7. Everything else → runs/scratch/
-
-    Examples:
-    - 'src/main.py' → 'src/main.py'
-    - 'src/tests/unit/test.py' → 'tests/unit/test.py' (test files)
-    - 'src/aise/design/config.json' → 'docs/config.json' (design files)
-    - '/home/.../src/foo.py' → 'src/foo.py'
-    - '/tmp/run.sh' → 'runs/scratch/run.sh'
+    0. runs/* → preserved as-is
+    1. pytest runner junk (run_pytest.py etc.) → runs/scratch/
+    2. .py/.sh files inside docs/ → runs/scratch/
+    3. Files containing /docs/ or /design/ → docs/
+    4. Files containing /aise/agents/ or /aise/runtime/ → runs/scratch/ (AISE internal)
+    5. Files containing /tests/ → tests/ (rightmost wins)
+    6. Files containing /src/ → src/ (rightmost wins)
+    7. Files containing /runs/ → runs/
+    8. Loose test_*.py files → tests/
+    9. Everything else → runs/scratch/
     """
     # Strip leading /
     p = path.lstrip("/")
     parts = p.split("/")
     filename = parts[-1] or "unknown"
 
-    # Rule 0: runs/ takes priority over /docs/ to preserve runs/docs/ etc.
+    # Rule 0: runs/ takes priority
     if p.startswith("runs/"):
         return p
 
-    # Rule 1: design/ or docs/ in path → docs/
+    # Rule 1: known pytest runner junk → runs/scratch/
+    if _is_pytest_runner_junk(filename):
+        return f"runs/scratch/{filename}"
+
+    # Rule 2: .py or .sh inside any docs/ → runs/scratch/
+    # (docs/ is for markdown design docs only)
+    if filename.endswith((".py", ".sh")) and "docs/" in p:
+        return f"runs/scratch/{filename}"
+
+    # Rule 3: design/ or docs/ in path → docs/
     for marker in ("/docs/", "/design/"):
         idx = p.rfind(marker)
         if idx >= 0:
@@ -100,22 +122,31 @@ def _normalize_path(path: str) -> str:
         sub = p.split("/", 1)[1] if "/" in p else ""
         return f"docs/{sub}" if sub else "docs/"
 
-    # Rule 2: tests/ in path → tests/ (rightmost)
+    # Rule 4: AISE internal paths (src/aise/...) → runs/scratch/
+    # Agents shouldn't be writing into the AISE codebase itself.
+    if "/aise/agents/" in p or "/aise/runtime/" in p or p.startswith("aise/"):
+        return f"runs/scratch/{filename}"
+
+    # Rule 5: tests/ in path → tests/ (rightmost)
     test_idx = p.rfind("tests/")
     if test_idx >= 0:
         return p[test_idx:]
 
-    # Rule 3: src/ in path → src/ (rightmost, only if not also under tests/)
+    # Rule 6: src/ in path → src/ (rightmost)
     src_idx = p.rfind("src/")
     if src_idx >= 0:
-        return p[src_idx:]
+        sub = p[src_idx:]
+        # Strip src/aise/ prefix if present (keep src/<rest>)
+        if sub.startswith("src/aise/"):
+            return f"runs/scratch/{filename}"
+        return sub
 
-    # Rule 4: runs/ in path → runs/
+    # Rule 7: runs/ in path → runs/
     runs_idx = p.rfind("runs/")
     if runs_idx >= 0:
         return p[runs_idx:]
 
-    # Rule 5: filename starts with test_ → tests/
+    # Rule 8: filename starts with test_ → tests/
     if filename.startswith("test_") and filename.endswith(".py"):
         return f"tests/{filename}"
 
@@ -240,7 +271,7 @@ class ProjectSession:
         logger.info("ProjectSession completed: session=%s", self._session_id)
         return response
 
-    _MAX_TOTAL_DISPATCHES = 15  # Safety cap on total task dispatches
+    _MAX_TOTAL_DISPATCHES = 12  # Safety cap on total task dispatches
 
     def _is_workflow_complete(self, response: str) -> bool:
         """Check if the workflow has meaningfully completed."""
@@ -443,7 +474,11 @@ class ProjectSession:
                 logger.warning("dispatch_task refused: cap reached (%d)", current_dispatches)
                 return json.dumps({
                     "status": "failed",
-                    "error": f"Maximum dispatches ({session._MAX_TOTAL_DISPATCHES}) reached. Workflow must finish now. Stop calling tools and produce the final delivery report as text.",
+                    "error": (
+                        f"Maximum dispatches ({session._MAX_TOTAL_DISPATCHES}) reached. "
+                        "Workflow must finish now. Stop calling tools and produce the "
+                        "final delivery report as text."
+                    ),
                 })
 
             # Use phase as stage name so each workflow phase shows separately
@@ -538,7 +573,7 @@ class ProjectSession:
                     "payload": {
                         "output_preview": preview,
                         "output_length": output_len,
-                        "saved_to": f"auto-saved to project directory",
+                        "saved_to": "auto-saved to project directory",
                     },
                 }
                 session._emit(response_msg)
@@ -678,7 +713,11 @@ class ProjectSession:
             if getattr(session, "_tdd_cycle_called", False):
                 return json.dumps({
                     "status": "failed",
-                    "error": "run_tdd_cycle has already been called for this project. Implementation phase is DONE. Move to the next phase (QA integration testing) using dispatch_task to qa_engineer.",
+                    "error": (
+                        "run_tdd_cycle has already been called for this project. "
+                        "Implementation phase is DONE. Move to the next phase "
+                        "(QA integration testing) using dispatch_task to qa_engineer."
+                    ),
                     "do_not_retry": True,
                 })
             session._tdd_cycle_called = True
@@ -813,7 +852,7 @@ class ProjectSession:
             return self._project_runtimes[cache_key]
 
         from .agent_runtime import AgentRuntime
-        from .manager import _build_llm, _agents_dir
+        from .manager import _agents_dir, _build_llm
 
         try:
             md_path = _agents_dir() / f"{agent_name}.md"
@@ -862,7 +901,7 @@ class ProjectSession:
     def _build_pm_runtime(self) -> Any:
         """Rebuild project_manager runtime with orchestration tools injected."""
         from .agent_runtime import AgentRuntime
-        from .manager import _build_llm, _agents_dir
+        from .manager import _agents_dir, _build_llm
 
         pm_md = _agents_dir() / "project_manager.md"
         if not pm_md.is_file():

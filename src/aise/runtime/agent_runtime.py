@@ -30,7 +30,7 @@ from langgraph.graph.state import CompiledStateGraph
 from ..utils.logging import get_logger
 from .agent_card import build_agent_card
 from .agent_md_parser import parse_agent_md
-from .models import AgentCard, AgentDefinition, AgentState, SkillInfo
+from .models import AgentCard, AgentDefinition, AgentState
 from .skill_loader import get_skill_source_paths, load_skills_from_directory
 
 logger = get_logger(__name__)

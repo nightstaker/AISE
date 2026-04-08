@@ -426,7 +426,7 @@ def main() -> None:
         _apply_github_config(args, config)
         configure_logging(config.logging, force=True)
 
-        from .runtime import RuntimeManager, ProjectSession
+        from .runtime import ProjectSession, RuntimeManager
 
         manager = RuntimeManager(config=config)
         manager.start()

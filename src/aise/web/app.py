@@ -450,7 +450,8 @@ class WebProjectService:
                 if not model_id:
                     continue
                 is_local = bool(item.get("is_local", False))
-                refs = [str(r).strip() for r in (item.get("providers", []) if isinstance(item.get("providers"), list) else [])]
+                providers_raw = item.get("providers", [])
+                refs = [str(r).strip() for r in providers_raw] if isinstance(providers_raw, list) else []
                 refs = [r for r in refs if r]
                 if is_local:
                     refs = []
@@ -502,7 +503,11 @@ class WebProjectService:
                     agent_data["name"] = str(item.get("name", key))
                     agent_data["enabled"] = bool(item.get("enabled", True))
             payload["agents"] = agents_payload
-            payload["agent_model_selection"] = {str(k): str(v).strip() for k, v in agent_model_selection.items() if str(v).strip()}
+            payload["agent_model_selection"] = {
+                str(k): str(v).strip()
+                for k, v in agent_model_selection.items()
+                if str(v).strip()
+            }
             updated = ProjectConfig.from_dict(payload)
             updated.to_json_file(self.project_manager._global_config_path)
             self.project_manager._global_config = updated
@@ -667,10 +672,12 @@ class WebProjectService:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "runs_by_project": {
-                pid: [self._serialize_run(r) for r in runs] for pid, runs in self._runs_by_project.items()
+                pid: [self._serialize_run(r) for r in runs]
+                for pid, runs in self._runs_by_project.items()
             },
             "requirements_by_project": {
-                pid: [self._serialize_requirement(r) for r in reqs] for pid, reqs in self._requirements_by_project.items()
+                pid: [self._serialize_requirement(r) for r in reqs]
+                for pid, reqs in self._requirements_by_project.items()
             },
             "project_statuses": {
                 p.project_id: {
@@ -806,7 +813,11 @@ def create_app() -> FastAPI:
         user = request.session.get("user")
         if not user:
             return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
-        return templates.TemplateResponse(request, "monitor.html", {"monitor_data": service.get_monitor_data(), "user": user})
+        return templates.TemplateResponse(
+            request,
+            "monitor.html",
+            {"monitor_data": service.get_monitor_data(), "user": user},
+        )
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request, error: str | None = None) -> HTMLResponse:
@@ -871,7 +882,11 @@ def create_app() -> FastAPI:
                 resp = await client.get("https://graph.microsoft.com/v1.0/me", token=token)
                 if resp.is_success:
                     g = resp.json()
-                    userinfo = {"sub": g.get("id", ""), "name": g.get("displayName", ""), "email": g.get("mail") or g.get("userPrincipalName", "")}
+                    userinfo = {
+                        "sub": g.get("id", ""),
+                        "name": g.get("displayName", ""),
+                        "email": g.get("mail") or g.get("userPrincipalName", ""),
+                    }
         request.session["user"] = {
             "id": userinfo.get("sub", ""), "name": userinfo.get("name", "User"),
             "email": userinfo.get("email", ""), "provider": provider, "role": "user", "permissions": [],
@@ -944,8 +959,15 @@ def create_app() -> FastAPI:
         if section not in {"models", "agents", "workspace", "workflow", "logging", "json"}:
             raise HTTPException(status_code=404, detail="Config section not found")
         return templates.TemplateResponse(
-            request, "global_config.html",
-            {"config_json": service.load_global_config_json(), "config_data": service.get_global_config_data(), "user": user, "error": None, "section": section},
+            request,
+            "global_config.html",
+            {
+                "config_json": service.load_global_config_json(),
+                "config_data": service.get_global_config_data(),
+                "user": user,
+                "error": None,
+                "section": section,
+            },
         )
 
     @app.post("/config/global/{section}", response_class=HTMLResponse)
@@ -960,27 +982,61 @@ def create_app() -> FastAPI:
             elif section == "models":
                 providers = json.loads(str(form.get("providers_json", "[]")))
                 models = json.loads(str(form.get("models_json", "[]")))
-                service.save_global_models_data(model_providers=providers, models=models, development_mode=str(form.get("development_mode", "local")))
+                service.save_global_models_data(
+                    model_providers=providers,
+                    models=models,
+                    development_mode=str(form.get("development_mode", "local")),
+                )
             elif section == "agents":
                 config_data = service.get_global_config_data()
                 agent_items: list[dict[str, Any]] = []
                 selections: dict[str, str] = {}
                 for item in config_data["agents"]:
                     key = str(item["key"])
-                    agent_items.append({"key": key, "name": str(form.get(f"agent_name_{key}", key)), "enabled": str(form.get(f"agent_enabled_{key}", "")) == "on"})
+                    agent_items.append({
+                        "key": key,
+                        "name": str(form.get(f"agent_name_{key}", key)),
+                        "enabled": str(form.get(f"agent_enabled_{key}", "")) == "on",
+                    })
                     selections[key] = str(form.get(f"agent_model_{key}", "")).strip()
-                service.save_global_agents_data(agents=agent_items, agent_model_selection=selections)
+                service.save_global_agents_data(
+                    agents=agent_items, agent_model_selection=selections,
+                )
             elif section == "workspace":
-                service.save_global_workspace_data({"projects_root": str(form.get("projects_root", "projects")), "artifacts_root": str(form.get("artifacts_root", "artifacts")), "auto_create_dirs": str(form.get("auto_create_dirs", "")) == "on"})
+                service.save_global_workspace_data({
+                    "projects_root": str(form.get("projects_root", "projects")),
+                    "artifacts_root": str(form.get("artifacts_root", "artifacts")),
+                    "auto_create_dirs": str(form.get("auto_create_dirs", "")) == "on",
+                })
             elif section == "workflow":
-                service.save_global_workflow_data({"max_review_iterations": int(str(form.get("max_review_iterations", "3")) or 3), "review_min_rounds": int(str(form.get("review_min_rounds", "2")) or 2), "review_max_rounds": int(str(form.get("review_max_rounds", "3")) or 3), "developer_sr_task_retry_attempts": int(str(form.get("developer_sr_task_retry_attempts", "2")) or 2), "fail_on_review_rejection": str(form.get("fail_on_review_rejection", "")) == "on"})
+                service.save_global_workflow_data({
+                    "max_review_iterations": int(str(form.get("max_review_iterations", "3")) or 3),
+                    "review_min_rounds": int(str(form.get("review_min_rounds", "2")) or 2),
+                    "review_max_rounds": int(str(form.get("review_max_rounds", "3")) or 3),
+                    "developer_sr_task_retry_attempts": int(
+                        str(form.get("developer_sr_task_retry_attempts", "2")) or 2
+                    ),
+                    "fail_on_review_rejection": str(form.get("fail_on_review_rejection", "")) == "on",
+                })
             elif section == "logging":
-                service.save_global_logging_data({"level": str(form.get("level", "INFO")), "log_dir": str(form.get("log_dir", "logs")), "json_format": str(form.get("json_format", "")) == "on", "rotate_daily": str(form.get("rotate_daily", "")) == "on"})
+                service.save_global_logging_data({
+                    "level": str(form.get("level", "INFO")),
+                    "log_dir": str(form.get("log_dir", "logs")),
+                    "json_format": str(form.get("json_format", "")) == "on",
+                    "rotate_daily": str(form.get("rotate_daily", "")) == "on",
+                })
         except Exception as exc:
             error = str(exc)
         return templates.TemplateResponse(
-            request, "global_config.html",
-            {"config_json": service.load_global_config_json(), "config_data": service.get_global_config_data(), "user": user, "error": error, "section": section},
+            request,
+            "global_config.html",
+            {
+                "config_json": service.load_global_config_json(),
+                "config_data": service.get_global_config_data(),
+                "user": user,
+                "error": error,
+                "section": section,
+            },
         )
 
     # -- API routes ----------------------------------------------------------
@@ -1108,9 +1164,19 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="Invalid JSON body")
         try:
             if "models" in payload:
-                service.save_global_models_data(model_providers=payload.get("model_providers"), models=payload.get("models", []), development_mode=str(payload.get("development_mode", "local")))
+                service.save_global_models_data(
+                    model_providers=payload.get("model_providers"),
+                    models=payload.get("models", []),
+                    development_mode=str(payload.get("development_mode", "local")),
+                )
             if "agents" in payload or "agent_model_selection" in payload:
-                service.save_global_agents_data(agents=payload.get("agents", []), agent_model_selection={str(k): str(v) for k, v in payload.get("agent_model_selection", {}).items()})
+                service.save_global_agents_data(
+                    agents=payload.get("agents", []),
+                    agent_model_selection={
+                        str(k): str(v)
+                        for k, v in payload.get("agent_model_selection", {}).items()
+                    },
+                )
             if "workspace" in payload:
                 service.save_global_workspace_data(payload["workspace"])
             if "logging" in payload:
