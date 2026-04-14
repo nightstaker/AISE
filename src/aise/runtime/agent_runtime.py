@@ -68,6 +68,7 @@ class AgentRuntime:
         trace_dir: str | Path | None = None,
         url: str = "",
         checkpointer: Any = None,
+        max_iterations: int = 80,
     ) -> None:
         if create_deep_agent is None:
             raise RuntimeError(
@@ -81,6 +82,8 @@ class AgentRuntime:
         if self._trace_dir:
             self._trace_dir.mkdir(parents=True, exist_ok=True)
         self._call_seq = 0
+        self._current_task: str | None = None
+        self._max_iterations = max_iterations
 
         # 1. Parse agent definition
         self._definition: AgentDefinition = parse_agent_md(agent_md)
@@ -158,6 +161,11 @@ class AgentRuntime:
         """The A2A-compliant agent card."""
         return self._card
 
+    @property
+    def current_task(self) -> str | None:
+        """Brief description of what the agent is working on, or None."""
+        return self._current_task
+
     # -- Lifecycle -----------------------------------------------------------
 
     def evoke(self) -> None:
@@ -211,11 +219,15 @@ class AgentRuntime:
         Raises:
             RuntimeError: If the agent is not in ACTIVE state.
         """
-        if self._state != AgentState.ACTIVE:
+        if self._state not in (AgentState.ACTIVE, AgentState.WORKING):
             raise RuntimeError(f"Agent is not active (state={self._state.value}). Call evoke() first.")
 
         self._call_seq += 1
         call_id = f"{self._id}_{self._call_seq:04d}"
+
+        # Transition to WORKING so the Monitor sees real-time status.
+        self._state = AgentState.WORKING
+        self._current_task = content[:120]
 
         logger.info(
             "Message received: agent=%s call=%s thread=%s length=%d",
@@ -228,6 +240,24 @@ class AgentRuntime:
         config: dict[str, Any] = {}
         if thread_id:
             config["configurable"] = {"thread_id": thread_id}
+
+        # Attach per-call LLM trace callback when trace_dir is configured.
+        # This records every individual LLM round-trip (input messages +
+        # output message) as a separate JSON file, so we can see exactly
+        # what the LLM received and returned at each step.
+        if self._trace_dir:
+            from .trace_callback import TraceLLMCallback
+
+            llm_tracer = TraceLLMCallback(
+                trace_dir=self._trace_dir,
+                agent_name=self.name,
+            )
+            llm_tracer._call_index = (self._call_seq - 1) * 100  # namespace per handle_message
+            config.setdefault("callbacks", []).append(llm_tracer)
+
+        # Override deepagents' default recursion_limit (1000) with a
+        # sane cap. Without this, weak LLMs loop hundreds of times.
+        config.setdefault("recursion_limit", self._max_iterations)
 
         try:
             result = self._agent.invoke(
@@ -265,6 +295,10 @@ class AgentRuntime:
                 exc,
             )
             raise
+        finally:
+            # Back to ACTIVE (ready for next message). Clear the task.
+            self._state = AgentState.ACTIVE
+            self._current_task = None
 
     def _write_trace(
         self,
@@ -273,7 +307,12 @@ class AgentRuntime:
         raw_result: Any,
         response: str,
     ) -> None:
-        """Write a JSON trace file for this LLM call."""
+        """Write a JSON trace file for this LLM call.
+
+        Records the FULL input, output, and every intermediate message
+        (including complete tool_call arguments and tool results) so that
+        traces can be used to diagnose issues without reproducing the run.
+        """
         if not self._trace_dir:
             return
         try:
@@ -283,9 +322,9 @@ class AgentRuntime:
                 "call_id": call_id,
                 "agent": self.name,
                 "timestamp": ts,
-                "input": input_text[:2000],
+                "input": input_text,
                 "input_length": len(input_text),
-                "response": response[:5000],
+                "response": response,
                 "response_length": len(response),
                 "empty_response": not response.strip(),
                 "messages_count": len(messages_dump),
@@ -393,7 +432,12 @@ def _diagnose_empty_response(result: Any) -> str:
 
 
 def _dump_messages(result: Any) -> list[dict[str, Any]]:
-    """Serialize the messages from a deepagent result for trace output."""
+    """Serialize the messages from a deepagent result for trace output.
+
+    Records FULL content and tool_call arguments so that traces can be
+    used to diagnose edit_file/write_file failures, LLM hallucinations,
+    and tool invocation loops without needing to reproduce the run.
+    """
     if not isinstance(result, dict):
         return []
     messages = result.get("messages")
@@ -403,19 +447,64 @@ def _dump_messages(result: Any) -> list[dict[str, Any]]:
     dump: list[dict[str, Any]] = []
     for msg in messages:
         entry: dict[str, Any] = {"type": type(msg).__name__}
+
+        # Full content (no truncation — traces are diagnostic artifacts)
         content = getattr(msg, "content", None)
         if isinstance(content, str):
-            entry["content"] = content[:3000]
+            entry["content"] = content
             entry["content_length"] = len(content)
         elif isinstance(content, list):
-            entry["content"] = str(content)[:1000]
+            # Multi-part content (e.g. tool_use blocks)
+            entry["content"] = _safe_serialize(content)
+
+        # Tool calls with FULL arguments
         tool_calls = getattr(msg, "tool_calls", None)
         if isinstance(tool_calls, list) and tool_calls:
-            entry["tool_calls"] = [
-                {"name": tc.get("name", ""), "args_keys": sorted(tc.get("args", {}).keys())} for tc in tool_calls
-            ]
+            entry["tool_calls"] = [_dump_tool_call(tc) for tc in tool_calls]
+
+        # Tool call ID (links ToolMessage back to the AIMessage that invoked it)
+        tool_call_id = getattr(msg, "tool_call_id", None)
+        if tool_call_id:
+            entry["tool_call_id"] = tool_call_id
+
+        # Name (set on ToolMessage to identify which tool returned)
         name = getattr(msg, "name", None)
         if name:
             entry["name"] = name
+
+        # Additional response metadata if present
+        response_metadata = getattr(msg, "response_metadata", None)
+        if isinstance(response_metadata, dict) and response_metadata:
+            # Extract token usage if available
+            usage = response_metadata.get("token_usage") or response_metadata.get("usage")
+            if usage:
+                entry["token_usage"] = _safe_serialize(usage)
+            finish_reason = response_metadata.get("finish_reason")
+            if finish_reason:
+                entry["finish_reason"] = finish_reason
+
         dump.append(entry)
     return dump
+
+
+def _dump_tool_call(tc: Any) -> dict[str, Any]:
+    """Serialize a single tool call with full arguments."""
+    if isinstance(tc, dict):
+        return {
+            "id": tc.get("id", ""),
+            "name": tc.get("name", ""),
+            "args": _safe_serialize(tc.get("args", {})),
+        }
+    # Fallback for non-dict tool_call objects
+    return {"raw": _safe_serialize(tc)}
+
+
+def _safe_serialize(obj: Any) -> Any:
+    """Best-effort JSON-safe serialization."""
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _safe_serialize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_safe_serialize(v) for v in obj]
+    return str(obj)

@@ -1,12 +1,20 @@
 ---
 name: code_reviewer
 description: Expert code reviewer who provides constructive, actionable feedback focused on correctness, maintainability, security, and performance.
-version: 1.0.0
+version: 2.0.0
+role: reviewer
 capabilities:
   streaming: false
   pushNotifications: false
 provider:
   organization: AISE
+output_layout:
+  source: src/
+  tests: tests/
+  docs: docs/
+allowed_tools:
+  - read_file
+  - write_file
 ---
 
 # System Prompt

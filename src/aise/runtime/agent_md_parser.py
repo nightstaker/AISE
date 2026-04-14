@@ -32,7 +32,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .models import AgentDefinition, ProviderInfo, SkillInfo
+from .models import AgentDefinition, OutputLayout, ProviderInfo, SkillInfo
 
 
 def parse_agent_md(source: str | Path) -> AgentDefinition:
@@ -83,12 +83,43 @@ def parse_agent_md(source: str | Path) -> AgentDefinition:
         url=str(raw_provider.get("url", "")) if isinstance(raw_provider, dict) else "",
     )
 
+    # Parse role (worker | orchestrator | reviewer | ...). Defaults to worker.
+    role = str(meta.get("role", "worker")).strip() or "worker"
+
+    # Parse output_layout: a flat str→str mapping. The companion
+    # `forbidden_outputs` top-level list holds glob patterns that are
+    # always rejected. (Kept as a sibling key — not nested — to stay
+    # within the depth supported by the minimal YAML parser.)
+    raw_layout = meta.get("output_layout", {})
+    layout_paths: dict[str, str] = {}
+    if isinstance(raw_layout, dict):
+        for k, v in raw_layout.items():
+            if isinstance(v, str):
+                layout_paths[k] = v
+    raw_forbidden = meta.get("forbidden_outputs", [])
+    layout_forbidden = [str(item) for item in raw_forbidden] if isinstance(raw_forbidden, list) else []
+    output_layout = OutputLayout(paths=layout_paths, forbidden=layout_forbidden)
+
+    # Parse allowed_tools: list of tool names this agent may use
+    raw_tools = meta.get("allowed_tools", [])
+    allowed_tools = [str(t) for t in raw_tools] if isinstance(raw_tools, list) else []
+
     # Extract system prompt and skills from body
     system_prompt = _extract_system_prompt(body)
     skills = _extract_skills(body)
 
     # Collect remaining metadata
-    known_keys = {"name", "description", "version", "capabilities", "provider"}
+    known_keys = {
+        "name",
+        "description",
+        "version",
+        "capabilities",
+        "provider",
+        "role",
+        "output_layout",
+        "forbidden_outputs",
+        "allowed_tools",
+    }
     extra_meta = {k: v for k, v in meta.items() if k not in known_keys}
 
     return AgentDefinition(
@@ -99,6 +130,9 @@ def parse_agent_md(source: str | Path) -> AgentDefinition:
         skills=skills,
         capabilities=capabilities,
         provider=provider,
+        role=role,
+        output_layout=output_layout,
+        allowed_tools=allowed_tools,
         metadata=extra_meta,
     )
 
@@ -112,31 +146,48 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
 
 
 def _parse_yaml_simple(yaml_text: str) -> dict[str, Any]:
-    """Minimal YAML parser for frontmatter (supports flat and one-level nested dicts).
+    """Minimal YAML parser for frontmatter.
 
-    Avoids requiring PyYAML as a dependency.
+    Supports:
+    - Flat scalar keys (``key: value``)
+    - One-level nested dicts (indented ``key: value`` lines)
+    - One-level lists (indented ``- item`` lines)
+    - Inline lists (``key: [a, b, c]``)
+
+    Avoids requiring PyYAML as a dependency. This is intentionally
+    minimal — anything more elaborate should move to PyYAML.
     """
     result: dict[str, Any] = {}
     if not yaml_text.strip():
         return result
 
     current_key: str | None = None
-    current_dict: dict[str, Any] | None = None
+    current_container: Any = None  # dict or list under current_key
 
     for line in yaml_text.split("\n"):
         stripped = line.rstrip()
-        if not stripped or stripped.startswith("#"):
+        if not stripped or stripped.lstrip().startswith("#"):
             continue
 
-        # Check for nested key (indented with spaces)
+        # Indented list item: "- value"
+        list_match = re.match(r"^(\s+)-\s+(.*)", stripped)
+        if list_match and current_key is not None:
+            item_val = list_match.group(2).strip()
+            if not isinstance(current_container, list):
+                current_container = []
+                result[current_key] = current_container
+            current_container.append(_parse_value(item_val))
+            continue
+
+        # Indented nested key: "  key: value"
         indent_match = re.match(r"^(\s+)(\w[\w_-]*):\s*(.*)", stripped)
         if indent_match and current_key is not None:
             nested_key = indent_match.group(2)
             nested_val = indent_match.group(3).strip()
-            if current_dict is None:
-                current_dict = {}
-                result[current_key] = current_dict
-            current_dict[nested_key] = _parse_value(nested_val)
+            if not isinstance(current_container, dict):
+                current_container = {}
+                result[current_key] = current_container
+            current_container[nested_key] = _parse_value(nested_val)
             continue
 
         # Top-level key
@@ -145,21 +196,28 @@ def _parse_yaml_simple(yaml_text: str) -> dict[str, Any]:
             key = top_match.group(1)
             val = top_match.group(2).strip()
             current_key = key
-            current_dict = None
+            current_container = None
             if val:
                 result[key] = _parse_value(val)
             else:
-                # Value might be a nested dict on following lines
+                # Value will be a nested dict or list on following lines.
+                # Default to empty dict; switched to list on first "- item".
                 result[key] = {}
-                current_dict = result[key]
+                current_container = result[key]
 
     return result
 
 
 def _parse_value(val: str) -> Any:
-    """Parse a simple YAML scalar value."""
+    """Parse a simple YAML scalar value (or inline list)."""
     if not val:
         return ""
+    # Inline list: [a, b, "c"]
+    if val.startswith("[") and val.endswith("]"):
+        inner = val[1:-1].strip()
+        if not inner:
+            return []
+        return [_parse_value(item.strip()) for item in inner.split(",")]
     if val.lower() in ("true", "yes"):
         return True
     if val.lower() in ("false", "no"):
