@@ -15,16 +15,16 @@ Usage::
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from ..config import ModelConfig, ProjectConfig
 from ..utils.logging import get_logger
 from .agent_runtime import AgentRuntime
+from .llm_factory import build_llm as _factory_build_llm
 from .models import AgentState
+from .runtime_config import LLMDefaults
 
 logger = get_logger(__name__)
 
@@ -120,7 +120,7 @@ class RuntimeManager:
                     "model": model_info,
                     "skills": [s.id for s in card.skills],
                     "status": _map_state(rt.state),
-                    "current_task": None,
+                    "current_task": rt.current_task,
                     "agent_card": {
                         **card_dict,
                         "model": model_info,
@@ -189,6 +189,8 @@ def _discover_agent_md_files() -> list[Path]:
 
 def _map_state(state: AgentState) -> str:
     """Map AgentRuntime state to Monitor status string."""
+    if state == AgentState.WORKING:
+        return "working"
     if state == AgentState.ACTIVE:
         return "standby"
     if state == AgentState.STOPPED:
@@ -196,43 +198,10 @@ def _map_state(state: AgentState) -> str:
     return "standby"
 
 
-_MIN_MAX_TOKENS = 16384  # Minimum to handle tool calls with large content
-
-
+# Back-compat shim. The real factory lives in :mod:`llm_factory` and is
+# provider-pluggable; existing call sites and tests that monkeypatch
+# ``aise.runtime.manager._build_llm`` continue to work because they hit
+# this thin wrapper.
 def _build_llm(config: ModelConfig) -> Any:
-    """Build a ChatOpenAI instance from ModelConfig."""
-    from langchain_openai import ChatOpenAI
-
-    effective_max_tokens = max(config.max_tokens, _MIN_MAX_TOKENS)
-
-    kwargs: dict[str, Any] = {
-        "model": config.model,
-        "temperature": config.temperature,
-        "max_tokens": effective_max_tokens,
-        "max_retries": 1,
-    }
-
-    api_key = config.api_key or os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        provider = (config.provider or "").strip().lower()
-        is_local = bool(config.extra.get("is_local_model"))
-        base_url = (config.base_url or "").strip()
-        if provider == "local" or is_local or _is_local_base_url(base_url):
-            api_key = os.environ.get("AISE_LOCAL_OPENAI_API_KEY", "local-no-key-required")
-    if api_key:
-        kwargs["api_key"] = api_key
-    if config.base_url:
-        kwargs["base_url"] = config.base_url
-
-    return ChatOpenAI(**kwargs)
-
-
-def _is_local_base_url(base_url: str) -> bool:
-    if not base_url:
-        return False
-    try:
-        parsed = urlparse(base_url)
-    except Exception:
-        return False
-    host = (parsed.hostname or "").lower()
-    return host in {"localhost", "127.0.0.1", "::1"}
+    """Build a chat model using the runtime LLM factory."""
+    return _factory_build_llm(config, LLMDefaults())

@@ -1,184 +1,48 @@
-"""ProjectSession — the bridge that makes project_manager actually work.
+"""ProjectSession — generic, role-agnostic orchestrator session.
 
-Provides LangChain tools that the project_manager's deepagent can call
-to read process definitions, discover other agents, and dispatch tasks.
+Drives a project from a raw requirement to delivery using only:
 
-Usage::
+- The agents declared in ``src/aise/agents/*.md``
+- The processes declared in ``src/aise/processes/*.process.md``
+- The runtime safety policy in :class:`RuntimeConfig`
 
-    manager = RuntimeManager(config=config)
-    manager.start()
+Nothing in this file knows what TDD is, what an "implementation phase"
+looks like, or which agent plays which role — that knowledge lives in
+the data files. Code only walks the structures it parses out of those
+files and exposes generic primitives via :mod:`tool_primitives`.
 
-    session = ProjectSession(manager)
-    result = session.run("Build a REST API for user management")
-    print(result)
+Public surface (kept stable so existing tests/web code continue to work):
+
+- ``ProjectSession(manager, project_root=..., on_event=...)``
+- ``run(requirement) -> str``
+- ``task_log`` property
+- ``current_stage`` property
+- ``_make_tools()`` — returns the primitive tools (back-compat alias)
+- ``_build_pm_runtime()`` — builds the orchestrator runtime (back-compat alias)
 """
 
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from langchain_core.tools import tool
-
 from ..utils.logging import get_logger
+from .llm_factory import build_llm as _factory_build_llm
+from .runtime_config import LLMDefaults, RuntimeConfig
+from .tool_primitives import ToolContext, WorkflowState, build_orchestrator_tools
 
 logger = get_logger(__name__)
 
 
-def _make_safe_backend(project_root: str | Path) -> Any:
-    """Create a FilesystemBackend that strips absolute path prefixes.
-
-    Deepagent agents sometimes try to write to absolute paths like
-    /home/user/workspace/... which virtual_mode=True maps to
-    home/user/workspace/... under root. This wrapper intercepts
-    write calls and strips common absolute path prefixes to keep
-    all files directly under src/, tests/, docs/.
-    """
-    from deepagents.backends import FilesystemBackend
-
-    root = str(project_root)
-    base = FilesystemBackend(root_dir=root, virtual_mode=True)
-
-    # Patch the write method to normalize paths
-    original_awrite = base.awrite
-
-    async def safe_awrite(path: str, content: str) -> str:
-        path = _normalize_path(path)
-        return await original_awrite(path, content)
-
-    base.awrite = safe_awrite
-
-    original_write = base.write
-
-    def safe_write(path: str, content: str) -> str:
-        path = _normalize_path(path)
-        return original_write(path, content)
-
-    base.write = safe_write
-
-    return base
-
-
-_PYTEST_RUNNER_PATTERNS = (
-    "run_pytest",
-    "pytest_runner",
-    "pytest_run",
-    "execute_pytest",
-    "run_tests",
-    "test_runner",
-    "pytest_capture",
-    "pytest_script",
-    "pytest_exec",
-    "test_run",
-    "final_pytest",
-    "py_test",
-)
-
-
-def _is_pytest_runner_junk(filename: str) -> bool:
-    """Detect filenames that are LLM-generated pytest runner junk."""
-    lower = filename.lower()
-    if not lower.endswith((".py", ".sh", ".txt")):
-        return False
-    return any(p in lower for p in _PYTEST_RUNNER_PATTERNS) or lower in (
-        "test_output.txt",
-        "pytest_output.txt",
-        "output_pytest.txt",
-    )
-
-
-def _normalize_path(path: str) -> str:
-    """Strip absolute path prefixes and collapse to relative project paths.
-
-    Routing rules (in order):
-    0. runs/* → preserved as-is
-    1. pytest runner junk (run_pytest.py etc.) → runs/scratch/
-    2. .py/.sh files inside docs/ → runs/scratch/
-    3. Files containing /docs/ or /design/ → docs/
-    4. Files containing /aise/agents/ or /aise/runtime/ → runs/scratch/ (AISE internal)
-    5. Files containing /tests/ → tests/ (rightmost wins)
-    6. Files containing /src/ → src/ (rightmost wins)
-    7. Files containing /runs/ → runs/
-    8. Loose test_*.py files → tests/
-    9. Everything else → runs/scratch/
-    """
-    # Strip leading /
-    p = path.lstrip("/")
-    parts = p.split("/")
-    filename = parts[-1] or "unknown"
-
-    # Rule 0: runs/ takes priority
-    if p.startswith("runs/"):
-        return p
-
-    # Rule 1: known pytest runner junk → runs/scratch/
-    if _is_pytest_runner_junk(filename):
-        return f"runs/scratch/{filename}"
-
-    # Rule 2: .py or .sh inside any docs/ → runs/scratch/
-    # (docs/ is for markdown design docs only)
-    if filename.endswith((".py", ".sh")) and "docs/" in p:
-        return f"runs/scratch/{filename}"
-
-    # Rule 3: design/ or docs/ in path → docs/
-    for marker in ("/docs/", "/design/"):
-        idx = p.rfind(marker)
-        if idx >= 0:
-            sub = p[idx + len(marker) :]
-            return f"docs/{sub}"
-    if p.startswith(("docs/", "design/")):
-        sub = p.split("/", 1)[1] if "/" in p else ""
-        return f"docs/{sub}" if sub else "docs/"
-
-    # Rule 4: AISE internal paths (src/aise/...) → runs/scratch/
-    # Agents shouldn't be writing into the AISE codebase itself.
-    if "/aise/agents/" in p or "/aise/runtime/" in p or p.startswith("aise/"):
-        return f"runs/scratch/{filename}"
-
-    # Rule 5: tests/ in path → tests/ (rightmost)
-    test_idx = p.rfind("tests/")
-    if test_idx >= 0:
-        return p[test_idx:]
-
-    # Rule 6: src/ in path → src/ (rightmost)
-    src_idx = p.rfind("src/")
-    if src_idx >= 0:
-        sub = p[src_idx:]
-        # Strip src/aise/ prefix if present (keep src/<rest>)
-        if sub.startswith("src/aise/"):
-            return f"runs/scratch/{filename}"
-        return sub
-
-    # Rule 7: runs/ in path → runs/
-    runs_idx = p.rfind("runs/")
-    if runs_idx >= 0:
-        return p[runs_idx:]
-
-    # Rule 8: filename starts with test_ → tests/
-    if filename.startswith("test_") and filename.endswith(".py"):
-        return f"tests/{filename}"
-
-    # Everything else goes to runs/scratch/
-    return f"runs/scratch/{filename}"
-
-
-def _processes_dir() -> Path:
-    """Return the path to ``src/aise/processes/``."""
-    return Path(__file__).resolve().parent.parent / "processes"
-
-
 class ProjectSession:
-    """Drives a project from raw requirements to delivery.
+    """Drives a project from raw requirement to delivery.
 
-    Creates orchestration tools, rebuilds the project_manager runtime
-    with those tools injected, and provides a ``run()`` entry point.
-
-    An optional ``on_event`` callback is invoked on every A2A message
-    (task_request, task_response, stage_update) so external systems
-    (e.g. the WebUI) can display live progress.
+    The constructor builds a :class:`ToolContext`, picks the
+    orchestrator agent (by ``role: orchestrator`` or fallback name),
+    rebuilds that agent's runtime with the orchestrator tool primitives
+    injected, and exposes a :meth:`run` entry point.
     """
 
     def __init__(
@@ -187,740 +51,276 @@ class ProjectSession:
         *,
         project_root: str | Path | None = None,
         on_event: Any | None = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> None:
         """Initialize a project session.
 
         Args:
             manager: A started :class:`RuntimeManager` instance.
             project_root: Directory where project artifacts are written.
-            on_event: Optional callback ``(event: dict) -> None`` invoked
-                on every A2A message and stage transition.
+            on_event: Optional ``(event: dict) -> None`` callback fired
+                on every event the orchestrator emits.
+            runtime_config: Optional :class:`RuntimeConfig` for safety
+                caps and orchestrator selection. Defaults to
+                :class:`RuntimeConfig`'s defaults.
         """
-        from .manager import RuntimeManager
-
-        self._manager: RuntimeManager = manager
+        self._manager = manager
         self._session_id = uuid.uuid4().hex[:12]
-        self._task_log: list[dict[str, Any]] = []
-        self._on_event = on_event
-        self._current_stage: str = ""
         self._project_root: Path | None = Path(project_root) if project_root else None
+        self._config = runtime_config or RuntimeConfig()
+        self._workflow_state = WorkflowState()
+
         if self._project_root:
-            for subdir in ("docs", "src", "tests", "runs/trace", "runs/docs", "runs/plans"):
-                (self._project_root / subdir).mkdir(parents=True, exist_ok=True)
+            self._scaffold_project_dirs(self._project_root)
+
+        self._ctx = ToolContext(
+            manager=self._manager,
+            project_root=self._project_root,
+            config=self._config,
+            workflow_state=self._workflow_state,
+            on_event=on_event,
+            runtime_resolver=self._resolve_runtime,
+        )
+
+        self._tools = build_orchestrator_tools(self._ctx)
+        self._orchestrator_name = self._select_orchestrator_name()
         self._pm_runtime = self._build_pm_runtime()
 
     # -- Public API ----------------------------------------------------------
 
-    # The 5 stages the project_manager must complete
-    _REQUIRED_STAGES = [
-        "process_selection",
-        "team_assembly",
-    ]
-    # dispatch_task stages are dynamic (from process phases), so we check
-    # that at least one task_response exists after the planning stages.
-    _MAX_CONTINUATIONS = 10
-
     def run(self, requirement: str) -> str:
-        """Submit a raw requirement and let project_manager orchestrate.
+        """Submit a raw requirement and let the orchestrator drive the workflow.
 
-        Includes a continuation loop: if the LLM stops before completing
-        the full workflow (empty response, no task dispatches yet, etc.),
-        it is prompted to continue.
-
-        Args:
-            requirement: The raw project requirement text.
-
-        Returns:
-            The project_manager's final response (delivery summary).
+        The continuation loop exits when the orchestrator calls
+        ``mark_complete`` (preferred) OR when the dispatch / continuation
+        cap is reached.
         """
         if self._pm_runtime is None:
-            raise RuntimeError("project_manager runtime not available")
+            raise RuntimeError("orchestrator runtime not available")
 
-        logger.info("ProjectSession started: session=%s requirement_len=%d", self._session_id, len(requirement))
-
-        prompt = (
-            f"New project requirement:\n\n{requirement}\n\n"
-            "Execute the full workflow: "
-            "1) select a process, "
-            "2) assemble a team, "
-            "3) plan the workflow, "
-            "4) dispatch tasks to agents and coordinate, "
-            "5) produce the final delivery report."
+        logger.info(
+            "ProjectSession started: session=%s requirement_len=%d orchestrator=%s",
+            self._session_id,
+            len(requirement),
+            self._orchestrator_name,
         )
 
-        response = self._pm_runtime.handle_message(
-            prompt,
-            thread_id=self._session_id,
-        )
+        # Mark the global orchestrator runtime as WORKING for the Monitor.
+        from .models import AgentState
 
-        # Continuation loop: check if the workflow actually finished
-        for attempt in range(self._MAX_CONTINUATIONS):
-            if self._is_workflow_complete(response):
-                break
+        global_pm_rt = self._manager.get_runtime(self._orchestrator_name)
 
-            missing = self._describe_missing_work()
-            logger.info(
-                "ProjectSession continuation %d: session=%s reason=%s",
-                attempt + 1,
-                self._session_id,
-                missing,
-            )
+        self._requirement = requirement
+        try:
+            if global_pm_rt is not None:
+                global_pm_rt._state = AgentState.WORKING
+                global_pm_rt._current_task = requirement[:120]
 
-            continuation_prompt = (
-                f"The workflow is not yet complete. {missing}\n\n"
-                "Continue executing the remaining steps. "
-                "Use dispatch_task to send work to agents and "
-                "write_project_file to save outputs.\n\n"
-                "IMPORTANT: After all tasks are done, you MUST respond with a "
-                "text delivery report summarizing what was completed. "
-                "Do not end your turn with only a tool call — always follow up "
-                "with a text response."
-            )
+            # Drive the workflow phase by phase. Each phase gets a FRESH
+            # PM runtime so context never accumulates beyond one phase.
+            # The framework controls the macro sequence; PM controls the
+            # agent-level tactics within each phase.
+            phases = self._build_phase_prompts(requirement)
+            response = ""
 
-            response = self._pm_runtime.handle_message(
-                continuation_prompt,
-                thread_id=self._session_id,
-            )
+            for phase_idx, (phase_name, phase_prompt) in enumerate(phases):
+                if self._workflow_state.is_complete:
+                    break
+                if self._ctx.dispatch_count() >= self._config.safety_limits.max_dispatches:
+                    logger.warning("Hit dispatch cap (%d)", self._config.safety_limits.max_dispatches)
+                    break
 
-        logger.info("ProjectSession completed: session=%s", self._session_id)
-        return response
+                logger.info(
+                    "Phase %d/%d [%s]: session=%s dispatches=%d",
+                    phase_idx + 1,
+                    len(phases),
+                    phase_name,
+                    self._session_id,
+                    self._ctx.dispatch_count(),
+                )
 
-    _MAX_TOTAL_DISPATCHES = 12  # Safety cap on total task dispatches
+                # Fresh PM runtime per phase — no context accumulation
+                self._pm_runtime = self._build_pm_runtime()
+                response = self._invoke_pm(phase_prompt)
 
-    def _is_workflow_complete(self, response: str) -> bool:
-        """Check if the workflow has meaningfully completed."""
-        dispatched = [e for e in self._task_log if e.get("type") == "task_request"]
-        completed = [e for e in self._task_log if e.get("type") == "task_response" and e.get("status") == "completed"]
+            if self._workflow_state.is_complete and self._workflow_state.final_report:
+                return self._workflow_state.final_report
 
-        # Safety cap: if we've dispatched too many tasks, force completion
-        if len(dispatched) >= self._MAX_TOTAL_DISPATCHES:
-            logger.warning("Max dispatches reached (%d), forcing completion", len(dispatched))
-            return True
-
-        # Empty response always means incomplete
-        if not response or not response.strip():
-            return False
-
-        # No tasks dispatched at all — incomplete
-        if not dispatched:
-            return False
-
-        # No completed tasks — incomplete
-        if not completed:
-            return False
-
-        # Response looks like a final report
-        lower = response.lower()
-        has_completion_signal = any(
-            kw in lower
-            for kw in [
-                "delivery report",
-                "completed",
-                "final report",
-                "summary",
-                "交付",
-                "完成",
-                "总结",
-                "报告",
-                "cycle_complete",
-            ]
-        )
-        if has_completion_signal and len(response.strip()) > 100:
-            return True
-
-        # If response is long but no completion signal, it might be mid-stream
-        return False
-
-    def _describe_missing_work(self) -> str:
-        """Describe what's missing based on task_log analysis."""
-        stages_seen = {e["stage"] for e in self._task_log if e.get("type") == "stage_update"}
-        dispatched = [e for e in self._task_log if e.get("type") == "task_request"]
-        completed = [e for e in self._task_log if e.get("type") == "task_response" and e.get("status") == "completed"]
-
-        parts = []
-        if "process_selection" not in stages_seen:
-            parts.append("Process has not been selected yet.")
-        if "team_assembly" not in stages_seen:
-            parts.append("Team has not been assembled yet.")
-        if not dispatched:
-            parts.append("No tasks have been dispatched to any agent.")
-        else:
-            parts.append(f"{len(dispatched)} tasks dispatched, {len(completed)} completed so far.")
-            # Check which agents were used
-            agents_used = {e.get("to") for e in dispatched}
-            parts.append(f"Agents involved: {', '.join(sorted(agents_used))}.")
-        return " ".join(parts)
+            logger.info("ProjectSession finished all phases: session=%s", self._session_id)
+            return response
+        finally:
+            if global_pm_rt is not None:
+                global_pm_rt._state = AgentState.ACTIVE
+                global_pm_rt._current_task = None
 
     @property
     def task_log(self) -> list[dict[str, Any]]:
-        """Chronological log of all A2A messages dispatched/received."""
-        return list(self._task_log)
+        """Chronological log of every event the orchestrator emitted."""
+        with self._ctx.event_lock:
+            return list(self._ctx.event_log)
+
+    def _invoke_pm(self, prompt: str) -> str:
+        """Invoke PM with error resilience.
+
+        LLMs sometimes generate malformed tool call JSON (e.g. gemma4's
+        repetition bug: "progress, progress, progress..." × 1000). The
+        LLM server returns 500, which crashes handle_message. Instead of
+        crashing the session, we catch the error and return empty so the
+        continuation loop can retry.
+        """
+        try:
+            return self._pm_runtime.handle_message(prompt, thread_id=self._session_id)
+        except Exception as exc:
+            logger.warning(
+                "PM handle_message failed (will retry on next continuation): session=%s error=%s",
+                self._session_id,
+                str(exc)[:200],
+            )
+            return ""
+
+    # Back-compat alias used by tests that mutate the log directly.
+    @property
+    def _task_log(self) -> list[dict[str, Any]]:
+        return self._ctx.event_log
 
     @property
     def current_stage(self) -> str:
-        return self._current_stage
+        """Most recent ``stage_update`` stage, or empty if none yet."""
+        with self._ctx.event_lock:
+            for event in reversed(self._ctx.event_log):
+                if event.get("type") == "stage_update":
+                    return str(event.get("stage", ""))
+        return ""
 
-    def _emit(self, event: dict[str, Any]) -> None:
-        """Record event and notify callback."""
-        self._task_log.append(event)
-        if self._on_event:
-            try:
-                self._on_event(event)
-            except Exception:
-                pass
+    @property
+    def workflow_state(self) -> WorkflowState:
+        return self._workflow_state
 
-    _NOISE_MARKERS = (
-        "Error: File",
-        "Updated todo list",
-        "not found",
-        "todos.json",
-    )
+    @property
+    def orchestrator_name(self) -> str:
+        return self._orchestrator_name
 
-    def _save_task_output(self, agent: str, step_id: str, phase: str, content: str) -> None:
-        """Auto-save a task output to the project runs/ directory.
-
-        All auto-saved agent outputs go to runs/docs/ (intermediate artifacts).
-        Only the final delivery report and agent-written files (via write_file)
-        end up in the top-level docs/, src/, tests/.
-        """
-        if not self._project_root or not content.strip():
-            return
-        # Skip tool noise
-        first_line = content.strip().split("\n")[0]
-        if any(marker in first_line for marker in self._NOISE_MARKERS):
-            logger.debug("Skipping tool noise output: %s", first_line[:80])
-            return
-        if len(content.strip()) < 20:
-            return
-
-        # All auto-saved outputs go to runs/docs/ (intermediate)
-        subdir = "runs/docs"
-
-        # Build filename
-        parts = [p for p in [phase, agent, step_id] if p]
-        base = "_".join(parts) if parts else f"{agent}_output"
-        target = self._project_root / subdir / f"{base}.md"
-        counter = 2
-        while target.exists():
-            target = self._project_root / subdir / f"{base}_{counter}.md"
-            counter += 1
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        logger.info("Task output saved: %s (%d bytes)", target.relative_to(self._project_root), len(content))
-
-    # -- Tool factories ------------------------------------------------------
+    # -- Tool factory (back-compat) ------------------------------------------
 
     def _make_tools(self) -> list[Any]:
-        """Create LangChain tools for the project_manager agent."""
-        session = self  # capture for closures
+        """Return the orchestrator's tool primitives.
 
-        def _enter_stage(stage: str) -> None:
-            """Emit a stage_update if entering a new stage."""
-            if session._current_stage != stage:
-                session._current_stage = stage
-                session._emit(
-                    {
-                        "type": "stage_update",
-                        "stage": stage,
-                        "status": "started",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
+        Kept as an instance method so existing tests that call
+        ``session._make_tools()`` continue to work. Returns the same
+        list that was injected into the orchestrator runtime.
+        """
+        return list(self._tools)
 
-        @tool
-        def list_processes() -> str:
-            """List all available process definitions with their id, name, work_type, and keywords."""
-            _enter_stage("process_selection")
-            procs_dir = _processes_dir()
-            if not procs_dir.is_dir():
-                return json.dumps({"processes": []})
+    # -- Orchestrator runtime ------------------------------------------------
 
-            processes = []
-            for f in sorted(procs_dir.glob("*.process.md")):
-                text = f.read_text(encoding="utf-8")
-                info = _parse_process_header(text)
-                info["file"] = f.name
-                processes.append(info)
+    def _build_pm_runtime(self) -> Any:
+        """Build the orchestrator's AgentRuntime with primitive tools injected."""
+        from .agent_runtime import AgentRuntime
+        from .manager import _agents_dir
+        from .policy_backend import make_policy_backend
 
-            process_ids = ", ".join(p.get("process_id", "") for p in processes)
-            session._emit(
-                {
-                    "type": "tool_call",
-                    "tool": "list_processes",
-                    "summary": f"Found {len(processes)} processes: {process_ids}",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-            return json.dumps({"processes": processes}, ensure_ascii=False)
+        orchestrator_md = _agents_dir() / f"{self._orchestrator_name}.md"
+        if not orchestrator_md.is_file():
+            logger.error("Orchestrator agent.md not found at %s", orchestrator_md)
+            return None
 
-        @tool
-        def get_process(process_file: str) -> str:
-            """Read the full content of a specific process definition file.
+        existing_rt = self._manager.get_runtime(self._orchestrator_name)
+        if existing_rt is None:
+            logger.error("Orchestrator '%s' not found in RuntimeManager", self._orchestrator_name)
+            return None
 
-            Args:
-                process_file: Filename like 'waterfall.process.md'.
-            """
-            _enter_stage("process_selection")
-            path = _processes_dir() / process_file
-            if not path.is_file():
-                return json.dumps({"error": f"Process file not found: {process_file}"})
-            content = path.read_text(encoding="utf-8")
-            session._emit(
-                {
-                    "type": "tool_call",
-                    "tool": "get_process",
-                    "summary": f"Read {process_file} ({len(content)} chars)",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-            return content
+        from ..config import ModelConfig
 
-        @tool
-        def list_agents() -> str:
-            """List all available agent cards with their name, description, skills, and capabilities."""
-            _enter_stage("team_assembly")
-            agents = []
-            for name, rt in session._manager.runtimes.items():
-                if name == "project_manager":
-                    continue  # exclude self
-                agents.append(rt.get_agent_card_dict())
-            session._emit(
-                {
-                    "type": "tool_call",
-                    "tool": "list_agents",
-                    "summary": f"Found {len(agents)} agents: {', '.join(a.get('name', '') for a in agents)}",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-            return json.dumps({"agents": agents}, ensure_ascii=False)
+        model_info = existing_rt.definition.metadata.get("_model_info", {})
+        model_cfg = ModelConfig(
+            provider=model_info.get("provider", ""),
+            model=model_info.get("model", ""),
+            temperature=model_info.get("temperature", 0.7),
+            max_tokens=model_info.get("maxTokens", 4096),
+        )
+        if hasattr(self._manager, "_config"):
+            global_cfg = self._manager._config.get_model_config(self._orchestrator_name)
+            model_cfg.api_key = global_cfg.api_key
+            model_cfg.base_url = global_cfg.base_url
+            model_cfg.extra = global_cfg.extra
 
-        @tool
-        def dispatch_task(agent_name: str, task_description: str, step_id: str = "", phase: str = "") -> str:
-            """Send a task to another agent and return its response.
+        llm = _factory_build_llm(model_cfg, LLMDefaults(min_max_tokens=self._config.llm.min_max_tokens))
 
-            This follows the A2A task_request/task_response protocol.
+        skills_dir = orchestrator_md.parent / "_runtime_skills"
+        skills_dir.mkdir(exist_ok=True)
 
-            Args:
-                agent_name: Name of the target agent (e.g. 'developer', 'architect').
-                task_description: Detailed description of what the agent should do.
-                step_id: The workflow step identifier.
-                phase: The workflow phase name.
-            """
-            # Hard cap: refuse new dispatches once total exceeds MAX_TOTAL_DISPATCHES
-            current_dispatches = sum(1 for e in session._task_log if e.get("type") == "task_request")
-            if current_dispatches >= session._MAX_TOTAL_DISPATCHES:
-                logger.warning("dispatch_task refused: cap reached (%d)", current_dispatches)
-                return json.dumps(
-                    {
-                        "status": "failed",
-                        "error": (
-                            f"Maximum dispatches ({session._MAX_TOTAL_DISPATCHES}) reached. "
-                            "Workflow must finish now. Stop calling tools and produce the "
-                            "final delivery report as text."
-                        ),
-                    }
-                )
+        from langgraph.checkpoint.memory import MemorySaver
 
-            # Use phase as stage name so each workflow phase shows separately
-            _enter_stage(phase or "execution")
-            rt = session._manager.get_runtime(agent_name)
-            if rt is None:
-                return json.dumps(
-                    {
-                        "status": "failed",
-                        "error": f"Agent '{agent_name}' not found",
-                    }
-                )
+        trace_dir = str(self._project_root / self._config.trace_subdir) if self._project_root else None
 
-            task_id = uuid.uuid4().hex[:10]
-            request_msg = {
-                "taskId": task_id,
-                "from": "project_manager",
-                "to": agent_name,
-                "type": "task_request",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "payload": {
-                    "step": step_id,
-                    "phase": phase,
-                    "task": task_description,
-                },
-            }
-            session._emit(request_msg)
-            logger.info("Task dispatched: task=%s to=%s step=%s", task_id, agent_name, step_id)
-
+        backend = None
+        if self._project_root:
             try:
-                # Build a project-scoped runtime so write_file goes to disk
-                dispatch_rt = session._get_project_runtime(agent_name, rt)
-
-                # Phase-specific file rules
-                if phase and any(kw in phase.lower() for kw in ("implement", "develop", "coding", "execution")):
-                    file_rules = (
-                        "Write source code to src/ (e.g. src/main.py, src/game/engine.py). "
-                        "Write tests to tests/ (e.g. tests/test_main.py). "
-                        "You MUST create a src/main.py entry point file. "
-                        "Do NOT write code to docs/."
-                    )
-                elif phase and any(kw in phase.lower() for kw in ("test", "verif", "qa")):
-                    file_rules = (
-                        "Write test code to tests/ (e.g. tests/test_main.py, tests/test_core.py). "
-                        "Each test file must be a complete runnable pytest module."
-                    )
-                elif phase and any(kw in phase.lower() for kw in ("design", "architect")):
-                    file_rules = (
-                        "Write design documents to docs/. "
-                        "Include only interface definitions, schemas, and pseudocode — NOT full implementation code. "
-                        "Keep code snippets under 10 lines."
-                    )
-                else:
-                    file_rules = "Write documents to docs/. Write source code to src/. Write tests to tests/."
-
-                full_prompt = (
-                    f"{task_description}\n\n"
-                    f"FILE OUTPUT RULES: Use write_file to save all output. {file_rules}\n"
-                    "CRITICAL: All paths MUST be relative (e.g. src/main.py, tests/test_core.py). "
-                    "NEVER use absolute paths starting with /. "
-                    "After writing files, respond with a brief summary of what you produced."
+                backend = make_policy_backend(
+                    self._project_root,
+                    layout=existing_rt.definition.output_layout,
+                    agent_name=self._orchestrator_name,
                 )
-
-                result = dispatch_rt.handle_message(full_prompt)
-
-                # Retry once if response is empty or trivial
-                if not result.strip() or len(result.strip()) < 30:
-                    logger.warning("Trivial response from %s (%d chars), retrying", agent_name, len(result))
-                    retry_prompt = (
-                        f"Your previous response was empty or too brief. "
-                        f"Please complete the following task and provide the FULL output:\n\n"
-                        f"{task_description}\n\n"
-                        "Use write_file to save all code/document files, then summarize what you created."
-                    )
-                    result = dispatch_rt.handle_message(retry_prompt)
-
-                # Auto-save full output to project directory
-                session._save_task_output(agent_name, step_id, phase, result)
-
-                # Truncate output for the tool return (PM doesn't need the full text;
-                # it's auto-saved to disk). This prevents the PM from trying to
-                # copy-paste huge content into write_project_file calls.
-                output_len = len(result)
-                preview = result[:500] + "..." if output_len > 500 else result
-                response_msg = {
-                    "taskId": task_id,
-                    "from": agent_name,
-                    "to": "project_manager",
-                    "type": "task_response",
-                    "status": "completed",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "payload": {
-                        "output_preview": preview,
-                        "output_length": output_len,
-                        "saved_to": "auto-saved to project directory",
-                    },
-                }
-                session._emit(response_msg)
-
-                logger.info("Task completed: task=%s from=%s output=%d chars", task_id, agent_name, output_len)
-                return json.dumps(response_msg, ensure_ascii=False)
-
             except Exception as exc:
-                error_msg = {
-                    "taskId": task_id,
-                    "from": agent_name,
-                    "to": "project_manager",
-                    "type": "task_response",
-                    "status": "failed",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "payload": {"error": str(exc)},
-                }
-                session._emit(error_msg)
-                logger.warning("Task failed: task=%s from=%s error=%s", task_id, agent_name, exc)
-                return json.dumps(error_msg, ensure_ascii=False)
+                logger.warning("Failed to build policy backend for orchestrator: %s", exc)
 
-        @tool
-        def write_project_file(file_path: str, content: str) -> str:
-            """Write a file to the project directory.
+        rt = AgentRuntime(
+            agent_md=orchestrator_md,
+            skills_dir=skills_dir,
+            model=llm,
+            extra_tools=self._tools,
+            backend=backend,
+            trace_dir=trace_dir,
+            checkpointer=MemorySaver(),
+            max_iterations=200,
+        )
+        rt.evoke()
+        logger.info(
+            "Orchestrator runtime built: name=%s tools=%d trace_dir=%s session=%s",
+            self._orchestrator_name,
+            len(self._tools),
+            trace_dir,
+            self._session_id,
+        )
+        return rt
 
-            Use this to save plans, reports, and summaries you produce yourself.
-            Agent outputs (from dispatch_task) are auto-saved — do NOT duplicate them.
+    def _scaffold_project_dirs(self, root: Path) -> None:
+        """Pre-create the directories declared by every loaded agent's output_layout.
 
-            Path routing:
-            - Plans/execution plans → runs/plans/ (auto-routed)
-            - Your own reports → docs/ (e.g. docs/delivery_report.md)
-            - Everything else → as specified
+        This is purely cosmetic — it ensures the project directory tree
+        is visible from the start so the file-tree UI has something to
+        show. The runtime's policy backend would create the directories
+        on demand anyway.
+        """
+        wanted: set[str] = {self._config.trace_subdir}
+        for rt in self._manager.runtimes.values():
+            layout = getattr(rt.definition, "output_layout", None)
+            if layout is None:
+                continue
+            for path in layout.paths.values():
+                if path:
+                    wanted.add(path.rstrip("/"))
+        for sub in sorted(wanted):
+            (root / sub).mkdir(parents=True, exist_ok=True)
 
-            Args:
-                file_path: Relative path within the project (e.g. 'docs/delivery_report.md').
-                content: File content to write.
-            """
-            if not session._project_root:
-                return json.dumps({"status": "skipped", "reason": "no project directory configured"})
+    def _resolve_runtime(self, agent_name: str, global_rt: Any) -> Any:
+        """Create a FRESH project-scoped AgentRuntime for each dispatch.
 
-            # Route plan files to runs/plans/
-            normalized = file_path.lower()
-            if any(kw in normalized for kw in ("plan", "execution_plan", "team_roster")):
-                file_path = "runs/plans/" + Path(file_path).name
+        Every dispatch gets its own AgentRuntime instance with a clean
+        conversation context. This ensures:
+        - No message history leakage between dispatches
+        - Each module task runs in a completely isolated agent session
+        - Parallel dispatches don't share mutable agent state
 
-            target = (session._project_root / file_path).resolve()
-            if not str(target).startswith(str(session._project_root.resolve())):
-                return json.dumps({"status": "failed", "error": "path escapes project directory"})
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
-            logger.info("Project file written: %s (%d bytes)", file_path, len(content))
-            return json.dumps({"status": "saved", "path": file_path, "bytes": len(content)})
-
-        @tool
-        def dispatch_tasks_parallel(tasks_json: str) -> str:
-            """Dispatch multiple tasks to different agents in parallel.
-
-            Use this to run independent tasks concurrently, e.g. developer
-            writing code while qa_engineer writes tests at the same time.
-
-            Args:
-                tasks_json: JSON array of task objects, each with:
-                    - agent_name: target agent
-                    - task_description: what to do
-                    - step_id: workflow step id
-                    - phase: workflow phase name
-            """
-            import concurrent.futures
-
-            try:
-                tasks = json.loads(tasks_json)
-            except Exception:
-                return json.dumps({"status": "failed", "error": "Invalid JSON"})
-
-            if not isinstance(tasks, list) or not tasks:
-                return json.dumps({"status": "failed", "error": "tasks must be a non-empty array"})
-
-            results = []
-
-            def run_one(t: dict) -> dict:
-                agent = t.get("agent_name", "")
-                desc = t.get("task_description", "")
-                step = t.get("step_id", "")
-                ph = t.get("phase", "")
-                raw = dispatch_task.invoke(
-                    {
-                        "agent_name": agent,
-                        "task_description": desc,
-                        "step_id": step,
-                        "phase": ph,
-                    }
-                )
-                return json.loads(raw)
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=len(tasks)) as pool:
-                futures = {pool.submit(run_one, t): t for t in tasks}
-                for future in concurrent.futures.as_completed(futures):
-                    try:
-                        results.append(future.result())
-                    except Exception as exc:
-                        t = futures[future]
-                        results.append({"status": "failed", "from": t.get("agent_name"), "error": str(exc)})
-
-            ok = sum(1 for r in results if r.get("status") == "completed")
-            fail = sum(1 for r in results if r.get("status") == "failed")
-            return json.dumps(
-                {
-                    "parallel_results": results,
-                    "total": len(results),
-                    "completed": ok,
-                    "failed": fail,
-                },
-                ensure_ascii=False,
-            )
-
-        @tool
-        def run_tdd_cycle(
-            feature_description: str,
-            phase: str = "implementation",
-            max_iterations: int = 3,
-        ) -> str:
-            """Run TDD (Test-Driven Development) cycle by the developer agent.
-
-            The developer follows the TDD methodology:
-            1. Write unit tests FIRST in tests/ (RED)
-            2. Write code in src/ to make tests pass (GREEN)
-            3. System runs pytest
-            4. If failures, developer fixes with real pytest output
-            5. Repeat until tests pass or max_iterations reached
-
-            Only the developer agent is used. QA integration testing happens
-            SEPARATELY in the next phase via dispatch_task to qa_engineer.
-
-            Args:
-                feature_description: What feature/module to build.
-                phase: Workflow phase name.
-                max_iterations: Maximum fix-test iterations (default 3).
-            """
-            import subprocess
-
-            # Single-use lock: run_tdd_cycle can only be called ONCE per session
-            if getattr(session, "_tdd_cycle_called", False):
-                return json.dumps(
-                    {
-                        "status": "failed",
-                        "error": (
-                            "run_tdd_cycle has already been called for this project. "
-                            "Implementation phase is DONE. Move to the next phase "
-                            "(QA integration testing) using dispatch_task to qa_engineer."
-                        ),
-                        "do_not_retry": True,
-                    }
-                )
-            session._tdd_cycle_called = True
-
-            _enter_stage(phase)
-            iteration_results = []
-            last_test_output = ""
-
-            def actually_run_pytest() -> tuple[bool, str]:
-                """Run pytest in the project directory and return (passed, output)."""
-                if not session._project_root:
-                    return False, "No project root configured"
-                tests_dir = session._project_root / "tests"
-                if not tests_dir.is_dir() or not any(tests_dir.iterdir()):
-                    return False, "No tests directory or empty"
-                try:
-                    result = subprocess.run(
-                        ["python", "-m", "pytest", str(tests_dir), "-q", "--tb=short", "--no-header"],
-                        cwd=str(session._project_root),
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                    )
-                    output = (result.stdout + "\n" + result.stderr).strip()
-                    output = output[-3000:]
-                    passed = result.returncode == 0
-                    return passed, output
-                except subprocess.TimeoutExpired:
-                    return False, "pytest timed out after 120s"
-                except Exception as exc:
-                    return False, f"pytest execution error: {exc}"
-
-            for iteration in range(1, max_iterations + 1):
-                session._emit(
-                    {
-                        "type": "stage_update",
-                        "stage": f"{phase}_tdd_{iteration}",
-                        "status": "started",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
-
-                if iteration == 1:
-                    # TDD step 1+2: developer writes tests AND code
-                    tdd_desc = (
-                        f"Use Test-Driven Development (TDD) to build the following:\n\n"
-                        f"{feature_description}\n\n"
-                        f"TDD STEPS (you MUST follow this order):\n"
-                        f"1. FIRST write unit tests to tests/ (e.g. tests/test_main.py). "
-                        f"Tests should cover the public API and edge cases.\n"
-                        f"2. THEN write the implementation code to src/ (e.g. src/main.py). "
-                        f"You MUST create src/main.py as the entry point.\n"
-                        f"3. Use write_file for ALL outputs. Use relative paths only.\n\n"
-                        f"Do NOT skip tests. Do NOT write tests after code."
-                    )
-                    dispatch_task.invoke(
-                        {
-                            "agent_name": "developer",
-                            "task_description": tdd_desc,
-                            "step_id": "tdd_initial",
-                            "phase": phase,
-                        }
-                    )
-                else:
-                    # Fix iteration: real pytest output guides the fix
-                    fix_desc = (
-                        f"TDD Iteration {iteration}: Fix the failing tests.\n\n"
-                        f"REAL pytest output:\n```\n{last_test_output}\n```\n\n"
-                        f"Steps:\n"
-                        f"1. Read ONLY the specific failing test files and the code they test\n"
-                        f"2. Identify the bug from the failure message\n"
-                        f"3. Use write_file to save the corrected code\n"
-                        f"Be efficient — do NOT read every file in the project."
-                    )
-                    dispatch_task.invoke(
-                        {
-                            "agent_name": "developer",
-                            "task_description": fix_desc,
-                            "step_id": f"tdd_fix_{iteration}",
-                            "phase": phase,
-                        }
-                    )
-
-                # System runs pytest (no LLM)
-                all_pass, last_test_output = actually_run_pytest()
-                session._emit(
-                    {
-                        "type": "tool_call",
-                        "tool": "pytest",
-                        "summary": f"TDD iter {iteration}: {'PASSED' if all_pass else 'FAILED'}",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
-
-                iteration_results.append(
-                    {
-                        "iteration": iteration,
-                        "all_tests_pass": all_pass,
-                        "pytest_output": last_test_output[:500],
-                    }
-                )
-
-                if all_pass:
-                    logger.info("TDD cycle passed at iteration %d", iteration)
-                    break
-
-                logger.info("TDD cycle iteration %d: tests still failing", iteration)
-
-            final_pass = iteration_results[-1]["all_tests_pass"] if iteration_results else False
-            status_msg = (
-                "TDD cycle complete: all unit tests pass. Proceed to QA integration testing phase."
-                if final_pass
-                else f"TDD cycle complete: max iterations ({max_iterations}) reached. "
-                f"Implementation done. Proceed to next phase. Do NOT call run_tdd_cycle again."
-            )
-            return json.dumps(
-                {
-                    "cycle_complete": True,
-                    "all_tests_pass": final_pass,
-                    "iterations": iteration_results,
-                    "total_iterations": len(iteration_results),
-                    "status": status_msg,
-                    "do_not_retry": True,
-                },
-                ensure_ascii=False,
-            )
-
-        return [
-            list_processes,
-            get_process,
-            list_agents,
-            dispatch_task,
-            dispatch_tasks_parallel,
-            run_tdd_cycle,
-            write_project_file,
-        ]
-
-    # -- Internal ------------------------------------------------------------
-
-    _project_runtimes: dict[str, Any] = {}
-
-    def _get_project_runtime(self, agent_name: str, global_rt: Any) -> Any:
-        """Get or create a project-scoped AgentRuntime with FilesystemBackend.
-
-        This allows agents to use write_file/edit_file to write directly
-        to the project directory on disk.
+        The FilesystemBackend is shared (so module B can read files
+        written by module A), but the LLM context is isolated.
         """
         if not self._project_root:
-            return global_rt  # No project dir, use global runtime
-
-        cache_key = f"{self._session_id}__{agent_name}"
-        if cache_key in self._project_runtimes:
-            return self._project_runtimes[cache_key]
+            return global_rt
 
         from .agent_runtime import AgentRuntime
-        from .manager import _agents_dir, _build_llm
+        from .manager import _agents_dir
+        from .policy_backend import make_policy_backend
 
         try:
             md_path = _agents_dir() / f"{agent_name}.md"
@@ -928,9 +328,9 @@ class ProjectSession:
                 logger.warning("No agent.md for %s, using global runtime", agent_name)
                 return global_rt
 
-            model_info = global_rt.definition.metadata.get("_model_info", {})
             from ..config import ModelConfig
 
+            model_info = global_rt.definition.metadata.get("_model_info", {})
             model_cfg = ModelConfig(
                 provider=model_info.get("provider", ""),
                 model=model_info.get("model", ""),
@@ -943,13 +343,16 @@ class ProjectSession:
                 model_cfg.base_url = gc.base_url
                 model_cfg.extra = gc.extra
 
-            llm = _build_llm(model_cfg)
-            backend = _make_safe_backend(self._project_root)
+            llm = _factory_build_llm(model_cfg, LLMDefaults(min_max_tokens=self._config.llm.min_max_tokens))
+            backend = make_policy_backend(
+                self._project_root,
+                layout=global_rt.definition.output_layout,
+                agent_name=agent_name,
+            )
 
             skills_dir = md_path.parent / "_runtime_skills"
             skills_dir.mkdir(exist_ok=True)
-
-            trace_dir = str(self._project_root / "runs/trace")
+            trace_dir = str(self._project_root / self._config.trace_subdir)
 
             rt = AgentRuntime(
                 agent_md=md_path,
@@ -959,97 +362,232 @@ class ProjectSession:
                 trace_dir=trace_dir,
             )
             rt.evoke()
-            self._project_runtimes[cache_key] = rt
-            logger.info("Project-scoped runtime created: agent=%s root=%s", agent_name, self._project_root)
+            logger.info("Fresh runtime created: agent=%s root=%s", agent_name, self._project_root)
             return rt
-
         except Exception as exc:
-            logger.warning("Failed to create project-scoped runtime for %s: %s, using global", agent_name, exc)
+            logger.warning(
+                "Failed to create project-scoped runtime for %s: %s, using global",
+                agent_name,
+                exc,
+            )
             return global_rt
 
-    def _build_pm_runtime(self) -> Any:
-        """Rebuild project_manager runtime with orchestration tools injected."""
-        from .agent_runtime import AgentRuntime
-        from .manager import _agents_dir, _build_llm
+    # -- Orchestrator selection ----------------------------------------------
 
-        pm_md = _agents_dir() / "project_manager.md"
-        if not pm_md.is_file():
-            logger.error("project_manager.md not found at %s", pm_md)
-            return None
+    def _select_orchestrator_name(self) -> str:
+        """Pick the orchestrator agent by role, then fall back to a name match."""
+        target_role = self._config.orchestrator_role
+        for name, rt in self._manager.runtimes.items():
+            role = (getattr(rt.definition, "role", "") or "").lower()
+            if role == target_role:
+                return name
+        # Legacy fallback: use the configured name even if role isn't tagged.
+        fallback = self._config.orchestrator_fallback_name
+        if fallback in self._manager.runtimes:
+            return fallback
+        # Final fallback: use the first runtime if any.
+        if self._manager.runtimes:
+            return next(iter(self._manager.runtimes))
+        raise RuntimeError("No agents available; cannot select an orchestrator")
 
-        existing_rt = self._manager.get_runtime("project_manager")
-        if existing_rt is None:
-            logger.error("project_manager not found in RuntimeManager")
-            return None
+    # -- Prompt rendering ----------------------------------------------------
 
-        # Get model config from the existing runtime's metadata
-        model_info = existing_rt.definition.metadata.get("_model_info", {})
+    def _build_phase_prompts(self, requirement: str) -> list[tuple[str, str]]:
+        """Build one prompt per workflow phase.
 
-        from ..config import ModelConfig
+        Each prompt is self-contained: the PM gets a fresh runtime and
+        this prompt tells it exactly what to do for this phase.
+        """
+        return [
+            (
+                "requirements",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 1 — Requirements:\n"
+                "1. Call list_processes, then get_process('waterfall.process.md').\n"
+                "2. Call list_agents to discover agents.\n"
+                "3. dispatch_task to product_manager to write docs/requirement.md.\n"
+                "4. After it completes, STOP.\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "architecture",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 2 — Architecture:\n"
+                "dispatch_task to architect to read docs/requirement.md and write docs/architecture.md.\n"
+                "After it completes, STOP.\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "implementation",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 3 — Implementation:\n"
+                "1. Read docs/architecture.md to identify all modules.\n"
+                "2. For EACH module, dispatch developer using dispatch_tasks_parallel.\n"
+                "   Include the architecture spec in each task description.\n"
+                "3. After all dispatches return, run: execute_shell('python -m pytest tests/ -q --tb=short')\n"
+                "4. If tests fail, dispatch developer to fix, then re-run pytest.\n"
+                "5. STOP when tests pass (or after 3 fix attempts).\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "main_entry",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 4 — Main Entry Point:\n"
+                "dispatch_task to developer with this task:\n"
+                "'Write src/main.py — the main entry point. Read all files in src/ to see "
+                "what modules exist, then create a real game loop that initializes all modules "
+                "(Snake, Food, Engine, GameState, Scoring, etc.), runs an update loop with "
+                "collision detection, food spawning, and score tracking. This must be a REAL "
+                "working game, not just print statements. Also write tests/test_main.py.'\n"
+                "After it completes, run: execute_shell('python -m pytest tests/ -q --tb=short')\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "qa_testing",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 5 — Integration Testing:\n"
+                "dispatch_task to qa_engineer to read src/ and tests/, then write "
+                "tests/test_integration.py covering cross-module interactions.\n"
+                "After it completes, run: execute_shell('python -m pytest tests/ -q --tb=short')\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "delivery",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 6 — Delivery:\n"
+                "All implementation and testing is done.\n"
+                "Run execute_shell('python -m pytest tests/ -q --tb=short') one final time.\n"
+                "Then call mark_complete with a delivery report summarizing:\n"
+                "- Modules implemented\n"
+                "- Test results\n"
+                "- Any known issues",
+            ),
+        ]
 
-        model_cfg = ModelConfig(
-            provider=model_info.get("provider", ""),
-            model=model_info.get("model", ""),
-            temperature=model_info.get("temperature", 0.7),
-            max_tokens=model_info.get("maxTokens", 4096),
-        )
-        # Inherit api_key and base_url from the global config if available
-        if hasattr(self._manager, "_config"):
-            global_cfg = self._manager._config.get_model_config("project_manager")
-            model_cfg.api_key = global_cfg.api_key
-            model_cfg.base_url = global_cfg.base_url
-            model_cfg.extra = global_cfg.extra
+    def _render_initial_prompt(self, requirement: str) -> str:
+        # Kept for back-compat but no longer used by the phased run loop
+        return f"Project: {requirement}"
 
-        llm = _build_llm(model_cfg)
-        tools = self._make_tools()
+    def _render_continuation_prompt(self) -> str:
+        """Build an extremely specific, single-action continuation prompt.
 
-        skills_dir = pm_md.parent / "_runtime_skills"
-        skills_dir.mkdir(exist_ok=True)
+        PM keeps its checkpointed history. Each continuation tells PM
+        exactly ONE thing to do next, preventing it from wasting calls
+        on re-reading files or getting stuck.
+        """
+        log = self.task_log
+        dispatches = [e for e in log if e.get("type") == "task_request"]
+        responses = [e for e in log if e.get("type") == "task_response"]
 
-        from langgraph.checkpoint.memory import MemorySaver
+        agents_dispatched = set()
+        developer_dispatches = 0
+        developer_completed = 0
+        for req in dispatches:
+            agent = req.get("to", "")
+            agents_dispatched.add(agent)
+            if agent == "developer":
+                developer_dispatches += 1
+        for resp in responses:
+            if resp.get("from") == "developer" and resp.get("status") == "completed":
+                developer_completed += 1
 
-        trace_dir = str(self._project_root / "runs/trace") if self._project_root else None
+        # Determine the ONE next action
+        if "product_manager" not in agents_dispatched:
+            return (
+                "You have not yet dispatched any tasks. "
+                "Call dispatch_task to product_manager to write docs/requirement.md. "
+                "Do NOT read any files first."
+            )
 
-        # Use FilesystemBackend so PM's write_file stays inside project dir
-        pm_backend = None
-        if self._project_root:
-            try:
-                pm_backend = _make_safe_backend(self._project_root)
-            except Exception:
-                pass
+        if "architect" not in agents_dispatched:
+            return (
+                "Requirements are done. "
+                "Call dispatch_task to architect to write docs/architecture.md. "
+                "Do NOT read any files first."
+            )
 
-        rt = AgentRuntime(
-            agent_md=pm_md,
-            skills_dir=skills_dir,
-            model=llm,
-            extra_tools=tools,
-            backend=pm_backend,
-            trace_dir=trace_dir,
-            checkpointer=MemorySaver(),
-        )
-        rt.evoke()
-        logger.info(
-            "ProjectSession PM runtime built: tools=%d trace_dir=%s session=%s",
-            len(tools),
-            trace_dir,
-            self._session_id,
-        )
-        return rt
+        if developer_dispatches == 0:
+            return (
+                "Architecture is done. Read docs/architecture.md to identify modules. "
+                "Then dispatch developer for EACH module using dispatch_tasks_parallel. "
+                "Include the architecture spec for each module in the task description."
+            )
+
+        # Check if main.py was dispatched by looking at step_ids
+        main_dispatched = any("main" in req.get("payload", {}).get("step", "").lower() for req in dispatches)
+
+        if developer_dispatches > 0 and not main_dispatched:
+            # Modules done, need main.py next
+            # First check if tests pass
+            shell_results = [e for e in log if e.get("type") == "tool_call" and e.get("tool") == "execute_shell"]
+            last_pytest_passed = False
+            for sr in reversed(shell_results):
+                summary = sr.get("summary", "")
+                if "pytest" in summary or "exit=0" in summary:
+                    last_pytest_passed = "exit=0" in summary
+                    break
+
+            if not last_pytest_passed:
+                return (
+                    f"Implementation: {developer_dispatches} developer dispatches, "
+                    f"{developer_completed} completed. "
+                    "Run execute_shell('python -m pytest tests/ -q --tb=short') to check. "
+                    "If tests fail, dispatch developer to fix. "
+                    "Do NOT proceed until tests pass."
+                )
+            # Tests pass → dispatch main.py
+            return (
+                "Module tests pass. Now dispatch developer to write src/main.py — "
+                "the main entry point. Call:\n"
+                "dispatch_task(agent_name='developer', "
+                "task_description='Write src/main.py — the main entry point that "
+                "imports and uses ALL implemented modules (read src/ to see what exists). "
+                "Create a real game loop: initialize Snake, Food, Engine, GameState, Scoring etc., "
+                "then run an update loop that moves the snake, checks collisions, spawns food, "
+                "and tracks score. NOT a stub — real working game logic. "
+                "Also write tests/test_main.py to verify the game initializes and runs.', "
+                "step_id='step_integrate_main', phase='implementation')"
+            )
+
+        if main_dispatched and "qa_engineer" not in agents_dispatched:
+            return (
+                "Main entry point done. Dispatch qa_engineer for integration testing.\n"
+                "dispatch_task(agent_name='qa_engineer', "
+                "task_description='Read src/ and tests/ to understand the system. "
+                "Write integration tests to tests/test_integration.py covering "
+                "cross-module interactions.', "
+                "step_id='step_integration_test', phase='verification')"
+            )
+
+        if "qa_engineer" in agents_dispatched:
+            return (
+                "All phases done. Run execute_shell('python -m pytest tests/ -q --tb=short'). "
+                "If all pass, call mark_complete with a delivery report. "
+                "If tests fail, dispatch developer to fix, then re-check."
+            )
+
+
+# -- Back-compat helper kept for existing tests ----------------------------
 
 
 def _parse_process_header(text: str) -> dict[str, str]:
-    """Extract process metadata from the header of a process.md file."""
-    info: dict[str, str] = {}
-    for line in text.split("\n")[:10]:
-        line = line.strip()
-        if line.startswith("- process_id:"):
-            info["process_id"] = line.split(":", 1)[1].strip()
-        elif line.startswith("- name:"):
-            info["name"] = line.split(":", 1)[1].strip()
-        elif line.startswith("- work_type:"):
-            info["work_type"] = line.split(":", 1)[1].strip()
-        elif line.startswith("- keywords:"):
-            info["keywords"] = line.split(":", 1)[1].strip()
-        elif line.startswith("- summary:"):
-            info["summary"] = line.split(":", 1)[1].strip()
-    return info
+    """Extract process metadata from a legacy bullet-style header.
+
+    Retained as a thin wrapper around :func:`parse_process_md` so any
+    code still importing this symbol keeps working.
+    """
+    from .process_md_parser import parse_process_md
+
+    try:
+        proc = parse_process_md(text)
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for k, v in proc.header_dict().items():
+        if v:
+            out[k] = v
+    return out
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()

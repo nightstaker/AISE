@@ -89,3 +89,65 @@ class TestParseAgentMd:
     def test_file_not_found(self):
         with pytest.raises(FileNotFoundError):
             parse_agent_md("/nonexistent/agent.md")
+
+    def test_default_role_and_empty_layout(self):
+        """Legacy agent.md without role/output_layout still parses cleanly."""
+        defn = parse_agent_md(SAMPLE_AGENT_MD)
+        assert defn.role == "worker"
+        assert defn.output_layout.is_empty()
+        assert defn.allowed_tools == []
+
+    def test_role_and_output_layout(self):
+        md = """\
+---
+name: ScopedAgent
+description: An agent with output policy
+role: worker
+output_layout:
+  source: src/
+  tests: tests/
+forbidden_outputs:
+  - "run_pytest*.py"
+  - "*_runner.py"
+allowed_tools:
+  - read_file
+  - write_file
+  - execute_shell
+---
+
+# System Prompt
+Test.
+"""
+        defn = parse_agent_md(md)
+        assert defn.role == "worker"
+        assert defn.output_layout.paths == {"source": "src/", "tests": "tests/"}
+        assert defn.output_layout.forbidden == ["run_pytest*.py", "*_runner.py"]
+        assert "src/" in defn.output_layout.allowed_directories()
+        assert defn.allowed_tools == ["read_file", "write_file", "execute_shell"]
+
+    def test_orchestrator_role(self):
+        md = """\
+---
+name: PMAgent
+description: Orchestrator
+role: orchestrator
+---
+# System Prompt
+PM.
+"""
+        defn = parse_agent_md(md)
+        assert defn.role == "orchestrator"
+
+    def test_inline_list(self):
+        """Inline YAML lists like `[a, b]` parse to a Python list."""
+        md = """\
+---
+name: InlineAgent
+description: Test inline list parsing
+allowed_tools: [read_file, write_file]
+---
+# System Prompt
+ok.
+"""
+        defn = parse_agent_md(md)
+        assert defn.allowed_tools == ["read_file", "write_file"]

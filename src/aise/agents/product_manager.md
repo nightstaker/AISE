@@ -1,12 +1,18 @@
 ---
 name: product_manager
 description: Owns the requirements phase. Analyzes raw input, produces system-level artifacts and requirement documents, and drives PR submission/review/merge.
-version: 1.0.0
+version: 2.0.0
+role: worker
 capabilities:
   streaming: false
   pushNotifications: false
 provider:
   organization: AISE
+output_layout:
+  docs: docs/
+allowed_tools:
+  - read_file
+  - write_file
 ---
 
 # System Prompt

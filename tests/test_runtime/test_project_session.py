@@ -139,19 +139,20 @@ class TestProjectSessionTools:
 
 class TestProjectSessionRun:
     def test_run_calls_pm_runtime(self, session):
-        # Simulate a complete workflow: PM dispatches a task, then returns a report
+        # Simulate a complete workflow: orchestrator does some work, then
+        # explicitly signals completion via the new mark_complete primitive.
         call_count = [0]
+        report = (
+            "Project delivery report: all phases completed successfully. "
+            "Requirements analyzed, architecture designed, code implemented, tests passed."
+        )
 
         def mock_handle(msg, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
-                # First call: simulate PM doing work — inject fake events
+                # Inject some plausible events into the shared log
                 session._task_log.extend(
                     [
-                        {"type": "stage_update", "stage": "process_selection"},
-                        {"type": "tool_call", "tool": "list_processes", "summary": "Found 3"},
-                        {"type": "stage_update", "stage": "team_assembly"},
-                        {"type": "tool_call", "tool": "list_agents", "summary": "Found 6"},
                         {"type": "stage_update", "stage": "design"},
                         {"type": "task_request", "to": "architect", "payload": {"task": "design"}},
                         {
@@ -162,11 +163,17 @@ class TestProjectSessionRun:
                         },
                     ]
                 )
-                return "Project delivery report: all phases completed successfully. Requirements analyzed, architecture designed, code implemented, tests passed."
+                # Call the real mark_complete tool to set the workflow_state
+                tools = session._make_tools()
+                mark = next(t for t in tools if t.name == "mark_complete")
+                mark.invoke({"report": report})
+                return "Tool call succeeded."
             return ""
 
         session._pm_runtime.handle_message.side_effect = mock_handle
 
         result = session.run("Build a REST API")
-        assert "delivery report" in result.lower() or "completed" in result.lower()
-        assert call_count[0] == 1  # Should complete in one pass with the simulated events
+        # mark_complete sets workflow_state.is_complete and the session
+        # returns the final_report stored on the workflow state.
+        assert "delivery report" in result.lower()
+        assert call_count[0] == 1

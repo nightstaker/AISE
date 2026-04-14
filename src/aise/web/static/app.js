@@ -193,11 +193,14 @@ function setupDashboardReact() {
     function statusBadge(status) {
       if (status === "completed" || status === "success") return h("span", { className: "status-badge status-success" }, "✓ 成功");
       if (status === "running" || status === "in_progress") return h("span", { className: "status-badge status-running" }, "◉ 运行中");
+      if (status === "active") return h("span", { className: "status-badge status-running" }, "● 进行中");
       if (status === "failed" || status === "error") return h("span", { className: "status-badge status-failed" }, "✕ 失败");
+      if (status === "paused") return h("span", { className: "status-badge status-pending" }, "⏸ 暂停");
+      if (status === "archived") return h("span", { className: "status-badge status-pending" }, "▣ 归档");
       return h("span", { className: "status-badge status-pending" }, "◎ 等待中");
     }
 
-    const runningCount = projects.filter((p) => p.status === "running" || p.status === "in_progress").length;
+    const runningCount = projects.filter((p) => p.status === "running" || p.status === "in_progress" || p.status === "active").length;
     const successCount = projects.filter((p) => p.status === "completed" || p.status === "success").length;
     const failedCount = projects.filter((p) => p.status === "failed" || p.status === "error").length;
 
