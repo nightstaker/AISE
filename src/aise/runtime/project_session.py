@@ -428,9 +428,22 @@ class ProjectSession:
             (
                 "architecture",
                 f"Project requirement: {requirement}\n\n"
-                "Execute Phase 2 — Architecture:\n"
-                "dispatch_task to architect to read docs/requirement.md and write docs/architecture.md.\n"
-                "After it completes, STOP.\n"
+                "Execute Phase 2 — Architecture (two steps):\n\n"
+                "Step 1: dispatch_task to architect with task:\n"
+                "'Read docs/requirement.md. Write docs/architecture.md with these sections:\n"
+                "1. System Overview\n"
+                "2. Module Decomposition (name, responsibilities, dependencies for EACH module)\n"
+                "3. Data Models (fields for every entity)\n"
+                "4. Module Dependency graph\n"
+                "Keep it concise — bullet points, not prose. Stop after section 4.'\n\n"
+                "Step 2: after step 1 completes, dispatch_task to architect again with task:\n"
+                "'Read docs/architecture.md. APPEND the following sections to it:\n"
+                "5. Component Interactions (how modules communicate)\n"
+                "6. Technology Stack\n"
+                "7. Configuration Schema (all config files)\n"
+                "8. Interface/API Definitions — list ALL public methods for EVERY module.\n"
+                "Use edit_file or write_file to update docs/architecture.md.'\n\n"
+                "After both steps complete, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
             (
