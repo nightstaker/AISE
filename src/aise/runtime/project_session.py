@@ -124,8 +124,24 @@ class ProjectSession:
             response = ""
 
             for phase_idx, (phase_name, phase_prompt) in enumerate(phases):
-                if self._workflow_state.is_complete:
+                is_last_phase = phase_idx == len(phases) - 1
+
+                # Only honor mark_complete in the LAST phase. PM often
+                # calls it prematurely (e.g. after implementation, skipping
+                # main.py and QA). Reset the flag before non-final phases.
+                if not is_last_phase and self._workflow_state.is_complete:
+                    logger.info(
+                        "Ignoring premature mark_complete at phase %d/%d [%s]",
+                        phase_idx + 1,
+                        len(phases),
+                        phase_name,
+                    )
+                    self._workflow_state.is_complete = False
+                    self._workflow_state.final_report = ""
+
+                if is_last_phase and self._workflow_state.is_complete:
                     break
+
                 if self._ctx.dispatch_count() >= self._config.safety_limits.max_dispatches:
                     logger.warning("Hit dispatch cap (%d)", self._config.safety_limits.max_dispatches)
                     break
