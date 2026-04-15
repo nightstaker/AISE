@@ -46,7 +46,7 @@ def make_policy_backend(
         file operations.
     """
     from deepagents.backends import FilesystemBackend
-    from deepagents.backends.protocol import WriteResult
+    from deepagents.backends.protocol import EditResult, WriteResult
 
     root = Path(project_root).resolve()
     root_str = str(root)
@@ -98,8 +98,19 @@ def make_policy_backend(
         resolved = base._resolve_path(file_path)
         if not resolved.exists():
             return _orig_write(file_path, content)
-        # File exists → overwrite in place. No artificial restrictions.
-        # The recursion_limit (80) is the safety net against loops.
+        # File exists — compare content before overwriting
+        try:
+            existing = resolved.read_text(encoding="utf-8")
+        except Exception:
+            existing = None
+        if existing is not None and existing == content:
+            return WriteResult(
+                error=(
+                    f"File '{file_path}' already has identical content. "
+                    "No changes needed — do not repeat this write."
+                )
+            )
+        # Content differs → overwrite
         try:
             flags = os.O_WRONLY | os.O_TRUNC
             if hasattr(os, "O_NOFOLLOW"):
@@ -115,7 +126,27 @@ def make_policy_backend(
         return _orig_read(_normalize(file_path), offset, limit)
 
     def norm_edit(file_path: str, old_string: str, new_string: str, replace_all: bool = False):
-        return _orig_edit(_normalize(file_path), old_string, new_string, replace_all)
+        file_path = _normalize(file_path)
+        # If old_string == new_string, no-op — tell the LLM
+        if old_string == new_string:
+            return EditResult(
+                error=(
+                    "old_string and new_string are identical — nothing to change. "
+                    "If you want to modify the file, provide different content."
+                )
+            )
+        # Try the real edit first
+        result = _orig_edit(file_path, old_string, new_string, replace_all)
+        if result.error and "not found" in result.error.lower():
+            # old_string didn't match — guide the LLM to use write_file instead
+            return EditResult(
+                error=(
+                    f"old_string not found in '{file_path}'. "
+                    "Use read_file to see the current content, then call "
+                    "write_file with the complete new content to replace the file."
+                )
+            )
+        return result
 
     def norm_ls(path: str) -> Any:
         return _orig_ls(_normalize(path))

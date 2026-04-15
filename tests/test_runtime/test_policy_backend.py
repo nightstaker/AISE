@@ -80,6 +80,20 @@ class TestWrite:
         assert r1.error is None
         assert r2.error is None
 
+    def test_write_rejects_identical_content(self, backend, project_root):
+        """Writing the same content to an existing file returns an error."""
+        backend.write("/src/main.py", "same")
+        r = backend.write("/src/main.py", "same")
+        assert r.error is not None
+        assert "identical content" in r.error
+
+    def test_write_allows_different_content(self, backend, project_root):
+        """Writing different content to an existing file succeeds."""
+        backend.write("/src/main.py", "v1")
+        r = backend.write("/src/main.py", "v2")
+        assert r.error is None
+        assert (project_root / "src" / "main.py").read_text() == "v2"
+
     def test_write_normalizes_absolute_host_path(self, backend, project_root):
         # Simulate LLM using absolute AISE repo path
         import aise
@@ -120,6 +134,20 @@ class TestEdit:
     def test_edit_file_not_found(self, backend):
         result = backend.edit("/src/nonexistent.py", "x", "y")
         assert result.error is not None
+
+    def test_edit_identical_old_new_rejected(self, backend):
+        """old_string == new_string is a no-op, returns error."""
+        backend.write("/src/calc.py", "x = 1")
+        result = backend.edit("/src/calc.py", "x = 1", "x = 1")
+        assert result.error is not None
+        assert "identical" in result.error
+
+    def test_edit_old_string_not_found_guides_to_write(self, backend):
+        """When old_string doesn't match, guide LLM to use write_file."""
+        backend.write("/src/calc.py", "actual content here")
+        result = backend.edit("/src/calc.py", "this does not exist", "new content")
+        assert result.error is not None
+        assert "write_file" in result.error
 
 
 # -- ls_info ---------------------------------------------------------------
