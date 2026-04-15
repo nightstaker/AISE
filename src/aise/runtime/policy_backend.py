@@ -93,31 +93,13 @@ def make_policy_backend(
     _orig_glob = base.glob_info
     _orig_grep = base.grep_raw
 
-    # Track written files: first write to each path succeeds,
-    # subsequent writes to the SAME path are rejected. This prevents
-    # LLMs from looping between different versions of the same file.
-    _written_paths: set[str] = set()
-
     def norm_write(file_path: str, content: str) -> WriteResult:
         file_path = _normalize(file_path)
         resolved = base._resolve_path(file_path)
-
         if not resolved.exists():
-            result = _orig_write(file_path, content)
-            if result.error is None:
-                _written_paths.add(file_path)
-            return result
-
-        # File exists. Allow ONE overwrite (different content), then block.
-        if file_path in _written_paths:
-            return WriteResult(
-                error=(
-                    f"File '{file_path}' was already written in this session. "
-                    "Do NOT rewrite it. Move on to the next file or respond with your summary."
-                )
-            )
-
-        # First overwrite attempt — allow it (file might be from a previous dispatch)
+            return _orig_write(file_path, content)
+        # File exists → overwrite in place. No artificial restrictions.
+        # The recursion_limit (80) is the safety net against loops.
         try:
             flags = os.O_WRONLY | os.O_TRUNC
             if hasattr(os, "O_NOFOLLOW"):
@@ -125,7 +107,6 @@ def make_policy_backend(
             fd = os.open(resolved, flags)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(content)
-            _written_paths.add(file_path)
             return WriteResult(path=file_path, files_update=None)
         except (OSError, UnicodeEncodeError) as exc:
             return WriteResult(error=f"Error writing file '{file_path}': {exc}")

@@ -65,14 +65,13 @@ class TestWrite:
         assert result.error is None
         assert (project_root / "src" / "main.py").read_text() == "print('hello')"
 
-    def test_write_blocks_second_write_to_same_path(self, backend, project_root):
-        """First write succeeds, second to same path is blocked."""
+    def test_write_overwrites_existing(self, backend, project_root):
+        """Writing to an existing file overwrites it."""
         r1 = backend.write("/src/main.py", "v1")
         assert r1.error is None
-        assert (project_root / "src" / "main.py").read_text() == "v1"
         r2 = backend.write("/src/main.py", "v2")
-        assert r2.error is not None
-        assert "already written" in r2.error
+        assert r2.error is None
+        assert (project_root / "src" / "main.py").read_text() == "v2"
 
     def test_write_allows_different_paths(self, backend, project_root):
         """Different files can each be written once."""
