@@ -93,58 +93,31 @@ def make_policy_backend(
     _orig_glob = base.glob_info
     _orig_grep = base.grep_raw
 
-    # Track written file STEMS: once tests/test_entities.py is written,
-    # also block tests/test_entities_new.py, tests/test_entities_fixed.py etc.
-    # This prevents LLMs from bypassing write-once by inventing variant names.
-    _written_stems: set[str] = set()
-    _write_count = 0
-    _MAX_WRITES = 10  # hard cap per session (one module = 2 files max)
-
-    def _get_stem_key(path: str) -> str:
-        """Extract the base module name, stripping variant suffixes."""
-        import re
-
-        name = Path(path).stem  # e.g. "test_entities_new" → "test_entities_new"
-        # Strip common variant suffixes
-        name = re.sub(r"(_new|_fixed|_final|_v\d+|_retry|_clean|_bak|_old)$", "", name)
-        # Include parent dir to distinguish src/foo.py from tests/test_foo.py
-        parent = Path(path).parent.name or ""
-        return f"{parent}/{name}"
+    # Track written files: first write to each path succeeds,
+    # subsequent writes to the SAME path are rejected. This prevents
+    # LLMs from looping between different versions of the same file.
+    _written_paths: set[str] = set()
 
     def norm_write(file_path: str, content: str) -> WriteResult:
-        nonlocal _write_count
         file_path = _normalize(file_path)
-
-        # Hard cap: prevent runaway writes regardless of filename
-        if _write_count >= _MAX_WRITES:
-            return WriteResult(
-                error=(
-                    f"Write limit ({_MAX_WRITES}) reached for this session. "
-                    "Stop writing files and respond with your summary."
-                )
-            )
-
-        stem_key = _get_stem_key(file_path)
-
-        # Block variant filenames of already-written modules
-        if stem_key in _written_stems:
-            return WriteResult(
-                error=(
-                    f"A file for '{stem_key}' was already written in this session. "
-                    "Do NOT create variants (_new, _fixed, _final, _v2). "
-                    "Move on to the next task or respond with your summary."
-                )
-            )
-
         resolved = base._resolve_path(file_path)
+
         if not resolved.exists():
             result = _orig_write(file_path, content)
             if result.error is None:
-                _written_stems.add(stem_key)
-                _write_count += 1
+                _written_paths.add(file_path)
             return result
 
-        # File exists — overwrite (from a previous dispatch)
+        # File exists. Allow ONE overwrite (different content), then block.
+        if file_path in _written_paths:
+            return WriteResult(
+                error=(
+                    f"File '{file_path}' was already written in this session. "
+                    "Do NOT rewrite it. Move on to the next file or respond with your summary."
+                )
+            )
+
+        # First overwrite attempt — allow it (file might be from a previous dispatch)
         try:
             flags = os.O_WRONLY | os.O_TRUNC
             if hasattr(os, "O_NOFOLLOW"):
@@ -152,8 +125,7 @@ def make_policy_backend(
             fd = os.open(resolved, flags)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(content)
-            _written_stems.add(stem_key)
-            _write_count += 1
+            _written_paths.add(file_path)
             return WriteResult(path=file_path, files_update=None)
         except (OSError, UnicodeEncodeError) as exc:
             return WriteResult(error=f"Error writing file '{file_path}': {exc}")

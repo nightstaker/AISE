@@ -247,30 +247,3 @@ class TestExecute:
         sig = inspect.signature(backend.execute)
         params = list(sig.parameters.keys())
         assert params == ["command", "timeout"]
-
-
-class TestWriteVariantBlocking:
-    def test_blocks_variant_filenames(self, backend, project_root):
-        """After writing test_entities.py, _new/_fixed variants are blocked."""
-        r1 = backend.write("/tests/test_entities.py", "test1")
-        assert r1.error is None
-        r2 = backend.write("/tests/test_entities_new.py", "test2")
-        assert r2.error is not None
-        assert "already written" in r2.error
-        r3 = backend.write("/tests/test_entities_fixed.py", "test3")
-        assert r3.error is not None
-
-    def test_different_modules_allowed(self, backend, project_root):
-        """Different modules are not blocked by each other."""
-        r1 = backend.write("/tests/test_entities.py", "a")
-        r2 = backend.write("/tests/test_utils.py", "b")
-        assert r1.error is None
-        assert r2.error is None
-
-    def test_hard_cap(self, backend, project_root):
-        """Write limit caps total writes per session."""
-        for i in range(10):
-            backend.write(f"/src/mod{i}.py", f"x={i}")
-        r = backend.write("/src/mod_extra.py", "extra")
-        assert r.error is not None
-        assert "limit" in r.error.lower()
