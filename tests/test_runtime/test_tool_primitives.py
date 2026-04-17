@@ -230,6 +230,56 @@ class TestShellTool:
 # -- Completion ------------------------------------------------------------
 
 
+class TestEventDedup:
+    """Regression guards for the run-detail A2A task log cleanliness.
+
+    Source symptom: ``run_3d87cefb4c`` page showed 14+ duplicate
+    ``stage_update`` rows for one phase and 20+ identical ``todos_update``
+    rows for one taskId, making the timeline unreadable.
+    """
+
+    def test_consecutive_identical_stage_updates_deduped(self, ctx):
+        ctx.emit({"type": "stage_update", "stage": "implementation", "status": "started"})
+        ctx.emit({"type": "stage_update", "stage": "implementation", "status": "started"})
+        ctx.emit({"type": "stage_update", "stage": "implementation", "status": "started"})
+        stage_events = [e for e in ctx.event_log if e.get("type") == "stage_update"]
+        assert len(stage_events) == 1
+
+    def test_stage_update_re_emits_on_change(self, ctx):
+        ctx.emit({"type": "stage_update", "stage": "implementation", "status": "started"})
+        ctx.emit({"type": "stage_update", "stage": "implementation", "status": "started"})
+        ctx.emit({"type": "stage_update", "stage": "testing", "status": "started"})
+        ctx.emit({"type": "stage_update", "stage": "testing", "status": "started"})
+        stages = [e["stage"] for e in ctx.event_log if e.get("type") == "stage_update"]
+        assert stages == ["implementation", "testing"]
+
+    def test_consecutive_identical_todos_update_deduped(self, ctx):
+        todos = [{"content": "A", "status": "in_progress"}, {"content": "B", "status": "pending"}]
+        for _ in range(20):
+            ctx.emit({"type": "todos_update", "taskId": "tA", "todos": todos})
+        todo_events = [e for e in ctx.event_log if e.get("type") == "todos_update"]
+        assert len(todo_events) == 1
+
+    def test_todos_update_re_emits_when_list_changes(self, ctx):
+        t1 = [{"content": "A", "status": "in_progress"}]
+        t2 = [{"content": "A", "status": "completed"}]
+        ctx.emit({"type": "todos_update", "taskId": "tA", "todos": t1})
+        ctx.emit({"type": "todos_update", "taskId": "tA", "todos": t1})
+        ctx.emit({"type": "todos_update", "taskId": "tA", "todos": t2})
+        ctx.emit({"type": "todos_update", "taskId": "tA", "todos": t2})
+        events = [e for e in ctx.event_log if e.get("type") == "todos_update"]
+        assert len(events) == 2
+        assert events[0]["todos"][0]["status"] == "in_progress"
+        assert events[1]["todos"][0]["status"] == "completed"
+
+    def test_todos_dedup_is_per_task_id(self, ctx):
+        todos = [{"content": "A", "status": "pending"}]
+        ctx.emit({"type": "todos_update", "taskId": "tA", "todos": todos})
+        ctx.emit({"type": "todos_update", "taskId": "tB", "todos": todos})
+        events = [e for e in ctx.event_log if e.get("type") == "todos_update"]
+        assert len(events) == 2
+
+
 class TestCompletionTool:
     def test_mark_complete_sets_state(self, ctx):
         tool = make_completion_tool(ctx)

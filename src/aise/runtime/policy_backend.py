@@ -93,10 +93,50 @@ def make_policy_backend(
     _orig_glob = base.glob_info
     _orig_grep = base.grep_raw
 
+    # Session-scoped loop detector. Weak local LLMs can get stuck emitting
+    # the same ``write_file``/``edit_file`` tool call regardless of what
+    # the tool returned — neither success nor error breaks the generation
+    # pattern. We track the last ``(tool, path, content_hash)`` signature
+    # and its consecutive-repeat count; after ``_NOOP_STREAK_LIMIT``
+    # identical no-ops in a row, the tool starts returning a hard
+    # ``LOOP_DETECTED`` error. That won't force the LLM to stop (nothing
+    # can, short of ``recursion_limit``), but it caps the damage per path
+    # and makes the pathology obvious in logs.
+    _NOOP_STREAK_LIMIT = 3
+    _last_noop_sig: dict[str, tuple[str, str]] = {}  # path → (tool, content_hash)
+    _noop_streak: int = 0  # consecutive no-ops matching _last_noop_sig
+
+    def _track_noop(tool: str, file_path: str, content: str) -> bool:
+        """Record a no-op call. Return True if the streak exceeded the limit."""
+        nonlocal _noop_streak
+        import hashlib
+
+        sig = (tool, hashlib.sha1(content.encode("utf-8", errors="replace")).hexdigest())
+        last = _last_noop_sig.get(file_path)
+        if last == sig:
+            _noop_streak += 1
+        else:
+            _last_noop_sig[file_path] = sig
+            _noop_streak = 1
+        if _noop_streak >= _NOOP_STREAK_LIMIT:
+            logger.warning(
+                "Loop detected: %s no-op on %s repeated %d× — returning error",
+                tool,
+                file_path,
+                _noop_streak,
+            )
+            return True
+        return False
+
+    def _reset_noop_streak() -> None:
+        nonlocal _noop_streak
+        _noop_streak = 0
+
     def norm_write(file_path: str, content: str) -> WriteResult:
         file_path = _normalize(file_path)
         resolved = base._resolve_path(file_path)
         if not resolved.exists():
+            _reset_noop_streak()
             return _orig_write(file_path, content)
         # File exists — compare content before overwriting
         try:
@@ -104,13 +144,23 @@ def make_policy_backend(
         except Exception:
             existing = None
         if existing is not None and existing == content:
-            return WriteResult(
-                error=(
-                    f"File '{file_path}' already has identical content. "
-                    "No changes needed — do not repeat this write."
+            # Target state already satisfied. Return success on the first
+            # ``_NOOP_STREAK_LIMIT - 1`` repeats so the LLM doesn't get
+            # stuck in an error-retry cycle for benign cases. Beyond that,
+            # surface a LOOP_DETECTED error so it's visible in the trace.
+            if _track_noop("write_file", file_path, content):
+                return WriteResult(
+                    error=(
+                        f"LOOP_DETECTED: write_file called {_NOOP_STREAK_LIMIT}× "
+                        f"in a row with identical content on '{file_path}'. "
+                        "File is already up to date. Stop calling this tool and "
+                        "respond with a text summary instead."
+                    )
                 )
-            )
-        # Content differs → overwrite
+            logger.debug("write_file no-op (identical content): %s", file_path)
+            return WriteResult(path=file_path, files_update=None)
+        # Content differs → overwrite (a real change resets the streak)
+        _reset_noop_streak()
         try:
             flags = os.O_WRONLY | os.O_TRUNC
             if hasattr(os, "O_NOFOLLOW"):
@@ -127,14 +177,22 @@ def make_policy_backend(
 
     def norm_edit(file_path: str, old_string: str, new_string: str, replace_all: bool = False):
         file_path = _normalize(file_path)
-        # If old_string == new_string, no-op — tell the LLM
+        # old_string == new_string is a no-op. Return success so the LLM
+        # doesn't enter an error-retry loop. After _NOOP_STREAK_LIMIT
+        # identical repeats the tool returns a LOOP_DETECTED error.
         if old_string == new_string:
-            return EditResult(
-                error=(
-                    "old_string and new_string are identical — nothing to change. "
-                    "If you want to modify the file, provide different content."
+            if _track_noop("edit_file", file_path, new_string):
+                return EditResult(
+                    error=(
+                        f"LOOP_DETECTED: edit_file called {_NOOP_STREAK_LIMIT}× "
+                        f"in a row with identical old/new strings on '{file_path}'. "
+                        "Nothing to change. Stop calling this tool and respond "
+                        "with a text summary instead."
+                    )
                 )
-            )
+            logger.debug("edit_file no-op (old_string == new_string): %s", file_path)
+            return EditResult(path=file_path, files_update=None, occurrences=0)
+        _reset_noop_streak()
         # Try the real edit first
         result = _orig_edit(file_path, old_string, new_string, replace_all)
         if result.error and "not found" in result.error.lower():

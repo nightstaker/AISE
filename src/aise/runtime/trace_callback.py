@@ -1,29 +1,25 @@
-"""LangChain callback that records every LLM call's full input and output.
+"""LangChain callback that records every LLM call into a shared trace record.
 
-Attaches to the ChatModel via ``callbacks=[TraceLLMCallback(...)]``.
-On each ``on_chat_model_start`` → ``on_llm_end`` pair it writes a JSON
-file into the trace directory with:
+Unlike a per-LLM-call file sink, this callback appends each round-trip to
+a ``trace_record`` dict owned by the ``AgentRuntime`` for the current
+``handle_message`` invocation. The runtime flushes that same dict to a
+single file across the life of the dispatch (incrementally updated as
+each LLM round-trip finishes), so a crash mid-run leaves a partial-but-
+complete-on-prefix trace on disk.
 
-- ``llm_call_index``: sequential call number within this agent session
-- ``input_messages``: the FULL messages array sent to the LLM API
-- ``output_message``: the LLM's response (including tool_calls)
-- ``token_usage``: prompt/completion/total tokens (if returned)
-- ``tool_calls``: extracted from the AIMessage (if any)
-- ``duration_ms``: wall-clock time of the LLM call
-
-This is complementary to the per-handle_message trace that
-``AgentRuntime._write_trace`` already writes — that one captures the
-final message list after the deepagents agent loop; this one captures
-each individual LLM round-trip.
+It also detects deepagents' built-in ``write_todos`` tool calls and
+forwards the todos list to an optional ``on_todos_update`` callback so
+that the web UI can surface live task progress per dispatch.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -36,15 +32,27 @@ logger = get_logger(__name__)
 
 
 class TraceLLMCallback(BaseCallbackHandler):
-    """Write a trace file for every LLM API call."""
+    """Append every LLM round-trip to a shared trace record.
 
-    def __init__(self, trace_dir: str | Path, agent_name: str) -> None:
+    The ``AgentRuntime`` owns one ``trace_record`` dict per
+    ``handle_message`` call and passes it here. On each ``on_llm_end``
+    (or ``on_llm_error``) we append to ``trace_record["llm_calls"]``
+    and flush the whole record to ``trace_path``.
+    """
+
+    def __init__(
+        self,
+        *,
+        trace_record: dict[str, Any],
+        trace_path: Path | None,
+        lock: threading.Lock,
+        on_todos_update: Callable[[list[dict[str, Any]]], None] | None = None,
+    ) -> None:
         super().__init__()
-        self._trace_dir = Path(trace_dir)
-        self._trace_dir.mkdir(parents=True, exist_ok=True)
-        self._agent_name = agent_name
-        self._call_index = 0
-        # Pending state keyed by run_id
+        self._record = trace_record
+        self._path = trace_path
+        self._lock = lock
+        self._on_todos_update = on_todos_update
         self._pending: dict[UUID, dict[str, Any]] = {}
 
     # -- LLM start: capture the full input messages -------------------------
@@ -58,14 +66,12 @@ class TraceLLMCallback(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        self._call_index += 1
         self._pending[run_id] = {
-            "call_index": self._call_index,
             "start_time": time.monotonic(),
             "input_messages": _dump_message_lists(messages),
         }
 
-    # -- LLM end: capture the output and write the trace --------------------
+    # -- LLM end: append the output to the shared record --------------------
 
     def on_llm_end(
         self,
@@ -82,25 +88,19 @@ class TraceLLMCallback(BaseCallbackHandler):
         duration_ms = int((time.monotonic() - pending["start_time"]) * 1000)
         output = _dump_llm_result(response)
 
-        trace: dict[str, Any] = {
-            "agent": self._agent_name,
-            "llm_call_index": pending["call_index"],
+        entry: dict[str, Any] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "duration_ms": duration_ms,
             "input_messages": pending["input_messages"],
             "output": output,
         }
 
-        try:
-            ts = trace["timestamp"].replace(":", "-").split(".")[0]
-            filename = f"{self._agent_name}_llm_{pending['call_index']:03d}_{ts}.json"
-            path = self._trace_dir / filename
-            path.write_text(
-                json.dumps(trace, ensure_ascii=False, indent=2, default=str),
-                encoding="utf-8",
-            )
-        except Exception as exc:
-            logger.debug("Failed to write LLM trace: %s", exc)
+        with self._lock:
+            calls = self._record.setdefault("llm_calls", [])
+            entry["index"] = len(calls) + 1
+            calls.append(entry)
+            self._record["llm_call_count"] = len(calls)
+            _flush(self._path, self._record)
 
     # -- LLM error ----------------------------------------------------------
 
@@ -117,27 +117,22 @@ class TraceLLMCallback(BaseCallbackHandler):
             return
 
         duration_ms = int((time.monotonic() - pending["start_time"]) * 1000)
-        trace: dict[str, Any] = {
-            "agent": self._agent_name,
-            "llm_call_index": pending["call_index"],
+        entry: dict[str, Any] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "duration_ms": duration_ms,
             "input_messages": pending["input_messages"],
             "error": str(error),
+            "error_type": type(error).__name__,
         }
 
-        try:
-            ts = trace["timestamp"].replace(":", "-").split(".")[0]
-            filename = f"{self._agent_name}_llm_{pending['call_index']:03d}_ERROR_{ts}.json"
-            path = self._trace_dir / filename
-            path.write_text(
-                json.dumps(trace, ensure_ascii=False, indent=2, default=str),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
+        with self._lock:
+            calls = self._record.setdefault("llm_calls", [])
+            entry["index"] = len(calls) + 1
+            calls.append(entry)
+            self._record["llm_call_count"] = len(calls)
+            _flush(self._path, self._record)
 
-    # -- Tool callbacks (optional, for completeness) -------------------------
+    # -- Tool callbacks -----------------------------------------------------
 
     def on_tool_start(
         self,
@@ -149,19 +144,60 @@ class TraceLLMCallback(BaseCallbackHandler):
         inputs: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        # Tool traces are captured in the per-message trace.
-        # No separate file needed.
-        pass
+        if self._on_todos_update is None:
+            return
+        name = ""
+        if isinstance(serialized, dict):
+            name = serialized.get("name") or ""
+        if name != "write_todos":
+            return
+        todos = _extract_todos(inputs, input_str)
+        if todos is None:
+            return
+        try:
+            self._on_todos_update(todos)
+        except Exception as exc:  # pragma: no cover - never let UI plumbing crash the agent
+            logger.debug("on_todos_update callback failed: %s", exc)
 
-    def on_tool_end(
-        self,
-        output: Any,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        **kwargs: Any,
-    ) -> None:
-        pass
+
+# -- Module-level helpers ---------------------------------------------------
+
+
+def _flush(path: Path | None, record: dict[str, Any]) -> None:
+    if path is None:
+        return
+    try:
+        path.write_text(
+            json.dumps(record, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # pragma: no cover - best-effort logging
+        logger.debug("Failed to flush trace: %s", exc)
+
+
+def _extract_todos(inputs: dict[str, Any] | None, input_str: str) -> list[dict[str, Any]] | None:
+    """Pull the todos list out of a ``write_todos`` tool invocation.
+
+    deepagents' ``write_todos`` takes one argument: ``todos`` (list of
+    ``{content, status, activeForm}``). Older or alternate integrations
+    may pass it as a JSON string, so fall back to parsing ``input_str``.
+    """
+    if isinstance(inputs, dict):
+        todos = inputs.get("todos")
+        if isinstance(todos, list):
+            return _safe(todos)
+    if isinstance(input_str, str) and input_str.strip():
+        try:
+            parsed = json.loads(input_str)
+        except Exception:
+            return None
+        if isinstance(parsed, list):
+            return _safe(parsed)
+        if isinstance(parsed, dict):
+            todos = parsed.get("todos")
+            if isinstance(todos, list):
+                return _safe(todos)
+    return None
 
 
 # -- Serialization helpers --------------------------------------------------

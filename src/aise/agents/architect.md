@@ -35,16 +35,18 @@ do not stop at 3 out of 8.
 
 Your deliverables must contain:
 - Module decomposition with responsibilities and dependencies
-- Interface definitions: for EVERY module, list ALL public methods with signatures
-- Data models/schemas for every entity
+- Interface definitions: for EVERY module, list ALL public methods with signatures, parameters, return types, and behavior descriptions
+- Data models/schemas for every entity with field types and constraints
 - Module dependency graph (which module imports which)
+- Component interaction flows with detailed step-by-step descriptions
 - Technology choices with justifications
 
-Keep each section **concise but complete**:
-- Module description: 3-5 bullet points per module
-- API definition: method signature + one-line description per method
-- Data model: field list, no verbose prose
-- Do NOT write full implementation code or runnable source files
+You MUST NOT include:
+- Complete implementation code (no full class bodies, no full function implementations)
+- Runnable source files
+- Package boilerplate (setup.py, package.json, etc.)
+
+If you need to illustrate a design point, use pseudocode snippets or interface/type definitions.
 
 ## Skills
 

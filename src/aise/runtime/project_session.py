@@ -288,7 +288,7 @@ class ProjectSession:
             backend=backend,
             trace_dir=trace_dir,
             checkpointer=MemorySaver(),
-            max_iterations=200,
+            max_iterations=240,
         )
         rt.evoke()
         logger.info(
@@ -428,34 +428,29 @@ class ProjectSession:
             (
                 "architecture",
                 f"Project requirement: {requirement}\n\n"
-                "Execute Phase 2 — Architecture (two steps):\n\n"
-                "Step 1: dispatch_task to architect with task:\n"
-                "'Read docs/requirement.md. Write docs/architecture.md with these sections:\n"
-                "1. System Overview\n"
-                "2. Module Decomposition (name, responsibilities, dependencies for EACH module)\n"
-                "3. Data Models (fields for every entity)\n"
-                "4. Module Dependency graph\n"
-                "Keep it concise — bullet points, not prose. Stop after section 4.'\n\n"
-                "Step 2: after step 1 completes, dispatch_task to architect again with task:\n"
-                "'Read docs/architecture.md. APPEND the following sections to it:\n"
-                "5. Component Interactions (how modules communicate)\n"
-                "6. Technology Stack\n"
-                "7. Configuration Schema (all config files)\n"
-                "8. Interface/API Definitions — list ALL public methods for EVERY module.\n"
-                "Use edit_file or write_file to update docs/architecture.md.'\n\n"
-                "After both steps complete, STOP.\n"
+                "Execute Phase 2 — Architecture:\n"
+                "dispatch_task to architect to read docs/requirement.md and write docs/architecture.md.\n"
+                "After it completes, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
             (
                 "implementation",
                 f"Project requirement: {requirement}\n\n"
-                "Execute Phase 3 — Implementation:\n"
+                "Execute Phase 3 — Implementation (TDD, per-module):\n"
                 "1. Read docs/architecture.md to identify all modules.\n"
                 "2. For EACH module, dispatch developer using dispatch_tasks_parallel.\n"
-                "   Include the architecture spec in each task description.\n"
-                "3. After all dispatches return, run: execute_shell('python -m pytest tests/ -q --tb=short')\n"
-                "4. If tests fail, dispatch developer to fix, then re-run pytest.\n"
-                "5. STOP when tests pass (or after 3 fix attempts).\n"
+                "   In each task description, include the architecture spec AND\n"
+                "   explicitly instruct the developer to follow strict TDD:\n"
+                "   first write tests/test_<module>.py, then src/<module>.py,\n"
+                "   then run ONLY that module's test file with\n"
+                "   execute(command=\"python -m pytest tests/test_<module>.py -q --tb=short\")\n"
+                "   and iterate (up to 3 attempts) until that module's tests pass.\n"
+                "3. Do NOT run the full pytest suite yourself — developers run\n"
+                "   their own per-module tests, and the QA engineer will run\n"
+                "   the full suite in Phase 5. Running full pytest here while\n"
+                "   parallel developer dispatches are still writing files\n"
+                "   causes races and noisy failures.\n"
+                "4. When all dispatches return, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
             (
@@ -467,17 +462,25 @@ class ProjectSession:
                 "what modules exist, then create a real game loop that initializes all modules "
                 "(Snake, Food, Engine, GameState, Scoring, etc.), runs an update loop with "
                 "collision detection, food spawning, and score tracking. This must be a REAL "
-                "working game, not just print statements. Also write tests/test_main.py.'\n"
-                "After it completes, run: execute_shell('python -m pytest tests/ -q --tb=short')\n"
+                "working game, not just print statements. Also write tests/test_main.py and "
+                "verify with execute(command=\"python -m pytest tests/test_main.py -q --tb=short\") "
+                "— do NOT run the full suite; QA handles that in Phase 5.'\n"
+                "After the dispatch returns, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
             (
                 "qa_testing",
                 f"Project requirement: {requirement}\n\n"
-                "Execute Phase 5 — Integration Testing:\n"
-                "dispatch_task to qa_engineer to read src/ and tests/, then write "
-                "tests/test_integration.py covering cross-module interactions.\n"
-                "After it completes, run: execute_shell('python -m pytest tests/ -q --tb=short')\n"
+                "Execute Phase 5 — Integration Testing (QA runs the suite):\n"
+                "dispatch_task to qa_engineer with this task:\n"
+                "'Write tests/test_integration.py ONLY — integration tests for\n"
+                "cross-module interactions and end-to-end flows. Do NOT write\n"
+                "per-module unit tests (developer already did that in Phase 3).\n"
+                "After writing, RUN the full suite yourself with\n"
+                "execute(command=\"python -m pytest tests/ -q --tb=short\")\n"
+                "and iterate up to 3 times until tests pass. Report the final\n"
+                "pytest result in your response.'\n"
+                "After it completes, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
             (
