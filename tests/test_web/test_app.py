@@ -255,6 +255,45 @@ class TestWebPersistence:
         assert len(project_payload["requirements"]) == 1
         assert len(project_payload["runs"]) == 1
 
+    def test_zombie_running_run_is_reaped_on_startup(self, monkeypatch, tmp_path):
+        """Runs stored as running/pending when the server starts have no live
+        worker thread (``_active_workflow_runs`` is not persisted). Without
+        reaping, the dashboard and run-detail UI poll forever. Regression
+        guard for zombie runs left over from server crash/restart."""
+        import json
+
+        monkeypatch.chdir(tmp_path)
+
+        # Seed a service with one legitimate completed run
+        service = WebProjectService()
+        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result)
+        project_id = service.create_project("ZombieHost", "local")
+        service.run_requirement(project_id, "req")
+
+        # Manually corrupt the persisted state to simulate a crash while
+        # running: flip the run status to "running" and clear completed_at.
+        state_path = Path("projects/web_state.json")
+        data = json.loads(state_path.read_text())
+        run = data["runs_by_project"][project_id][0]
+        run["status"] = "running"
+        run["completed_at"] = None
+        run["error"] = ""
+        state_path.write_text(json.dumps(data))
+
+        # Reload — reaper should fire
+        reloaded = WebProjectService()
+        payload = reloaded.get_project(project_id)
+        assert payload is not None
+        r = payload["runs"][0]
+        assert r["status"] == "failed"
+        assert "interrupted" in (r.get("error") or "").lower()
+        assert r.get("completed_at"), "reaped run should have a completed_at"
+
+        # Persisted state should reflect the reap so the next restart doesn't
+        # have to redo the work.
+        data2 = json.loads(state_path.read_text())
+        assert data2["runs_by_project"][project_id][0]["status"] == "failed"
+
 
 class TestWebTaskStatusInference:
     def test_runtime_running_status_is_not_downgraded_to_pending(self):

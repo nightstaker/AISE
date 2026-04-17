@@ -96,6 +96,17 @@ class WebProjectService:
     def list_projects(self) -> list[dict[str, Any]]:
         with self._lock:
             infos = self.project_manager.get_all_projects_info()
+            # Project-lifecycle ``status`` (active/paused/completed/archived)
+            # is NOT the same as "a workflow is currently running". Expose an
+            # explicit ``has_active_run`` flag so the dashboard can render an
+            # honest badge instead of painting every non-archived project as
+            # "running".
+            active_project_ids = {pid for (pid, _run_id) in self._active_workflow_runs}
+            for info in infos:
+                pid = info.get("project_id")
+                runs = self._runs_by_project.get(pid, [])
+                info["has_active_run"] = pid in active_project_ids
+                info["latest_run_status"] = runs[-1].status if runs else None
             infos.sort(key=lambda item: item["updated_at"], reverse=True)
             return infos
 
@@ -591,6 +602,7 @@ class WebProjectService:
         if not isinstance(data, dict):
             return
 
+        reaped_any = False
         runs_data = data.get("runs_by_project", {})
         if isinstance(runs_data, dict):
             for project_id, runs in runs_data.items():
@@ -611,14 +623,40 @@ class WebProjectService:
                             completed = datetime.fromisoformat(completed_at)
                         except Exception:
                             pass
+                    raw_status = str(item.get("status", "completed"))
+                    raw_error = str(item.get("error", ""))
+                    # Reap zombie runs: any run stored as pending/running when
+                    # this process starts has no live worker thread (we never
+                    # persist _active_workflow_runs). Without this, the
+                    # run-detail UI polls forever and the dashboard keeps the
+                    # project in a misleading in-progress state. Mark them as
+                    # ``failed`` with a clear "interrupted" message so the UI
+                    # reaches a terminal state and the user can decide whether
+                    # to re-run.
+                    if raw_status in ("pending", "running"):
+                        logger.warning(
+                            "Reaping zombie run: project=%s run=%s prior_status=%s",
+                            project_id,
+                            str(item.get("run_id", "")),
+                            raw_status,
+                        )
+                        raw_status = "failed"
+                        raw_error = raw_error or (
+                            "interrupted: web server restarted while this run "
+                            "was in progress; no worker thread remained to "
+                            "advance it. Re-run to retry."
+                        )
+                        if completed is None:
+                            completed = datetime.now(timezone.utc)
+                        reaped_any = True
                     self._runs_by_project[project_id].append(
                         WorkflowRun(
                             run_id=str(item.get("run_id", "")),
                             requirement_text=str(item.get("requirement_text", "")),
                             started_at=started,
-                            status=str(item.get("status", "completed")),
+                            status=raw_status,
                             completed_at=completed,
-                            error=str(item.get("error", "")),
+                            error=raw_error,
                             result=str(item.get("result", "")),
                             task_log=list(item.get("task_log", [])),
                         )
@@ -663,6 +701,14 @@ class WebProjectService:
                         project.updated_at = datetime.fromisoformat(info["updated_at"])
                 except Exception:
                     pass
+
+        # Persist the reaped statuses so the next restart sees clean state
+        # instead of re-reaping the same runs.
+        if reaped_any:
+            try:
+                self._save_state()
+            except Exception as exc:
+                logger.debug("Failed to persist reaped state: %s", exc)
 
     def _save_state(self) -> None:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
