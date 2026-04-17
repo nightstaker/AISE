@@ -17,7 +17,7 @@ Usage::
 
 from __future__ import annotations
 
-import json
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,7 +68,7 @@ class AgentRuntime:
         trace_dir: str | Path | None = None,
         url: str = "",
         checkpointer: Any = None,
-        max_iterations: int = 80,
+        max_iterations: int = 240,
     ) -> None:
         if create_deep_agent is None:
             raise RuntimeError(
@@ -198,20 +198,30 @@ class AgentRuntime:
 
     # -- Message handling ----------------------------------------------------
 
-    def handle_message(self, content: str, *, thread_id: str | None = None) -> str:
+    def handle_message(
+        self,
+        content: str,
+        *,
+        thread_id: str | None = None,
+        on_todos_update: Any = None,
+    ) -> str:
         """Process an incoming text message and return the agent's response.
 
         The agent must be in ACTIVE state. The message is passed to the
         deepagents runtime which autonomously invokes the LLM and any
         registered tools to produce a response.
 
-        A full trace (input, raw result, extracted response) is written
-        to ``trace_dir`` when configured.
+        A single trace file per dispatch is written into ``trace_dir``
+        when configured. The file is updated in-place after every LLM
+        round-trip so a crash mid-run still leaves a prefix trace on disk.
 
         Args:
             content: The input message text.
             thread_id: Optional conversation thread ID for stateful interactions.
                 Requires a checkpointer to be configured.
+            on_todos_update: Optional callback ``(list[dict]) -> None`` fired
+                whenever the agent invokes deepagents' ``write_todos`` tool.
+                Used by the web UI to surface live progress.
 
         Returns:
             The agent's text response.
@@ -241,18 +251,48 @@ class AgentRuntime:
         if thread_id:
             config["configurable"] = {"thread_id": thread_id}
 
-        # Attach per-call LLM trace callback when trace_dir is configured.
-        # This records every individual LLM round-trip (input messages +
-        # output message) as a separate JSON file, so we can see exactly
-        # what the LLM received and returned at each step.
+        # Build the shared trace record for this dispatch. All LLM round-
+        # trips append to the same record and flush to the same file, so
+        # there is exactly ONE trace file per handle_message call.
+        started_at = datetime.now(timezone.utc).isoformat()
+        trace_record: dict[str, Any] = {
+            "call_id": call_id,
+            "agent": self.name,
+            "agent_id": self._id,
+            "started_at": started_at,
+            "input": content,
+            "input_length": len(content),
+            "status": "running",
+            "llm_calls": [],
+            "llm_call_count": 0,
+        }
+        trace_path: Path | None = None
+        trace_lock = threading.Lock()
         if self._trace_dir:
+            from .trace_callback import TraceLLMCallback, _flush
+
+            ts_file = started_at.replace(":", "-").split(".")[0]
+            trace_path = self._trace_dir / f"{self.name}_{call_id}_{ts_file}.json"
+            _flush(trace_path, trace_record)
+
+            llm_tracer = TraceLLMCallback(
+                trace_record=trace_record,
+                trace_path=trace_path,
+                lock=trace_lock,
+                on_todos_update=on_todos_update,
+            )
+            config.setdefault("callbacks", []).append(llm_tracer)
+        elif on_todos_update is not None:
+            # No trace_dir but still want live todos — attach a lightweight
+            # callback whose only job is to forward ``write_todos`` invocations.
             from .trace_callback import TraceLLMCallback
 
             llm_tracer = TraceLLMCallback(
-                trace_dir=self._trace_dir,
-                agent_name=self.name,
+                trace_record=trace_record,
+                trace_path=None,
+                lock=trace_lock,
+                on_todos_update=on_todos_update,
             )
-            llm_tracer._call_index = (self._call_seq - 1) * 100  # namespace per handle_message
             config.setdefault("callbacks", []).append(llm_tracer)
 
         # Override deepagents' default recursion_limit (1000) with a
@@ -266,8 +306,19 @@ class AgentRuntime:
             )
             response = _extract_response(result)
 
-            # Write trace
-            self._write_trace(call_id, content, result, response)
+            with trace_lock:
+                trace_record["status"] = "completed"
+                trace_record["completed_at"] = datetime.now(timezone.utc).isoformat()
+                trace_record["response"] = response
+                trace_record["response_length"] = len(response)
+                trace_record["empty_response"] = not response.strip()
+                messages_dump = _dump_messages(result)
+                trace_record["messages_count"] = len(messages_dump)
+                trace_record["messages"] = messages_dump
+                if trace_path is not None:
+                    from .trace_callback import _flush
+
+                    _flush(trace_path, trace_record)
 
             # Detailed diagnostics on empty response
             if not response.strip():
@@ -294,50 +345,20 @@ class AgentRuntime:
                 call_id,
                 exc,
             )
+            with trace_lock:
+                trace_record["status"] = "failed"
+                trace_record["completed_at"] = datetime.now(timezone.utc).isoformat()
+                trace_record["error"] = str(exc)
+                trace_record["error_type"] = type(exc).__name__
+                if trace_path is not None:
+                    from .trace_callback import _flush
+
+                    _flush(trace_path, trace_record)
             raise
         finally:
             # Back to ACTIVE (ready for next message). Clear the task.
             self._state = AgentState.ACTIVE
             self._current_task = None
-
-    def _write_trace(
-        self,
-        call_id: str,
-        input_text: str,
-        raw_result: Any,
-        response: str,
-    ) -> None:
-        """Write a JSON trace file for this LLM call.
-
-        Records the FULL input, output, and every intermediate message
-        (including complete tool_call arguments and tool results) so that
-        traces can be used to diagnose issues without reproducing the run.
-        """
-        if not self._trace_dir:
-            return
-        try:
-            ts = datetime.now(timezone.utc).isoformat()
-            messages_dump = _dump_messages(raw_result)
-            trace = {
-                "call_id": call_id,
-                "agent": self.name,
-                "timestamp": ts,
-                "input": input_text,
-                "input_length": len(input_text),
-                "response": response,
-                "response_length": len(response),
-                "empty_response": not response.strip(),
-                "messages_count": len(messages_dump),
-                "messages": messages_dump,
-            }
-            filename = f"{self.name}_{call_id}_{ts.replace(':', '-').split('.')[0]}.json"
-            path = self._trace_dir / filename
-            path.write_text(
-                json.dumps(trace, ensure_ascii=False, indent=2, default=str),
-                encoding="utf-8",
-            )
-        except Exception as exc:
-            logger.debug("Failed to write trace: %s", exc)
 
     def get_agent_card_dict(self) -> dict[str, Any]:
         """Return the agent card as a JSON-serializable dict."""

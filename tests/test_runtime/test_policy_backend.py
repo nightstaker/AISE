@@ -65,14 +65,13 @@ class TestWrite:
         assert result.error is None
         assert (project_root / "src" / "main.py").read_text() == "print('hello')"
 
-    def test_write_blocks_second_write_to_same_path(self, backend, project_root):
-        """First write succeeds, second to same path is blocked."""
+    def test_write_overwrites_existing(self, backend, project_root):
+        """Writing to an existing file overwrites it."""
         r1 = backend.write("/src/main.py", "v1")
         assert r1.error is None
-        assert (project_root / "src" / "main.py").read_text() == "v1"
         r2 = backend.write("/src/main.py", "v2")
-        assert r2.error is not None
-        assert "already written" in r2.error
+        assert r2.error is None
+        assert (project_root / "src" / "main.py").read_text() == "v2"
 
     def test_write_allows_different_paths(self, backend, project_root):
         """Different files can each be written once."""
@@ -80,6 +79,65 @@ class TestWrite:
         r2 = backend.write("/src/b.py", "b")
         assert r1.error is None
         assert r2.error is None
+
+    def test_write_identical_content_is_success(self, backend, project_root):
+        """Identical-content writes are a no-op but return success.
+
+        Regression guard: previously this returned an error, which caused
+        the LLM to retry the same write repeatedly and blow through the
+        recursion_limit. The file is already in the target state — that
+        is success, not failure.
+        """
+        r1 = backend.write("/src/main.py", "same")
+        r2 = backend.write("/src/main.py", "same")
+        assert r1.error is None
+        assert r2.error is None
+        assert r2.path is not None
+
+    def test_write_identical_content_does_not_loop(self, backend, project_root):
+        """First few identical writes are benign; a pathological streak is flagged.
+
+        Regression guard for task 322d57c7d8 (2026-04-16): the developer
+        LLM spammed write_file 25× with identical content on pyproject.toml
+        and drove recursion_limit to 160 despite every call returning
+        success. After 3 consecutive identical no-ops we now return a
+        LOOP_DETECTED error so the pathology is visible and bounded.
+        """
+        backend.write("/src/main.py", "same")
+        r1 = backend.write("/src/main.py", "same")
+        assert r1.error is None  # 1st repeat — benign
+        r2 = backend.write("/src/main.py", "same")
+        assert r2.error is None  # 2nd repeat — benign
+        r3 = backend.write("/src/main.py", "same")
+        assert r3.error is not None
+        assert "LOOP_DETECTED" in r3.error
+
+    def test_write_streak_resets_on_real_change(self, backend, project_root):
+        """A genuine content change resets the no-op streak counter."""
+        backend.write("/src/main.py", "v1")
+        backend.write("/src/main.py", "v1")  # 1st repeat
+        backend.write("/src/main.py", "v1")  # 2nd repeat
+        backend.write("/src/main.py", "v2")  # real change resets counter
+        # Now two more "v2" repeats should still be benign
+        assert backend.write("/src/main.py", "v2").error is None
+        assert backend.write("/src/main.py", "v2").error is None
+
+    def test_write_streak_resets_on_different_path(self, backend, project_root):
+        """Writing to a different path resets the streak."""
+        backend.write("/src/a.py", "same")
+        backend.write("/src/a.py", "same")
+        backend.write("/src/a.py", "same")  # 3rd on /src/a.py — LOOP_DETECTED
+        # Different path — first repeat should be benign again
+        backend.write("/src/b.py", "same")
+        r = backend.write("/src/b.py", "same")
+        assert r.error is None
+
+    def test_write_allows_different_content(self, backend, project_root):
+        """Writing different content to an existing file succeeds."""
+        backend.write("/src/main.py", "v1")
+        r = backend.write("/src/main.py", "v2")
+        assert r.error is None
+        assert (project_root / "src" / "main.py").read_text() == "v2"
 
     def test_write_normalizes_absolute_host_path(self, backend, project_root):
         # Simulate LLM using absolute AISE repo path
@@ -121,6 +179,36 @@ class TestEdit:
     def test_edit_file_not_found(self, backend):
         result = backend.edit("/src/nonexistent.py", "x", "y")
         assert result.error is not None
+
+    def test_edit_identical_old_new_is_success(self, backend):
+        """old_string == new_string is a no-op and returns success.
+
+        Regression guard: this used to return an error, which the LLM
+        interpreted as "retry with the same args", driving a loop that
+        hit the recursion_limit (task 7347dccd29, 2026-04-16). Target
+        state is unchanged → that's success, not failure.
+        """
+        backend.write("/src/calc.py", "x = 1")
+        result = backend.edit("/src/calc.py", "x = 1", "x = 1")
+        assert result.error is None
+        assert result.path is not None
+        assert result.occurrences == 0
+
+    def test_edit_identical_old_new_streak_trips_loop_detector(self, backend):
+        """3 consecutive no-op edits trip LOOP_DETECTED (same pathology as write)."""
+        backend.write("/src/calc.py", "x = 1")
+        assert backend.edit("/src/calc.py", "x = 1", "x = 1").error is None
+        assert backend.edit("/src/calc.py", "x = 1", "x = 1").error is None
+        r = backend.edit("/src/calc.py", "x = 1", "x = 1")
+        assert r.error is not None
+        assert "LOOP_DETECTED" in r.error
+
+    def test_edit_old_string_not_found_guides_to_write(self, backend):
+        """When old_string doesn't match, guide LLM to use write_file."""
+        backend.write("/src/calc.py", "actual content here")
+        result = backend.edit("/src/calc.py", "this does not exist", "new content")
+        assert result.error is not None
+        assert "write_file" in result.error
 
 
 # -- ls_info ---------------------------------------------------------------

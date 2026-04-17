@@ -1399,6 +1399,23 @@ tr:hover td {
 .run-log-response.log-failed { border-left: 3px solid var(--error); }
 .run-log-response.log-failed .run-log-status-tag { background: var(--error-light); color: var(--error); }
 
+/* ── Per-task todos progress strip ── */
+.run-log-todos { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--surface-muted, rgba(120, 130, 160, 0.08)); border: 1px solid var(--line-light); }
+.run-log-todos-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 12px; }
+.run-log-todos-title { font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
+.run-log-todos-progress { font-variant-numeric: tabular-nums; color: var(--muted); }
+.run-log-todos-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.run-log-todo-item { display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 1.4; }
+.run-log-todo-marker { display: inline-flex; width: 18px; justify-content: center; font-weight: 700; }
+.run-log-todo-text { flex: 1; }
+.run-log-todo-status { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.run-log-todo-completed .run-log-todo-marker { color: var(--success); }
+.run-log-todo-completed .run-log-todo-text { color: var(--muted); text-decoration: line-through; }
+.run-log-todo-in_progress .run-log-todo-marker { color: var(--running); animation: run-log-todo-pulse 1.4s ease-in-out infinite; }
+.run-log-todo-in_progress .run-log-todo-text { font-weight: 600; }
+.run-log-todo-pending .run-log-todo-marker { color: var(--line-strong, #9aa3b2); }
+@keyframes run-log-todo-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
 /* Clickable card */
 .monitor-agent-card-clickable {
   cursor: pointer;

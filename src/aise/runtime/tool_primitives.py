@@ -88,10 +88,43 @@ class ToolContext:
     event_lock: threading.Lock = field(default_factory=threading.Lock)
     runtime_resolver: Callable[[str, Any], Any] | None = None
     processes_dir: Path | None = None
+    # Dedup caches: the orchestrator fires a ``stage_update`` before every
+    # dispatch even when the stage has not actually changed (parallel
+    # developer dispatches all emit "implementation started"), and weak
+    # local LLMs spam ``write_todos`` with unchanged todo lists — both
+    # make the run log visually incoherent. We suppress consecutive
+    # duplicates at emit-time.
+    _last_stage: str | None = field(default=None, repr=False, compare=False)
+    _last_todos_by_task: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
 
     def emit(self, event: dict[str, Any]) -> None:
-        """Thread-safe event recording + callback dispatch."""
+        """Thread-safe event recording + callback dispatch.
+
+        Suppresses two classes of redundant events that pollute the UI:
+        - ``stage_update`` with the same ``stage`` as the previous one
+          (typical during parallel dispatch within one phase).
+        - ``todos_update`` whose ``todos`` list is byte-identical to the
+          previous one for the same ``taskId`` (LLM write_todos spam).
+        """
+        et = event.get("type")
         with self.event_lock:
+            if et == "stage_update":
+                stage = event.get("stage")
+                if stage is not None and stage == self._last_stage:
+                    return
+                self._last_stage = stage
+            elif et == "todos_update":
+                tid = event.get("taskId")
+                if tid is not None:
+                    import json as _json
+
+                    try:
+                        sig = _json.dumps(event.get("todos"), sort_keys=True, ensure_ascii=False)
+                    except Exception:
+                        sig = repr(event.get("todos"))
+                    if self._last_todos_by_task.get(tid) == sig:
+                        return
+                    self._last_todos_by_task[tid] = sig
             self.event_log.append(event)
         if self.on_event is not None:
             try:
@@ -273,7 +306,22 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
         try:
             resolver = ctx.runtime_resolver
             dispatch_rt = resolver(agent_name, rt) if resolver is not None else rt
-            result = dispatch_rt.handle_message(task_description)
+
+            def _on_todos_update(todos: list[dict[str, Any]]) -> None:
+                ctx.emit(
+                    {
+                        "type": "todos_update",
+                        "taskId": task_id,
+                        "agent": agent_name,
+                        "timestamp": _now(),
+                        "todos": todos,
+                    }
+                )
+
+            result = dispatch_rt.handle_message(
+                task_description,
+                on_todos_update=_on_todos_update,
+            )
             output_len = len(result)
             preview = result[:500] + "..." if output_len > 500 else result
             response_msg = {

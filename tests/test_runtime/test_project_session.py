@@ -139,8 +139,8 @@ class TestProjectSessionTools:
 
 class TestProjectSessionRun:
     def test_run_calls_pm_runtime(self, session):
-        # Simulate a complete workflow: orchestrator does some work, then
-        # explicitly signals completion via the new mark_complete primitive.
+        # Simulate a phased workflow. mark_complete is only honored in the
+        # last phase, so we call it on the 6th invocation (the delivery phase).
         call_count = [0]
         report = (
             "Project delivery report: all phases completed successfully. "
@@ -149,31 +149,17 @@ class TestProjectSessionRun:
 
         def mock_handle(msg, **kwargs):
             call_count[0] += 1
-            if call_count[0] == 1:
-                # Inject some plausible events into the shared log
-                session._task_log.extend(
-                    [
-                        {"type": "stage_update", "stage": "design"},
-                        {"type": "task_request", "to": "architect", "payload": {"task": "design"}},
-                        {
-                            "type": "task_response",
-                            "from": "architect",
-                            "status": "completed",
-                            "payload": {"output": "done"},
-                        },
-                    ]
-                )
-                # Call the real mark_complete tool to set the workflow_state
+            # On the LAST phase (delivery), call mark_complete
+            if call_count[0] == 6:
                 tools = session._make_tools()
                 mark = next(t for t in tools if t.name == "mark_complete")
                 mark.invoke({"report": report})
-                return "Tool call succeeded."
-            return ""
+                return "Delivery report written."
+            return "Phase done."
 
         session._pm_runtime.handle_message.side_effect = mock_handle
 
         result = session.run("Build a REST API")
-        # mark_complete sets workflow_state.is_complete and the session
-        # returns the final_report stored on the workflow state.
         assert "delivery report" in result.lower()
-        assert call_count[0] == 1
+        # 6 phases should have been invoked
+        assert call_count[0] == 6

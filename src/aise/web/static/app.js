@@ -190,19 +190,27 @@ function setupDashboardReact() {
       });
     }
 
-    function statusBadge(status) {
-      if (status === "completed" || status === "success") return h("span", { className: "status-badge status-success" }, "✓ 成功");
-      if (status === "running" || status === "in_progress") return h("span", { className: "status-badge status-running" }, "◉ 运行中");
-      if (status === "active") return h("span", { className: "status-badge status-running" }, "● 进行中");
-      if (status === "failed" || status === "error") return h("span", { className: "status-badge status-failed" }, "✕ 失败");
-      if (status === "paused") return h("span", { className: "status-badge status-pending" }, "⏸ 暂停");
-      if (status === "archived") return h("span", { className: "status-badge status-pending" }, "▣ 归档");
-      return h("span", { className: "status-badge status-pending" }, "◎ 等待中");
+    // Project card badge: prefer workflow-run state (has_active_run +
+    // latest_run_status) over the project-lifecycle status. The lifecycle
+    // ``active`` just means "not paused/archived", which is the default for
+    // every project — rendering that as "in progress" made every card look busy.
+    function projectBadge(project) {
+      if (project && project.has_active_run) {
+        return h("span", { className: "status-badge status-running" }, "◉ 运行中");
+      }
+      const latest = project ? project.latest_run_status : null;
+      if (latest === "completed" || latest === "success") return h("span", { className: "status-badge status-success" }, "✓ 成功");
+      if (latest === "failed" || latest === "error") return h("span", { className: "status-badge status-failed" }, "✕ 失败");
+      const lifecycle = project ? project.status : null;
+      if (lifecycle === "paused") return h("span", { className: "status-badge status-pending" }, "⏸ 暂停");
+      if (lifecycle === "archived") return h("span", { className: "status-badge status-pending" }, "▣ 归档");
+      if (lifecycle === "completed") return h("span", { className: "status-badge status-success" }, "✓ 已完成");
+      return h("span", { className: "status-badge status-pending" }, "○ 就绪");
     }
 
-    const runningCount = projects.filter((p) => p.status === "running" || p.status === "in_progress" || p.status === "active").length;
-    const successCount = projects.filter((p) => p.status === "completed" || p.status === "success").length;
-    const failedCount = projects.filter((p) => p.status === "failed" || p.status === "error").length;
+    const runningCount = projects.filter((p) => p.has_active_run).length;
+    const successCount = projects.filter((p) => (p.latest_run_status === "completed" || p.latest_run_status === "success") && !p.has_active_run).length;
+    const failedCount = projects.filter((p) => (p.latest_run_status === "failed" || p.latest_run_status === "error") && !p.has_active_run).length;
 
     const modal = showModal
       ? h(
@@ -324,7 +332,7 @@ function setupDashboardReact() {
                   "div",
                   { className: "project-card-header" },
                   h("h3", null, project.project_name),
-                  statusBadge(project.status)
+                  projectBadge(project)
                 ),
                 h(
                   "div",
@@ -697,6 +705,37 @@ function setupRunReact() {
     parallel_start: "≡",
   };
 
+  const TODO_STATUS_LABEL = {
+    pending: "待处理",
+    in_progress: "进行中",
+    completed: "已完成",
+  };
+
+  function TaskTodoProgress({ todos }) {
+    const h = window.React.createElement;
+    if (!Array.isArray(todos) || todos.length === 0) return null;
+    var total = todos.length;
+    var done = todos.filter((t) => t && t.status === "completed").length;
+    return h("div", { className: "run-log-todos" },
+      h("div", { className: "run-log-todos-header" },
+        h("span", { className: "run-log-todos-title" }, "任务步骤"),
+        h("span", { className: "run-log-todos-progress" }, done + " / " + total),
+      ),
+      h("ol", { className: "run-log-todos-list" },
+        todos.map((t, i) => {
+          var status = (t && t.status) || "pending";
+          var label = (t && (t.activeForm && status === "in_progress" ? t.activeForm : t.content)) || "";
+          var marker = status === "completed" ? "✓" : status === "in_progress" ? "●" : "○";
+          return h("li", { key: i, className: "run-log-todo-item run-log-todo-" + status },
+            h("span", { className: "run-log-todo-marker" }, marker),
+            h("span", { className: "run-log-todo-text" }, label),
+            h("span", { className: "run-log-todo-status" }, TODO_STATUS_LABEL[status] || status),
+          );
+        }),
+      ),
+    );
+  }
+
   function RunApp() {
     const h = window.React.createElement;
     const project = initial.project;
@@ -733,7 +772,69 @@ function setupRunReact() {
     const responses = taskLog.filter((e) => e.type === "task_response");
     const completed = responses.filter((e) => e.status === "completed").length;
     const failed = responses.filter((e) => e.status === "failed").length;
-    const filteredLog = stageFilter ? taskLog.filter((_, i) => evStages[i] === stageFilter) : taskLog;
+
+    // Build taskId → latest todos list. Each todos_update event carries
+    // the full todo list at the time the agent invoked write_todos, so
+    // the newest entry wins.
+    // Agents often call write_todos once at the start to plan and then
+    // never revisit it, so a task_response(completed) retroactively marks
+    // every remaining todo as done. Failed tasks keep their last snapshot
+    // so the user can see where the agent was when it died.
+    // Tasks that never called write_todos at all (common for small
+    // TDD modules) get a synthetic single-item list derived from the
+    // task's terminal status so the card still shows a progress cue.
+    const taskTodos = {};
+    const taskTerminalStatus = {};
+    const seenTaskIds = new Set();
+    const taskRequestPayload = {};
+    for (let i = 0; i < taskLog.length; i++) {
+      const ev = taskLog[i];
+      if (!ev || !ev.taskId) continue;
+      if (ev.type === "task_request") {
+        seenTaskIds.add(ev.taskId);
+        taskRequestPayload[ev.taskId] = ev.payload || {};
+      } else if (ev.type === "todos_update" && Array.isArray(ev.todos)) {
+        taskTodos[ev.taskId] = ev.todos;
+      } else if (ev.type === "task_response") {
+        seenTaskIds.add(ev.taskId);
+        taskTerminalStatus[ev.taskId] = ev.status;
+      }
+    }
+    for (const tid of Object.keys(taskTerminalStatus)) {
+      if (taskTerminalStatus[tid] !== "completed") continue;
+      const list = taskTodos[tid];
+      if (!Array.isArray(list)) continue;
+      taskTodos[tid] = list.map((t) => (t && t.status !== "completed")
+        ? Object.assign({}, t, { status: "completed" })
+        : t);
+    }
+    // Synthetic fallback: if a task has no todos_update at all, build a
+    // single-row list from its current state (in-progress / completed /
+    // failed). Keeps every task card visually uniform instead of some
+    // showing todos and some showing nothing.
+    for (const tid of seenTaskIds) {
+      if (Array.isArray(taskTodos[tid])) continue;
+      const term = taskTerminalStatus[tid];
+      const payload = taskRequestPayload[tid] || {};
+      const label = payload.step || (payload.task ? String(payload.task).split("\n")[0].slice(0, 60) : "任务");
+      let status = "in_progress";
+      if (term === "completed") status = "completed";
+      else if (term === "failed") status = "pending";
+      taskTodos[tid] = [{
+        content: label,
+        activeForm: label,
+        status: status,
+        synthetic: true,
+      }];
+    }
+    // Hide raw todos_update rows — they render inline under their task_request.
+    const visibleLog = taskLog.filter((e) => e.type !== "todos_update");
+    const visibleStages = taskLog
+      .map((_, i) => evStages[i])
+      .filter((_, i) => taskLog[i].type !== "todos_update");
+    const filteredLog = stageFilter
+      ? visibleLog.filter((_, i) => visibleStages[i] === stageFilter)
+      : visibleLog;
 
     const statusCls = runStatus === "completed" ? "run-status-completed"
       : runStatus === "failed" ? "run-status-failed"
@@ -786,7 +887,7 @@ function setupRunReact() {
         h("div", { className: "run-section-title" }, "A2A \u4efb\u52a1\u65e5\u5fd7 (" + filteredLog.length + (stageFilter ? " / " + taskLog.length : "") + ")"),
         filteredLog.length === 0
           ? h("div", { className: "run-log-empty" }, isRunning ? "\u7b49\u5f85\u4efb\u52a1\u6d3e\u53d1..." : "\u65e0\u4efb\u52a1\u65e5\u5fd7")
-          : h("div", { className: "run-task-log" }, filteredLog.map((ev, idx) => h(RunLogEntry, { key: idx, event: ev }))),
+          : h("div", { className: "run-task-log" }, filteredLog.map((ev, idx) => h(RunLogEntry, { key: idx, event: ev, taskTodos: taskTodos }))),
       ),
       run.result ? h("div", { className: "run-section" },
         h("div", { className: "run-section-title" }, "\u4ea4\u4ed8\u62a5\u544a"),
@@ -799,11 +900,12 @@ function setupRunReact() {
     );
   }
 
-  function RunLogEntry({ event }) {
+  function RunLogEntry({ event, taskTodos }) {
     const h = window.React.createElement;
     const [expanded, setExpanded] = window.React.useState(false);
     const ev = event;
     const ts = ev.timestamp ? formatLocalTime(ev.timestamp) : "";
+    const todosForTask = ev && ev.taskId && taskTodos ? taskTodos[ev.taskId] : null;
 
     if (ev.type === "stage_update") {
       return h("div", { className: "run-log-entry run-log-stage", onClick: function() { setExpanded(!expanded); } },
@@ -834,8 +936,8 @@ function setupRunReact() {
       var payload = ev.payload || {};
       var fullTask = payload.task || "";
       var preview = fullTask.length > 120 ? fullTask.substring(0, 120) + "..." : fullTask;
-      return h("div", { className: "run-log-entry run-log-request" + (expanded ? " run-log-expanded" : ""), onClick: function() { setExpanded(!expanded); } },
-        h("div", { className: "run-log-row" },
+      return h("div", { className: "run-log-entry run-log-request" + (expanded ? " run-log-expanded" : "") },
+        h("div", { className: "run-log-row", onClick: function() { setExpanded(!expanded); } },
           h("span", { className: "run-log-toggle" }, expanded ? "\u25bc" : "\u25b6"),
           h("span", { className: "run-log-icon" }, EVENT_ICONS.task_request),
           h("span", { className: "run-log-agent" }, ev.to),
@@ -843,6 +945,7 @@ function setupRunReact() {
           h("span", { className: "run-log-detail" }, expanded ? "" : preview),
           h("span", { className: "run-log-ts" }, ts),
         ),
+        todosForTask ? h(TaskTodoProgress, { todos: todosForTask }) : null,
         expanded ? h("div", { className: "run-log-body" },
           h("div", { className: "run-log-response-meta" },
             ev.taskId ? h("span", null, "Task: " + ev.taskId) : null,
