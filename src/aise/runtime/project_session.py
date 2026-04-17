@@ -443,7 +443,7 @@ class ProjectSession:
                 "   explicitly instruct the developer to follow strict TDD:\n"
                 "   first write tests/test_<module>.py, then src/<module>.py,\n"
                 "   then run ONLY that module's test file with\n"
-                "   execute(command=\"python -m pytest tests/test_<module>.py -q --tb=short\")\n"
+                '   execute(command="python -m pytest tests/test_<module>.py -q --tb=short")\n'
                 "   and iterate (up to 3 attempts) until that module's tests pass.\n"
                 "3. Do NOT run the full pytest suite yourself — developers run\n"
                 "   their own per-module tests, and the QA engineer will run\n"
@@ -463,7 +463,7 @@ class ProjectSession:
                 "(Snake, Food, Engine, GameState, Scoring, etc.), runs an update loop with "
                 "collision detection, food spawning, and score tracking. This must be a REAL "
                 "working game, not just print statements. Also write tests/test_main.py and "
-                "verify with execute(command=\"python -m pytest tests/test_main.py -q --tb=short\") "
+                'verify with execute(command="python -m pytest tests/test_main.py -q --tb=short") '
                 "— do NOT run the full suite; QA handles that in Phase 5.'\n"
                 "After the dispatch returns, STOP.\n"
                 "Do NOT call mark_complete.",
@@ -477,7 +477,7 @@ class ProjectSession:
                 "cross-module interactions and end-to-end flows. Do NOT write\n"
                 "per-module unit tests (developer already did that in Phase 3).\n"
                 "After writing, RUN the full suite yourself with\n"
-                "execute(command=\"python -m pytest tests/ -q --tb=short\")\n"
+                'execute(command="python -m pytest tests/ -q --tb=short")\n'
                 "and iterate up to 3 times until tests pass. Report the final\n"
                 "pytest result in your response.'\n"
                 "After it completes, STOP.\n"

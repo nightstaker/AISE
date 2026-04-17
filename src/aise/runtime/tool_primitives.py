@@ -117,6 +117,7 @@ class ToolContext:
                 tid = event.get("taskId")
                 if tid is not None:
                     import json as _json
+
                     try:
                         sig = _json.dumps(event.get("todos"), sort_keys=True, ensure_ascii=False)
                     except Exception:

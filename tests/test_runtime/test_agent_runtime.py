@@ -146,9 +146,7 @@ class TestAgentRuntimeTrace:
         import json
 
         _, mock_agent = mock_create_deep_agent
-        mock_agent.invoke.side_effect = RuntimeError(
-            "Recursion limit of 160 reached without hitting a stop condition."
-        )
+        mock_agent.invoke.side_effect = RuntimeError("Recursion limit of 160 reached without hitting a stop condition.")
 
         trace_dir = tmp_path / "trace"
         runtime = AgentRuntime(
