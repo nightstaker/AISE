@@ -54,35 +54,70 @@ def make_policy_backend(
 
     # -- Path normalization ------------------------------------------------
 
-    # Prefixes that the LLM might prepend. The project root itself
-    # (``/home/user/.../projects/project_3-snake``) and the AISE repo
-    # root (``/home/user/.../AISE``) are both common.
-    _strip_prefixes: list[str] = []
-    _strip_prefixes.append(root_str + "/")  # project root
-    _strip_prefixes.append(root_str)
-    # Also strip the AISE repo root (2 levels up from src/aise/runtime/)
-    aise_root = Path(__file__).resolve().parent.parent.parent.parent
-    aise_str = str(aise_root)
-    if aise_str != root_str:
-        _strip_prefixes.append(aise_str + "/")
-        _strip_prefixes.append(aise_str)
+    # Prefixes the LLM might prepend to reach files inside THIS project.
+    # We only strip the project root — absolute paths pointing outside
+    # the project (``/home/user/workspace/AISE/...``, ``/etc/...``, etc.)
+    # are rejected rather than silently remapped. An earlier version
+    # stripped the AISE repo root too, which let a confused PM write
+    # ``/home/user/.../AISE/src/aise/docs/requirement.md`` and have it
+    # land at ``projects/<proj>/src/aise/docs/requirement.md`` — wrong
+    # location, and the LLM had no way to notice the mistake because
+    # the write silently succeeded.
+    _project_strip_prefixes: tuple[str, ...] = (root_str + "/", root_str)
 
-    def _normalize(path: str) -> str:
-        """Strip absolute host prefixes, leaving a virtual-root-relative path.
+    # System paths we know a project write should never touch. Used to
+    # flag escape attempts when a path starts with ``/`` but does not
+    # point inside the project.
+    _ESCAPE_PREFIXES: tuple[str, ...] = (
+        "/home/",
+        "/opt/",
+        "/usr/",
+        "/etc/",
+        "/tmp/",
+        "/var/",
+        "/mnt/",
+        "/root/",
+        "/boot/",
+        "/dev/",
+        "/proc/",
+        "/sys/",
+    )
 
-        ``/home/user/workspace/AISE/src/foo.py`` → ``/src/foo.py``
-        ``/src/foo.py`` → ``/src/foo.py``  (already virtual)
-        ``src/foo.py`` → ``src/foo.py``    (already relative)
+    def _normalize(path: str) -> str | None:
+        """Return a virtual-root-relative path, or None if the path escapes.
+
+        - ``/<project_root>/src/foo.py`` → ``/src/foo.py``
+        - ``/src/foo.py`` (virtual) → ``/src/foo.py``
+        - ``src/foo.py`` (relative) → ``src/foo.py``
+        - ``/home/other/…`` → None  (reject: escapes project root)
         """
-        for prefix in _strip_prefixes:
+        for prefix in _project_strip_prefixes:
             if path.startswith(prefix):
                 remainder = path[len(prefix) :]
-                # Ensure it starts with / for virtual_mode consistency
                 normalized = "/" + remainder.lstrip("/") if remainder else "/"
                 if normalized != path:
                     logger.debug("Path normalized: %r → %r", path, normalized)
                 return normalized
+        # Relative path or already-virtual absolute path: pass through.
+        if not path.startswith("/"):
+            return path
+        # Absolute host path that isn't in the project. If it targets a
+        # known system directory, reject outright; otherwise trust the
+        # deepagents virtual_mode resolver (it will root under the
+        # project anyway, but at least non-system paths aren't escape
+        # attempts).
+        if path.startswith(_ESCAPE_PREFIXES):
+            logger.warning("Path escapes project root, rejecting: %r", path)
+            return None
         return path
+
+    def _escape_error(file_path: str) -> str:
+        return (
+            f"Path '{file_path}' is outside this project's root. "
+            "Use relative paths (e.g. 'docs/requirement.md') or paths "
+            "rooted at the project (e.g. '/docs/requirement.md'). Do "
+            "NOT use absolute host paths like /home/user/workspace/..."
+        )
 
     # -- Wrap every file operation with normalization ----------------------
 
@@ -133,7 +168,10 @@ def make_policy_backend(
         _noop_streak = 0
 
     def norm_write(file_path: str, content: str) -> WriteResult:
-        file_path = _normalize(file_path)
+        normalized = _normalize(file_path)
+        if normalized is None:
+            return WriteResult(error=_escape_error(file_path))
+        file_path = normalized
         resolved = base._resolve_path(file_path)
         if not resolved.exists():
             _reset_noop_streak()
@@ -173,10 +211,16 @@ def make_policy_backend(
             return WriteResult(error=f"Error writing file '{file_path}': {exc}")
 
     def norm_read(file_path: str, offset: int = 0, limit: int = 2000) -> str:
-        return _orig_read(_normalize(file_path), offset, limit)
+        normalized = _normalize(file_path)
+        if normalized is None:
+            return _escape_error(file_path)
+        return _orig_read(normalized, offset, limit)
 
     def norm_edit(file_path: str, old_string: str, new_string: str, replace_all: bool = False):
-        file_path = _normalize(file_path)
+        normalized = _normalize(file_path)
+        if normalized is None:
+            return EditResult(error=_escape_error(file_path))
+        file_path = normalized
         # old_string == new_string is a no-op. Return success so the LLM
         # doesn't enter an error-retry loop. After _NOOP_STREAK_LIMIT
         # identical repeats the tool returns a LOOP_DETECTED error.
@@ -207,14 +251,32 @@ def make_policy_backend(
         return result
 
     def norm_ls(path: str) -> Any:
-        return _orig_ls(_normalize(path))
+        normalized = _normalize(path)
+        if normalized is None:
+            # ls has no error channel on its Info result — log and return
+            # an empty listing so the LLM sees "no such path" rather than
+            # accidentally scanning outside the project.
+            logger.warning("ls on non-project path rejected: %r", path)
+            return _orig_ls("/")
+        return _orig_ls(normalized)
 
     def norm_glob(pattern: str, path: str = "/") -> Any:
-        return _orig_glob(_normalize(pattern), _normalize(path))
+        p_norm = _normalize(pattern) if pattern and pattern.startswith("/") else pattern
+        base_norm = _normalize(path)
+        if p_norm is None or base_norm is None:
+            logger.warning("glob on non-project path rejected: pattern=%r path=%r", pattern, path)
+            return _orig_glob(pattern if p_norm is None else p_norm, "/")
+        return _orig_glob(p_norm, base_norm)
 
     def norm_grep(pattern: str, path: str | None = None, glob: str | None = None) -> Any:
-        norm_path = _normalize(path) if path else path
-        return _orig_grep(pattern, norm_path, glob)
+        if path:
+            normalized = _normalize(path)
+            if normalized is None:
+                logger.warning("grep on non-project path rejected: %r", path)
+                normalized = "/"
+        else:
+            normalized = path
+        return _orig_grep(pattern, normalized, glob)
 
     # -- Sandbox: execute support --------------------------------------------
     # FilesystemBackend doesn't implement SandboxBackendProtocol, so

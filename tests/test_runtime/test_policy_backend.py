@@ -139,14 +139,36 @@ class TestWrite:
         assert r.error is None
         assert (project_root / "src" / "main.py").read_text() == "v2"
 
-    def test_write_normalizes_absolute_host_path(self, backend, project_root):
-        # Simulate LLM using absolute AISE repo path
+    def test_write_normalizes_absolute_project_root_path(self, backend, project_root):
+        """Absolute paths pointing INTO this project are still accepted."""
+        result = backend.write(f"{project_root}/src/test.py", "x=1")
+        assert result.error is None
+        assert (project_root / "src" / "test.py").read_text() == "x=1"
+
+    def test_write_rejects_absolute_non_project_path(self, backend, project_root):
+        """Regression: a confused agent wrote to the AISE repo's own source
+        (``/home/.../AISE/src/aise/docs/requirement.md``) and the backend
+        silently remapped it into the project, leaving the file at
+        ``projects/<proj>/src/aise/docs/...``. We now reject such escape
+        paths with a clear error so the LLM retries with a relative path.
+        """
         import aise
 
         aise_root = str(Path(aise.__file__).resolve().parent.parent.parent)
-        result = backend.write(f"{aise_root}/src/test.py", "x=1")
-        assert result.error is None
-        assert (project_root / "src" / "test.py").read_text() == "x=1"
+        # This path is OUTSIDE the project_root tmp_path.
+        result = backend.write(f"{aise_root}/src/aise/docs/requirement.md", "x=1")
+        assert result.error is not None
+        assert "outside this project's root" in result.error
+        # Nothing should have been written inside the project either.
+        assert not (project_root / "src" / "aise" / "docs" / "requirement.md").exists()
+
+    def test_write_rejects_system_escape_paths(self, backend, project_root):
+        """Writes to /etc, /tmp, /var, etc. are rejected even if they don't
+        collide with the AISE repo."""
+        for escape in ("/etc/passwd", "/tmp/x.py", "/var/log/attack.sh"):
+            result = backend.write(escape, "pwn")
+            assert result.error is not None, f"expected rejection for {escape}"
+            assert "outside this project's root" in result.error
 
 
 # -- Read ------------------------------------------------------------------
