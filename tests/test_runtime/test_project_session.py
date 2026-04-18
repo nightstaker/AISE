@@ -266,6 +266,60 @@ class TestPhase6DeliveryReport:
         assert "verbatim" in body.lower() or "do not invent" in body.lower()
 
 
+class TestPostPhaseArtifactVerification:
+    """Regression guard for the project_3-snake Phase 1 bug (2026-04-18):
+    the product_manager dispatch silently returned without writing
+    docs/requirement.md (weak-LLM empty-AIMessage pathology). The
+    orchestrator happily moved on because it only checked the
+    dispatch's ``status`` field, not the actual artifact.
+
+    Each artifact-producing phase must now verify its expected file
+    exists and re-dispatch ONCE if it's missing or too small. Phases
+    covered:
+
+    - Phase 1 → docs/requirement.md
+    - Phase 2 → docs/architecture.md
+    - Phase 5 → tests/test_integration.py
+    - Phase 6 → docs/delivery_report.md
+
+    Phase 3 has no single canonical artifact (one per module), and its
+    own "pytest must pass" retry already implicitly verifies files.
+    Phase 4 has its own ``RUN:``-line smoke test.
+    """
+
+    def _prompt(self, session, name):
+        return dict(session._build_phase_prompts("Build a thing")).get(name, "")
+
+    def test_phase1_verifies_requirement_md(self, session):
+        prompt = self._prompt(session, "requirements")
+        assert "docs/requirement.md" in prompt
+        assert "test -f docs/requirement.md" in prompt
+        assert "re-dispatch" in prompt.lower()
+        assert "2 attempts" in prompt
+
+    def test_phase2_verifies_architecture_md(self, session):
+        prompt = self._prompt(session, "architecture")
+        assert "docs/architecture.md" in prompt
+        assert "test -f docs/architecture.md" in prompt
+        assert "re-dispatch" in prompt.lower()
+        assert "2 attempts" in prompt
+
+    def test_phase5_verifies_test_integration_py(self, session):
+        prompt = self._prompt(session, "qa_testing")
+        assert "tests/test_integration.py" in prompt
+        assert "test -f tests/test_integration.py" in prompt
+        assert "re-dispatch" in prompt.lower()
+        assert "2 attempts" in prompt
+
+    def test_phase6_verifies_delivery_report_md(self, session):
+        prompt = self._prompt(session, "delivery")
+        assert "docs/delivery_report.md" in prompt
+        assert "test -f docs/delivery_report.md" in prompt
+        assert "re-dispatch" in prompt.lower()
+        # Phase 6 is still the one that calls mark_complete.
+        assert "mark_complete" in prompt
+
+
 class TestProjectSessionRun:
     def test_run_calls_pm_runtime(self, session):
         # Simulate a phased workflow. mark_complete is only honored in the

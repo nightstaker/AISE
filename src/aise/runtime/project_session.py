@@ -422,15 +422,34 @@ class ProjectSession:
                 "1. Call list_processes, then get_process('waterfall.process.md').\n"
                 "2. Call list_agents to discover agents.\n"
                 "3. dispatch_task to product_manager to write docs/requirement.md.\n"
-                "4. After it completes, STOP.\n"
+                "4. After the dispatch returns, VERIFY the artifact landed.\n"
+                "   Run: execute_shell('test -f docs/requirement.md && "
+                "wc -c docs/requirement.md || echo MISSING').\n"
+                "   - Output starts with a byte count > 500 → success, STOP.\n"
+                "   - Output is 'MISSING' or byte count <= 500 → the dispatch\n"
+                "     silently produced nothing (weak-LLM empty-response bug\n"
+                "     or the agent skipped write_file). Re-dispatch\n"
+                "     product_manager ONCE with a terse note: 'Previous\n"
+                "     attempt did not create docs/requirement.md. You MUST\n"
+                '     actually call write_file(path="docs/requirement.md", '
+                'content="...") with the full SRS content.\'\n'
+                "   - After the re-dispatch, verify again. STOP regardless\n"
+                "     (max 2 attempts total).\n"
                 "Do NOT call mark_complete.",
             ),
             (
                 "architecture",
                 f"Project requirement: {requirement}\n\n"
                 "Execute Phase 2 — Architecture:\n"
-                "dispatch_task to architect to read docs/requirement.md and write docs/architecture.md.\n"
-                "After it completes, STOP.\n"
+                "1. dispatch_task to architect to read docs/requirement.md\n"
+                "   and write docs/architecture.md.\n"
+                "2. After the dispatch returns, VERIFY: execute_shell(\n"
+                "   'test -f docs/architecture.md && wc -c docs/architecture.md "
+                "|| echo MISSING').\n"
+                "   If MISSING or byte count <= 1000, re-dispatch architect\n"
+                "   ONCE with a note: 'Previous attempt did not create\n"
+                "   docs/architecture.md. You MUST call write_file to produce\n"
+                "   it.' Then verify again. STOP (max 2 attempts total).\n"
                 "Do NOT call mark_complete.",
             ),
             (
@@ -504,7 +523,7 @@ class ProjectSession:
                 "qa_testing",
                 f"Project requirement: {requirement}\n\n"
                 "Execute Phase 5 — Integration Testing (QA runs the suite):\n"
-                "dispatch_task to qa_engineer with this task:\n"
+                "1. dispatch_task to qa_engineer with this task:\n"
                 "'Write tests/test_integration.py ONLY — integration tests for\n"
                 "cross-module interactions and end-to-end flows. Do NOT write\n"
                 "per-module unit tests (developer already did that in Phase 3).\n"
@@ -512,7 +531,14 @@ class ProjectSession:
                 'execute(command="python -m pytest tests/ -q --tb=short")\n'
                 "and iterate up to 3 times until tests pass. Report the final\n"
                 "pytest result in your response.'\n"
-                "After it completes, STOP.\n"
+                "2. After the dispatch returns, VERIFY: execute_shell(\n"
+                "   'test -f tests/test_integration.py && "
+                "wc -l tests/test_integration.py || echo MISSING').\n"
+                "   If MISSING or line count <= 10, re-dispatch qa_engineer\n"
+                "   ONCE with a note: 'Previous attempt did not create\n"
+                "   tests/test_integration.py. You MUST call write_file to\n"
+                "   produce it before running pytest.' Then verify again.\n"
+                "   STOP (max 2 attempts total).\n"
                 "Do NOT call mark_complete.",
             ),
             (
@@ -570,12 +596,23 @@ class ProjectSession:
                 "   6. Conclusion — one or two sentences on readiness.\n\n"
                 "   RAW TOOL OUTPUTS (cite these, do not fabricate):\n"
                 "   <paste the actual execute_shell outputs from step 1>'\n\n"
-                "3. After product_manager returns, call mark_complete with\n"
-                "   a short paragraph summary that references\n"
-                "   docs/delivery_report.md for details. The summary\n"
-                "   should include: project name, pass rate, total LOC,\n"
-                "   and whether the entry point verified successfully in\n"
-                "   Phase 4.",
+                "3. After product_manager returns, VERIFY the report file\n"
+                "   was actually created:\n"
+                "   execute_shell('test -f docs/delivery_report.md && "
+                "wc -c docs/delivery_report.md || echo MISSING')\n"
+                "   If MISSING or byte count <= 500, re-dispatch\n"
+                "   product_manager ONCE with the same task description\n"
+                "   PLUS a note: 'Previous attempt did not create\n"
+                "   docs/delivery_report.md. You MUST call write_file.'\n"
+                "   Then verify again. Continue to step 4 regardless\n"
+                "   (max 2 attempts total).\n\n"
+                "4. Call mark_complete with a short paragraph summary that\n"
+                "   references docs/delivery_report.md for details. The\n"
+                "   summary should include: project name, pass rate, total\n"
+                "   LOC, and whether the entry point verified successfully\n"
+                "   in Phase 4. If the delivery_report file is still\n"
+                "   missing after step 3, say so in the mark_complete\n"
+                "   summary (do not hide the failure).",
             ),
         ]
 
