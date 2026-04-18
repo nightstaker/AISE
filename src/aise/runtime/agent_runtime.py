@@ -466,12 +466,53 @@ class AgentRuntime:
             )
             response = _extract_response(result)
 
+            # Empty-response retry loop.
+            #
+            # Weak local LLMs (observed on qwen3.6 for product_manager,
+            # and earlier on architect) occasionally emit an
+            # ``AIMessage(content="", tool_calls=None)`` after a few
+            # tool calls — LangGraph treats this as "agent done" and
+            # returns immediately with no useful output. The dispatch
+            # is marked "completed" with an empty preview, so the
+            # orchestrator thinks the worker finished, then moves on.
+            # Real symptom: ``docs/requirement.md`` never gets written
+            # even though the PM dispatch returned "completed".
+            #
+            # Detect the pattern and re-invoke up to ``_EMPTY_RESPONSE_
+            # RETRIES`` times, appending a nudge HumanMessage to the
+            # existing message history (so the LLM resumes with full
+            # context, not a fresh session).
+            retries_used = 0
+            while not response.strip() and retries_used < _EMPTY_RESPONSE_RETRIES and _last_msg_is_empty_ai(result):
+                retries_used += 1
+                logger.warning(
+                    "Empty response on call %s (retry %d/%d): re-invoking with nudge",
+                    call_id,
+                    retries_used,
+                    _EMPTY_RESPONSE_RETRIES,
+                )
+                prior_messages = list((result or {}).get("messages") or [])
+                nudge = HumanMessage(
+                    content=(
+                        "Your last response was empty — no text, no tool calls. "
+                        "Continue the task: finish any pending file writes, "
+                        "complete partial output, then respond with a brief "
+                        "text summary of what you produced."
+                    )
+                )
+                result = self._agent.invoke(
+                    {"messages": prior_messages + [nudge]},
+                    config=config if config else None,
+                )
+                response = _extract_response(result)
+
             with trace_lock:
                 trace_record["status"] = "completed"
                 trace_record["completed_at"] = datetime.now(timezone.utc).isoformat()
                 trace_record["response"] = response
                 trace_record["response_length"] = len(response)
                 trace_record["empty_response"] = not response.strip()
+                trace_record["empty_response_retries"] = retries_used
                 messages_dump = _dump_messages(result)
                 trace_record["messages_count"] = len(messages_dump)
                 trace_record["messages"] = messages_dump
@@ -480,13 +521,14 @@ class AgentRuntime:
 
                     _flush(trace_path, trace_record)
 
-            # Detailed diagnostics on empty response
+            # Detailed diagnostics on empty response (after all retries exhausted)
             if not response.strip():
                 diag = _diagnose_empty_response(result)
                 logger.warning(
-                    "Empty response: agent=%s call=%s diagnosis=%s",
+                    "Empty response: agent=%s call=%s retries=%d diagnosis=%s",
                     self.name,
                     call_id,
+                    retries_used,
                     diag,
                 )
 
@@ -523,6 +565,32 @@ class AgentRuntime:
     def get_agent_card_dict(self) -> dict[str, Any]:
         """Return the agent card as a JSON-serializable dict."""
         return self._card.to_dict()
+
+
+_EMPTY_RESPONSE_RETRIES = 2
+
+
+def _last_msg_is_empty_ai(result: Any) -> bool:
+    """Return True when the deepagents loop ended on a blank ``AIMessage``.
+
+    The pathology we're guarding against is an ``AIMessage`` with
+    ``content == ""`` AND no ``tool_calls`` — LangGraph treats that as
+    "agent finished" and returns immediately, leaving the task half-done
+    (observed on qwen3.6 worker agents). We DON'T retry when the last
+    AIMessage has tool calls but no text (that is a different pattern
+    handled by deepagents normally) or when there are no messages at all.
+    """
+    if not isinstance(result, dict):
+        return False
+    messages = result.get("messages") or []
+    if not messages:
+        return False
+    last = messages[-1]
+    if not isinstance(last, AIMessage):
+        return False
+    text = last.content if isinstance(last.content, str) else ""
+    tool_calls = getattr(last, "tool_calls", None)
+    return not text.strip() and not (tool_calls or [])
 
 
 def _extract_response(result: Any) -> str:

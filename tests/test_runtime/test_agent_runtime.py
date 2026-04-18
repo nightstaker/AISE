@@ -361,6 +361,99 @@ class TestSystemPromptAssembly:
         assert str(skills_dir) not in prompt, f"skills_dir absolute path leaked into prompt: {skills_dir}"
 
 
+class TestEmptyResponseRetry:
+    """Weak local LLMs occasionally emit ``AIMessage(content="",
+    tool_calls=None)`` mid-dispatch. LangGraph treats that as "agent
+    finished" and returns an empty response, so the orchestrator
+    (and any file-producing task) silently drops its work.
+
+    Regression guard: Phase 1 for project_3-snake (2026-04-18) saw
+    exactly this — the PM dispatch for ``docs/requirement.md`` did
+    two tool calls (ls + read_file), then returned an empty AIMessage,
+    and the orchestrator marked the phase complete without the file
+    being written.
+
+    ``handle_message`` now detects the pattern and re-invokes with a
+    nudge HumanMessage appended to the existing message history (so
+    the LLM resumes with full context), up to ``_EMPTY_RESPONSE_
+    RETRIES`` times.
+    """
+
+    def test_empty_response_triggers_retry_that_succeeds(self, agent_md_file, skills_dir, mock_create_deep_agent):
+        from langchain_core.messages import AIMessage
+
+        _, mock_agent = mock_create_deep_agent
+
+        # First invocation returns an empty final AIMessage (the bug).
+        # Second invocation (after the nudge) returns real content.
+        mock_agent.invoke.side_effect = [
+            {"messages": [AIMessage(content="", tool_calls=[])]},
+            {"messages": [AIMessage(content="docs/requirement.md written.")]},
+        ]
+
+        runtime = AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
+        runtime.evoke()
+        response = runtime.handle_message("Write docs/requirement.md")
+
+        assert response == "docs/requirement.md written."
+        assert mock_agent.invoke.call_count == 2
+
+    def test_empty_response_retries_capped(self, agent_md_file, skills_dir, mock_create_deep_agent):
+        """If every invocation returns empty, give up after the cap."""
+        from langchain_core.messages import AIMessage
+
+        from aise.runtime.agent_runtime import _EMPTY_RESPONSE_RETRIES
+
+        _, mock_agent = mock_create_deep_agent
+        # Always empty — simulate a model that never recovers.
+        mock_agent.invoke.side_effect = lambda *a, **kw: {"messages": [AIMessage(content="", tool_calls=[])]}
+
+        runtime = AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
+        runtime.evoke()
+        response = runtime.handle_message("Write something")
+
+        # Initial call + _EMPTY_RESPONSE_RETRIES retries = total invocations.
+        assert mock_agent.invoke.call_count == 1 + _EMPTY_RESPONSE_RETRIES
+        assert response == ""  # still empty after exhausting retries
+
+    def test_non_empty_response_not_retried(self, agent_md_file, skills_dir, mock_create_deep_agent):
+        """A normal successful response should not trigger the retry path."""
+        from langchain_core.messages import AIMessage
+
+        _, mock_agent = mock_create_deep_agent
+        mock_agent.invoke.return_value = {"messages": [AIMessage(content="Done.")]}
+
+        runtime = AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
+        runtime.evoke()
+        response = runtime.handle_message("Do a thing")
+        assert response == "Done."
+        assert mock_agent.invoke.call_count == 1
+
+    def test_empty_ai_with_tool_calls_not_retried(self, agent_md_file, skills_dir, mock_create_deep_agent):
+        """An AIMessage with tool_calls but no text is a NORMAL mid-loop
+        state (deepagents handles it naturally). We should only retry on
+        the pathological 'empty content AND no tool_calls' combo."""
+        from langchain_core.messages import AIMessage
+
+        _, mock_agent = mock_create_deep_agent
+        # Simulate an AIMessage that has tool_calls — deepagents would
+        # normally continue; our mock just returns immediately. We should
+        # NOT retry (the test asserts we don't invoke again).
+        mock_agent.invoke.return_value = {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"id": "1", "name": "foo", "args": {}}],
+                )
+            ]
+        }
+
+        runtime = AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
+        runtime.evoke()
+        runtime.handle_message("Do a thing")
+        assert mock_agent.invoke.call_count == 1
+
+
 class TestAgentRuntimeCard:
     def test_agent_card_generated(self, agent_md_file, skills_dir, mock_create_deep_agent):
         runtime = AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
