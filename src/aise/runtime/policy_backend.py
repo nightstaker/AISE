@@ -377,27 +377,33 @@ def make_policy_backend(
     def norm_ls(path: str) -> Any:
         normalized = _normalize(path)
         if normalized is None:
-            # ls has no error channel on its Info result — log and return
-            # an empty listing so the LLM sees "no such path" rather than
-            # accidentally scanning outside the project.
-            logger.warning("ls on non-project path rejected: %r", path)
-            return _orig_ls("/")
+            # Raise, rather than silently remap to project root. The old
+            # fallback returned the project root's contents for any
+            # escape path, which fooled the LLM into believing that
+            # ``ls /home/.../AISE/src`` worked — it built a false model
+            # of the filesystem and then tried ``write_file`` on the
+            # same escape path. Deepagents' tool wrapper converts this
+            # exception to a ToolMessage the LLM can see and learn from.
+            raise PermissionError(_escape_error(path))
         return _orig_ls(normalized)
 
     def norm_glob(pattern: str, path: str = "/") -> Any:
+        # Only treat ``pattern`` as a path when it looks like one. A
+        # leading-``/`` pattern (``/src/**/*.py``) is a virtual-root
+        # pattern and passes through normalize; bare patterns
+        # (``**/*.py``) are globs relative to ``path``.
         p_norm = _normalize(pattern) if pattern and pattern.startswith("/") else pattern
         base_norm = _normalize(path)
         if p_norm is None or base_norm is None:
-            logger.warning("glob on non-project path rejected: pattern=%r path=%r", pattern, path)
-            return _orig_glob(pattern if p_norm is None else p_norm, "/")
+            bad = path if base_norm is None else pattern
+            raise PermissionError(_escape_error(bad))
         return _orig_glob(p_norm, base_norm)
 
     def norm_grep(pattern: str, path: str | None = None, glob: str | None = None) -> Any:
         if path:
             normalized = _normalize(path)
             if normalized is None:
-                logger.warning("grep on non-project path rejected: %r", path)
-                normalized = "/"
+                raise PermissionError(_escape_error(path))
         else:
             normalized = path
         return _orig_grep(pattern, normalized, glob)
