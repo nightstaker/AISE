@@ -170,6 +170,34 @@ class TestWrite:
             assert result.error is not None, f"expected rejection for {escape}"
             assert "outside this project's root" in result.error
 
+    def test_write_rejects_summarization_truncation_marker(self, backend, project_root):
+        """When the SummarizationMiddleware has replaced a past write_file's
+        content argument in the conversation history with ``<first 20 chars>
+        + "...(argument truncated)"``, a weak LLM may copy that short marker
+        string into a new write_file call. Without this guard the marker
+        would be written verbatim to disk, destroying the real file.
+
+        Regression: dispatch 0b83037d0155 rewrote tests/test_entity.py down
+        to the 43-byte marker multiple times and hit recursion_limit=240.
+        """
+        content = '"""Comprehensive uni...(argument truncated)'
+        result = backend.write("/tests/test_foo.py", content)
+        assert result.error is not None
+        assert "truncation" in result.error.lower() or "truncated" in result.error.lower()
+        # File should NOT be written.
+        assert not (project_root / "tests" / "test_foo.py").exists()
+
+    def test_write_accepts_marker_substring_in_real_content(self, backend, project_root):
+        """Legitimate content that happens to MENTION the phrase ``argument
+        truncated`` (e.g. a test case about summarization) is fine. Only the
+        full marker ``"...(argument truncated)"`` is rejected."""
+        # Normal content mentioning the phrase without the full marker.
+        result = backend.write(
+            "/tests/test_foo.py",
+            "# this test checks argument handling — not the truncated marker",
+        )
+        assert result.error is None
+
 
 # -- Read ------------------------------------------------------------------
 
@@ -231,6 +259,20 @@ class TestEdit:
         result = backend.edit("/src/calc.py", "this does not exist", "new content")
         assert result.error is not None
         assert "write_file" in result.error
+
+    def test_edit_rejects_summarization_truncation_marker_in_new_string(self, backend):
+        """new_string containing the ``...(argument truncated)`` marker is a
+        copy-from-truncated-history bug; refuse the edit."""
+        backend.write("/src/calc.py", "x = 1")
+        result = backend.edit(
+            "/src/calc.py",
+            "x = 1",
+            '"""header...(argument truncated)',
+        )
+        assert result.error is not None
+        assert "truncation" in result.error.lower() or "truncated" in result.error.lower()
+        # File is not modified.
+        assert (backend._resolve_path("/src/calc.py")).read_text() == "x = 1"
 
 
 # -- ls_info ---------------------------------------------------------------

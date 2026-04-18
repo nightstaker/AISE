@@ -119,6 +119,26 @@ def make_policy_backend(
             "NOT use absolute host paths like /home/user/workspace/..."
         )
 
+    # Summarization middleware replaces past ``write_file.content`` /
+    # ``edit_file.new_string`` arguments with this marker when the context
+    # grows too large. Weak local LLMs then read their own truncated
+    # history and emit a new ``write_file`` whose ``content`` is literally
+    # the marker string — which would destructively overwrite the real
+    # file with a 43-byte garbage payload. We refuse such writes.
+    _TRUNCATION_MARKER = "...(argument truncated)"
+
+    def _truncation_marker_error(tool: str, file_path: str) -> str:
+        return (
+            f"Refusing {tool} on '{file_path}': the content argument "
+            f"contains the summarization-middleware marker "
+            f"{_TRUNCATION_MARKER!r}. That marker is a placeholder the "
+            "conversation middleware puts in place of a large tool-call "
+            "argument in your history — it is NOT real content. "
+            "Regenerate the full file content from the original task "
+            "requirements, or use read_file to see the current on-disk "
+            "content before deciding what to write."
+        )
+
     # -- Wrap every file operation with normalization ----------------------
 
     _orig_write = base.write
@@ -172,6 +192,12 @@ def make_policy_backend(
         if normalized is None:
             return WriteResult(error=_escape_error(file_path))
         file_path = normalized
+        if _TRUNCATION_MARKER in content:
+            logger.warning(
+                "write_file refused: content contains truncation marker (%s)",
+                file_path,
+            )
+            return WriteResult(error=_truncation_marker_error("write_file", file_path))
         resolved = base._resolve_path(file_path)
         if not resolved.exists():
             _reset_noop_streak()
@@ -221,6 +247,12 @@ def make_policy_backend(
         if normalized is None:
             return EditResult(error=_escape_error(file_path))
         file_path = normalized
+        if _TRUNCATION_MARKER in new_string:
+            logger.warning(
+                "edit_file refused: new_string contains truncation marker (%s)",
+                file_path,
+            )
+            return EditResult(error=_truncation_marker_error("edit_file", file_path))
         # old_string == new_string is a no-op. Return success so the LLM
         # doesn't enter an error-retry loop. After _NOOP_STREAK_LIMIT
         # identical repeats the tool returns a LOOP_DETECTED error.
