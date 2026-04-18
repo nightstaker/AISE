@@ -827,11 +827,29 @@ function setupRunReact() {
         synthetic: true,
       }];
     }
-    // Hide raw todos_update rows — they render inline under their task_request.
-    const visibleLog = taskLog.filter((e) => e.type !== "todos_update");
+    // Each completed task used to produce TWO rows in the log (a
+    // task_request and a task_response). Merge them: render only the
+    // task_request; its card shows the response's status/output in the
+    // expanded details. Map taskId → response event here.
+    const taskResponseByTaskId = {};
+    for (let i = 0; i < taskLog.length; i++) {
+      const ev = taskLog[i];
+      if (ev && ev.type === "task_response" && ev.taskId) {
+        taskResponseByTaskId[ev.taskId] = ev;
+      }
+    }
+    // Hide raw todos_update rows (render inline under their task_request)
+    // and task_response rows (merged into their request).
+    const visibleLog = taskLog.filter(
+      (e) => e.type !== "todos_update" && e.type !== "task_response",
+    );
     const visibleStages = taskLog
       .map((_, i) => evStages[i])
-      .filter((_, i) => taskLog[i].type !== "todos_update");
+      .filter(
+        (_, i) =>
+          taskLog[i].type !== "todos_update" &&
+          taskLog[i].type !== "task_response",
+      );
     const filteredLog = stageFilter
       ? visibleLog.filter((_, i) => visibleStages[i] === stageFilter)
       : visibleLog;
@@ -887,7 +905,12 @@ function setupRunReact() {
         h("div", { className: "run-section-title" }, "A2A \u4efb\u52a1\u65e5\u5fd7 (" + filteredLog.length + (stageFilter ? " / " + taskLog.length : "") + ")"),
         filteredLog.length === 0
           ? h("div", { className: "run-log-empty" }, isRunning ? "\u7b49\u5f85\u4efb\u52a1\u6d3e\u53d1..." : "\u65e0\u4efb\u52a1\u65e5\u5fd7")
-          : h("div", { className: "run-task-log" }, filteredLog.map((ev, idx) => h(RunLogEntry, { key: idx, event: ev, taskTodos: taskTodos }))),
+          : h("div", { className: "run-task-log" }, filteredLog.map((ev, idx) => h(RunLogEntry, {
+              key: idx,
+              event: ev,
+              taskTodos: taskTodos,
+              taskResponse: ev.taskId ? taskResponseByTaskId[ev.taskId] : null,
+            }))),
       ),
       run.result ? h("div", { className: "run-section" },
         h("div", { className: "run-section-title" }, "\u4ea4\u4ed8\u62a5\u544a"),
@@ -900,12 +923,17 @@ function setupRunReact() {
     );
   }
 
-  function RunLogEntry({ event, taskTodos }) {
+  function RunLogEntry({ event, taskTodos, taskResponse }) {
     const h = window.React.createElement;
-    const [expanded, setExpanded] = window.React.useState(false);
     const ev = event;
     const ts = ev.timestamp ? formatLocalTime(ev.timestamp) : "";
     const todosForTask = ev && ev.taskId && taskTodos ? taskTodos[ev.taskId] : null;
+
+    // Default-expand running tasks (no response yet); default-collapse
+    // completed/failed tasks. A completed task card is a compact summary
+    // until the user clicks to open it.
+    const taskIsRunning = ev.type === "task_request" && !taskResponse;
+    const [expanded, setExpanded] = window.React.useState(taskIsRunning);
 
     if (ev.type === "stage_update") {
       return h("div", { className: "run-log-entry run-log-stage", onClick: function() { setExpanded(!expanded); } },
@@ -922,13 +950,18 @@ function setupRunReact() {
     }
 
     if (ev.type === "tool_call") {
-      return h("div", { className: "run-log-entry run-log-tool" },
+      // Collapse tool_call details by default — the summary is only
+      // shown when the user expands. Keeps the main log uncluttered.
+      return h("div", { className: "run-log-entry run-log-tool" + (expanded ? " run-log-expanded" : ""), onClick: function() { setExpanded(!expanded); } },
         h("div", { className: "run-log-row" },
+          h("span", { className: "run-log-toggle" }, expanded ? "\u25bc" : "\u25b6"),
           h("span", { className: "run-log-icon" }, EVENT_ICONS.tool_call),
           h("span", { className: "run-log-tool-name" }, ev.tool || "tool"),
-          h("span", { className: "run-log-detail" }, ev.summary || ""),
           h("span", { className: "run-log-ts" }, ts),
         ),
+        expanded ? h("div", { className: "run-log-body" },
+          ev.summary ? h("pre", { className: "run-log-full-text" }, ev.summary) : h("div", { className: "run-log-meta" }, "(no summary)"),
+        ) : null,
       );
     }
 
@@ -936,50 +969,54 @@ function setupRunReact() {
       var payload = ev.payload || {};
       var fullTask = payload.task || "";
       var preview = fullTask.length > 120 ? fullTask.substring(0, 120) + "..." : fullTask;
-      return h("div", { className: "run-log-entry run-log-request" + (expanded ? " run-log-expanded" : "") },
+      var response = taskResponse || null;
+      var responsePayload = (response && response.payload) || {};
+      var responseStatus = response ? response.status : null;
+      var outputText = response
+        ? String(responsePayload.output_preview || responsePayload.output || responsePayload.error || "")
+        : "";
+      var outputLen = response ? (responsePayload.output_length || outputText.length) : 0;
+      var savedTo = response ? (responsePayload.saved_to || "") : "";
+      var displayStatus = responseStatus || "running";
+      var statusTagCls = responseStatus === "completed" ? "log-completed"
+        : responseStatus === "failed" ? "log-failed"
+        : "log-running";
+      // Todos are always visible for running tasks (live progress cue),
+      // and only shown for completed tasks when the card is expanded.
+      var showTodos = todosForTask && (!response || expanded);
+      return h("div", { className: "run-log-entry run-log-request " + statusTagCls + (expanded ? " run-log-expanded" : "") },
         h("div", { className: "run-log-row", onClick: function() { setExpanded(!expanded); } },
           h("span", { className: "run-log-toggle" }, expanded ? "\u25bc" : "\u25b6"),
           h("span", { className: "run-log-icon" }, EVENT_ICONS.task_request),
           h("span", { className: "run-log-agent" }, ev.to),
           payload.phase ? h("span", { className: "run-log-phase-tag" }, payload.phase) : null,
+          h("span", { className: "run-log-status-tag " + statusTagCls },
+            response
+              ? (responseStatus === "completed" ? "✓ 已完成" : responseStatus === "failed" ? "✕ 失败" : responseStatus)
+              : "● 进行中",
+          ),
           h("span", { className: "run-log-detail" }, expanded ? "" : preview),
           h("span", { className: "run-log-ts" }, ts),
         ),
-        todosForTask ? h(TaskTodoProgress, { todos: todosForTask }) : null,
+        showTodos ? h(TaskTodoProgress, { todos: todosForTask }) : null,
         expanded ? h("div", { className: "run-log-body" },
           h("div", { className: "run-log-response-meta" },
             ev.taskId ? h("span", null, "Task: " + ev.taskId) : null,
             payload.step ? h("span", null, "Step: " + payload.step) : null,
             payload.phase ? h("span", null, "Phase: " + payload.phase) : null,
-          ),
-          fullTask ? h("pre", { className: "run-log-full-text" }, fullTask) : null,
-        ) : null,
-      );
-    }
-
-    if (ev.type === "task_response") {
-      var payload = ev.payload || {};
-      var statusCls = ev.status === "completed" ? "log-completed" : ev.status === "failed" ? "log-failed" : "";
-      var outputText = String(payload.output_preview || payload.output || payload.error || "");
-      var outputLen = payload.output_length || outputText.length;
-      var savedTo = payload.saved_to || "";
-      var preview = outputText.length > 200 ? outputText.substring(0, 200) + "..." : outputText;
-      return h("div", { className: "run-log-entry run-log-response " + statusCls + (expanded ? " run-log-expanded" : ""), onClick: function() { setExpanded(!expanded); } },
-        h("div", { className: "run-log-row" },
-          h("span", { className: "run-log-toggle" }, expanded ? "\u25bc" : "\u25b6"),
-          h("span", { className: "run-log-icon" }, EVENT_ICONS.task_response),
-          h("span", { className: "run-log-agent" }, ev.from),
-          h("span", { className: "run-log-status-tag" }, ev.status),
-          h("span", { className: "run-log-detail" }, expanded ? "" : preview),
-          h("span", { className: "run-log-ts" }, ts),
-        ),
-        expanded ? h("div", { className: "run-log-body" },
-          h("div", { className: "run-log-response-meta" },
-            ev.taskId ? h("span", null, "Task: " + ev.taskId) : null,
             outputLen > 0 ? h("span", null, "Output: " + outputLen + " chars") : null,
             savedTo ? h("span", null, "\u2713 " + savedTo) : null,
           ),
-          outputText ? h("pre", { className: "run-log-full-text" }, outputText) : h("div", { className: "run-log-meta" }, "No text output (agent used write_file to save files directly)"),
+          fullTask ? h("div", { className: "run-log-subsection" },
+            h("div", { className: "run-log-subsection-title" }, "任务描述"),
+            h("pre", { className: "run-log-full-text" }, fullTask),
+          ) : null,
+          response ? h("div", { className: "run-log-subsection" },
+            h("div", { className: "run-log-subsection-title" }, "执行结果"),
+            outputText
+              ? h("pre", { className: "run-log-full-text" }, outputText)
+              : h("div", { className: "run-log-meta" }, "(no text output — agent wrote files directly)"),
+          ) : null,
         ) : null,
       );
     }
