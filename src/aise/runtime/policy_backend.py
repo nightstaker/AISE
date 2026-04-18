@@ -1,16 +1,26 @@
-"""Create a deepagents FilesystemBackend with path normalization + write-overwrite.
+"""Sandbox-capable filesystem backend for deepagents with path normalization.
 
-Two patches over the native ``FilesystemBackend``:
+Three extensions over the native ``FilesystemBackend``:
 
-1. **Path normalization** — LLMs frequently produce absolute host paths
+1. **Shell execution** — the backend subclasses
+   :class:`SandboxBackendProtocol` so deepagents auto-registers the
+   ``execute`` tool. Previously we attached ``execute``/``aexecute`` via
+   ``setattr``, but deepagents' ``FilesystemMiddleware`` checks
+   ``isinstance(backend, SandboxBackendProtocol)`` (a plain ABC, not a
+   ``@runtime_checkable`` Protocol), so the duck-typed attachments were
+   silently ignored and worker agents never had a working ``execute``
+   tool — observed in dispatch ``e13a04cd449d`` which wasted 98 LLM
+   rounds writing ``subprocess.run(…)`` wrapper scripts.
+
+2. **Path normalization** — LLMs frequently produce absolute host paths
    (e.g. ``/home/user/workspace/AISE/src/foo.py``) or virtual-root
    paths (``/src/foo.py``). The backend's ``virtual_mode`` already
-   handles the leading-slash case, but absolute host paths create
-   nested directory trees (``<root>/home/user/...``). We intercept
-   every file operation to strip known prefixes so paths resolve
-   correctly under the project root.
+   handles the leading-slash case. We intercept every file operation to
+   strip the project root prefix (so ``<project_root>/src/foo.py`` →
+   ``/src/foo.py``) and reject paths that escape the project root
+   (``/home/other/...``, ``/etc/...``, ``/tmp/...``, etc.).
 
-2. **Write-overwrite** — The native ``write()`` rejects existing files
+3. **Write-overwrite** — The native ``write()`` rejects existing files
    with "already exists", which causes LLMs to enter rename loops.
    We allow overwrite since the containment is already guaranteed by
    ``virtual_mode``.
@@ -18,13 +28,89 @@ Two patches over the native ``FilesystemBackend``:
 
 from __future__ import annotations
 
+import asyncio
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
+
+from deepagents.backends import FilesystemBackend
+from deepagents.backends.protocol import (
+    EditResult,
+    ExecuteResponse,
+    SandboxBackendProtocol,
+    WriteResult,
+)
 
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+_DEFAULT_SHELL_TIMEOUT = 120
+_MAX_OUTPUT_BYTES = 10000
+
+
+class SandboxFilesystemBackend(FilesystemBackend, SandboxBackendProtocol):
+    """``FilesystemBackend`` that advertises :class:`SandboxBackendProtocol`.
+
+    The parent ``FilesystemBackend`` handles all virtual-root file ops.
+    We add :meth:`execute` and :meth:`aexecute` so ``isinstance`` checks
+    inside deepagents' middleware recognize this backend as shell-capable
+    — which is what triggers the ``execute`` tool to be bound to the
+    agent's tool list.
+
+    Run behavior: commands execute via ``subprocess.run(shell=True)``
+    with ``cwd`` set to the project root. No allowlist is enforced here;
+    the worker agent is already sandboxed by its project_root and the
+    rest of its restricted tool surface. Orchestrator-level dispatches
+    still use the separate ``execute_shell`` tool from ``tool_primitives``
+    (which *does* have an allowlist).
+    """
+
+    def __init__(
+        self,
+        root_dir: str,
+        *,
+        virtual_mode: bool = True,
+        shell_timeout: int = _DEFAULT_SHELL_TIMEOUT,
+    ) -> None:
+        super().__init__(root_dir=root_dir, virtual_mode=virtual_mode)
+        self._shell_timeout = shell_timeout
+        self._sandbox_id = f"fs:{root_dir}"
+
+    @property
+    def id(self) -> str:
+        return self._sandbox_id
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        effective_timeout = timeout if timeout and timeout > 0 else self._shell_timeout
+        try:
+            proc = subprocess.run(  # noqa: S602 — sandboxed to project_root, worker tool
+                command,
+                shell=True,
+                cwd=str(self.cwd),
+                capture_output=True,
+                text=True,
+                timeout=effective_timeout,
+            )
+            output = (proc.stdout or "") + (proc.stderr or "")
+            truncated = len(output) > _MAX_OUTPUT_BYTES
+            return ExecuteResponse(
+                output=output[-_MAX_OUTPUT_BYTES:],
+                exit_code=proc.returncode,
+                truncated=truncated,
+            )
+        except subprocess.TimeoutExpired:
+            return ExecuteResponse(
+                output=f"Command timed out after {effective_timeout}s",
+                exit_code=-1,
+            )
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            return ExecuteResponse(output=f"Error: {exc}", exit_code=-1)
+
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        return await asyncio.to_thread(self.execute, command, timeout=timeout)
 
 
 def make_policy_backend(
@@ -33,7 +119,7 @@ def make_policy_backend(
     layout: Any = None,
     agent_name: str = "agent",
 ) -> Any:
-    """Create a deepagents FilesystemBackend with path normalization.
+    """Create a ``SandboxFilesystemBackend`` with path normalization + guards.
 
     Args:
         project_root: Directory where the agent may read/write files.
@@ -41,16 +127,22 @@ def make_policy_backend(
         agent_name: Unused (kept for call-site compatibility).
 
     Returns:
-        A ``FilesystemBackend`` with ``virtual_mode=True``, patched
-        ``write`` (allows overwrite), and path normalization on all
-        file operations.
-    """
-    from deepagents.backends import FilesystemBackend
-    from deepagents.backends.protocol import EditResult, WriteResult
+        A :class:`SandboxFilesystemBackend` instance with:
 
+        - ``virtual_mode=True`` (leading-slash paths rooted at project_root)
+        - ``write`` allowing overwrite
+        - Path normalization and escape-path rejection
+        - Loop-detection after 3 consecutive identical no-op writes/edits
+        - Rejection of the SummarizationMiddleware ``"...(argument truncated)"``
+          marker
+        - Native ``execute`` / ``aexecute`` inherited from the class so
+          deepagents' ``FilesystemMiddleware`` auto-registers the
+          ``execute`` tool via its ``isinstance(backend,
+          SandboxBackendProtocol)`` check.
+    """
     root = Path(project_root).resolve()
     root_str = str(root)
-    base = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    base = SandboxFilesystemBackend(root_dir=str(root), virtual_mode=True)
 
     # -- Path normalization ------------------------------------------------
 
@@ -310,47 +402,10 @@ def make_policy_backend(
             normalized = path
         return _orig_grep(pattern, normalized, glob)
 
-    # -- Sandbox: execute support --------------------------------------------
-    # FilesystemBackend doesn't implement SandboxBackendProtocol, so
-    # deepagents won't expose the `execute` tool. We add execute/aexecute
-    # directly so the LLM can run shell commands (e.g. pytest) without
-    # resorting to creating runner scripts.
-
-    import asyncio
-    import subprocess as _sp
-
-    from deepagents.backends.protocol import ExecuteResponse
-
-    _shell_timeout = 120
-
-    def execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        effective_timeout = timeout if timeout and timeout > 0 else _shell_timeout
-        try:
-            proc = _sp.run(
-                command,
-                shell=True,
-                cwd=str(root),
-                capture_output=True,
-                text=True,
-                timeout=effective_timeout,
-            )
-            output = (proc.stdout or "") + (proc.stderr or "")
-            truncated = len(output) > 10000
-            return ExecuteResponse(
-                output=output[-10000:],
-                exit_code=proc.returncode,
-                truncated=truncated,
-            )
-        except _sp.TimeoutExpired:
-            return ExecuteResponse(output=f"Command timed out after {effective_timeout}s", exit_code=-1)
-        except Exception as exc:
-            return ExecuteResponse(output=f"Error: {exc}", exit_code=-1)
-
-    async def aexecute(command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        return await asyncio.to_thread(execute, command, timeout=timeout)
-
-    base.execute = execute
-    base.aexecute = aexecute
+    # ``execute`` / ``aexecute`` come from the :class:`SandboxFilesystemBackend`
+    # class itself — no patching needed. The ``isinstance(backend,
+    # SandboxBackendProtocol)`` check in deepagents' FilesystemMiddleware
+    # now succeeds, so the ``execute`` tool is registered automatically.
 
     base.write = norm_write
     base.read = norm_read
