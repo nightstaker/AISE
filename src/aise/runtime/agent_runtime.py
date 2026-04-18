@@ -31,7 +31,7 @@ from ..utils.logging import get_logger
 from .agent_card import build_agent_card
 from .agent_md_parser import parse_agent_md
 from .models import AgentCard, AgentDefinition, AgentState
-from .skill_loader import get_skill_source_paths, load_skills_from_directory
+from .skill_loader import load_skills_from_directory
 
 logger = get_logger(__name__)
 
@@ -96,6 +96,92 @@ if create_deep_agent is not None:
     _install_summarization_max_arg_length_patch()
 
 
+# Appended to every agent's system prompt. Anchors the LLM's mental model
+# of the filesystem WITHOUT revealing the absolute host location of the
+# project directory. Without this, the LLM treats ``/home/…/AISE/…``
+# paths as valid because other parts of the deepagents-injected prompt
+# (``"All file paths must start with a /"``) leave the root ambiguous.
+#
+# The rules here are enforced by :mod:`policy_backend` — absolute host
+# paths starting with ``/home``, ``/etc``, ``/tmp``, ``/opt``, etc. are
+# rejected by ``norm_write`` / ``norm_edit`` / ``norm_read`` and will
+# soon also be rejected by ``norm_ls`` / ``norm_glob`` / ``norm_grep``.
+_PATH_POLICY_PROMPT = """
+## File Path Policy
+
+All file I/O happens inside your project's sandbox. You do NOT have access
+to the host filesystem and must never assume absolute host paths. Use ONE
+of these two equivalent forms:
+
+- **Relative path** — ``tests/test_foo.py``, ``docs/bar.md``, ``src/mod/x.py``
+- **Virtual-root path** (leading ``/``) — ``/tests/test_foo.py``, ``/docs/bar.md``
+
+Both forms resolve inside the project sandbox.
+
+**Forbidden** — any absolute host path, including but not limited to:
+- ``/home/...`` (user home directories)
+- ``/etc/...``, ``/tmp/...``, ``/var/...``, ``/opt/...``, ``/usr/...`` (system)
+
+These are outside the sandbox and will be rejected by ``write_file``,
+``edit_file``, ``read_file``, ``ls``, ``glob``, and ``grep`` with a
+``"Path is outside this project's root"`` error. Do not attempt them —
+if you think you need a path outside the sandbox, you are confused about
+where your project lives.
+
+If a tool ever returns that error, rewrite the call with a relative path
+(``docs/foo.md``) or a virtual-root path (``/docs/foo.md``). Never try
+to guess the host location.
+""".strip()
+
+
+def _load_inline_skill_content(skills_dir: Path) -> list[tuple[str, str]]:
+    """Read every ``*/SKILL.md`` from ``skills_dir`` and return its content.
+
+    Returns a list of ``(skill_name, skill_body)`` pairs. Uses a simple
+    directory scan (no deepagents involvement) so no absolute host paths
+    appear anywhere. The content is inlined into the agent's system
+    prompt by :func:`_compose_system_prompt`.
+    """
+    results: list[tuple[str, str]] = []
+    if not skills_dir.is_dir():
+        return results
+    for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+        try:
+            body = skill_md.read_text(encoding="utf-8")
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to read skill %s: %s", skill_md.parent.name, exc)
+            continue
+        results.append((skill_md.parent.name, body))
+    return results
+
+
+def _compose_system_prompt(
+    agent_prompt: str,
+    inline_skills: list[tuple[str, str]],
+) -> str:
+    """Append inline skill bodies + the path policy to the agent prompt.
+
+    Structure (top to bottom):
+        <agent .md system prompt>
+        [## Available Skills — inline]
+          <SKILL.md body for each skill>
+        ## File Path Policy
+    """
+    parts: list[str] = []
+    if agent_prompt.strip():
+        parts.append(agent_prompt.rstrip())
+    if inline_skills:
+        skill_section = ["## Available Skills", ""]
+        for name, body in inline_skills:
+            skill_section.append(f"### {name}")
+            skill_section.append("")
+            skill_section.append(body.strip())
+            skill_section.append("")
+        parts.append("\n".join(skill_section).rstrip())
+    parts.append(_PATH_POLICY_PROMPT)
+    return "\n\n".join(parts)
+
+
 class AgentRuntime:
     """Agent runtime built on the deepagents framework.
 
@@ -157,13 +243,32 @@ class AgentRuntime:
         self._tools = tools
         self._extra_skill_infos = extra_skill_infos
 
-        # 3. Build the deep agent
-        skill_sources = get_skill_source_paths(self._skills_dir)
+        # 3. Assemble the final system prompt
+        #
+        # Deepagents' ``SkillsMiddleware`` accepts ``skills=[abs_path]`` and
+        # injects those absolute host paths into the agent's system prompt
+        # verbatim (e.g. ``skills at /home/user/workspace/AISE/src/aise/
+        # agents/_runtime_skills``). That prompt then teaches the LLM that
+        # ``/home/.../AISE/...`` is a valid working area, so it confidently
+        # writes files to ``/home/.../AISE/src/aise/docs/...`` etc., which
+        # our ``policy_backend`` rejects with ``Path escapes project root``
+        # (hundreds of WARN entries per run).
+        #
+        # We bypass the mechanism entirely: instead of passing ``skills=``
+        # to ``create_deep_agent``, we read the skill content ourselves and
+        # inline it into the agent's system prompt. The LLM sees the skill
+        # knowledge but never sees any absolute host path.
+        inlined_skills = _load_inline_skill_content(self._skills_dir)
+        system_prompt = _compose_system_prompt(
+            self._definition.system_prompt or "",
+            inlined_skills,
+        )
+
+        # 4. Build the deep agent
         create_kwargs: dict[str, Any] = {
             "model": model,
             "tools": tools or None,
-            "system_prompt": self._definition.system_prompt or None,
-            "skills": skill_sources or None,
+            "system_prompt": system_prompt or None,
             "name": self._definition.name,
             "checkpointer": checkpointer,
         }
@@ -171,10 +276,10 @@ class AgentRuntime:
             create_kwargs["backend"] = backend
         self._agent: CompiledStateGraph = create_deep_agent(**create_kwargs)
         logger.info(
-            "Deep agent created: name=%s tools=%d skill_sources=%d",
+            "Deep agent created: name=%s tools=%d inline_skills=%d",
             self._definition.name,
             len(tools),
-            len(skill_sources),
+            len(inlined_skills),
         )
 
         # 4. Generate A2A agent card

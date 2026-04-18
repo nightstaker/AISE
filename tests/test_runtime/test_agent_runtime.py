@@ -300,6 +300,67 @@ class TestSummarizationPatch:
         assert "max_length" in truncate
 
 
+class TestSystemPromptAssembly:
+    """The final system_prompt passed to ``create_deep_agent`` must:
+
+    - append a path-policy block telling the LLM not to use absolute host paths
+    - inline every SKILL.md body (so we can stop passing ``skills=`` to
+      ``create_deep_agent`` and prevent deepagents' SkillsMiddleware from
+      leaking AISE's absolute source-tree paths into the prompt)
+    - NOT contain any absolute host path (``/home/``, ``/etc/``, etc.)
+    """
+
+    def test_system_prompt_includes_path_policy(self, agent_md_file, skills_dir, mock_create_deep_agent):
+        mock_factory, _ = mock_create_deep_agent
+        AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
+        _, kwargs = mock_factory.call_args
+        prompt = kwargs.get("system_prompt", "")
+        assert "File Path Policy" in prompt
+        assert "relative path" in prompt.lower()
+        assert "/home" in prompt  # appears inside a "Forbidden" list, not a skill path
+        # But "/home/ntstaker" — the concrete AISE absolute — must NOT appear:
+        assert "/home/ntstaker/workspace/AISE" not in prompt
+        assert "/home/ntstaker" not in prompt
+
+    def test_system_prompt_does_not_pass_skills_kwarg(self, agent_md_file, skills_dir, mock_create_deep_agent):
+        """Regression: ``create_deep_agent`` must NOT be called with
+        ``skills=``. Passing skills would re-activate deepagents'
+        SkillsMiddleware, which re-injects the absolute source-tree
+        path into the system prompt."""
+        mock_factory, _ = mock_create_deep_agent
+        AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
+        _, kwargs = mock_factory.call_args
+        assert "skills" not in kwargs or kwargs["skills"] is None
+
+    def test_system_prompt_inlines_skill_bodies(self, agent_md_file, skills_dir, mock_create_deep_agent):
+        """Skills in ``skills_dir/*/SKILL.md`` are inlined into the
+        system prompt (so the LLM gets the skill content without having
+        to ``read_file`` a host-absolute skill path)."""
+        skill_dir = skills_dir / "sample_skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# sample_skill\n\nThis is a MAGIC_SKILL_MARKER body.\n")
+        mock_factory, _ = mock_create_deep_agent
+        AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
+        _, kwargs = mock_factory.call_args
+        prompt = kwargs.get("system_prompt", "")
+        assert "## Available Skills" in prompt
+        assert "### sample_skill" in prompt
+        assert "MAGIC_SKILL_MARKER" in prompt
+
+    def test_system_prompt_no_absolute_aise_paths_with_skills(self, agent_md_file, skills_dir, mock_create_deep_agent):
+        """Even with a skill present, the resulting prompt should have
+        zero references to ``/home/*/AISE`` — the skill body is inlined
+        by filename (``### sample``) not path."""
+        skill_dir = skills_dir / "sample"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# sample\ncontent\n")
+        mock_factory, _ = mock_create_deep_agent
+        AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
+        _, kwargs = mock_factory.call_args
+        prompt = kwargs.get("system_prompt", "")
+        assert str(skills_dir) not in prompt, f"skills_dir absolute path leaked into prompt: {skills_dir}"
+
+
 class TestAgentRuntimeCard:
     def test_agent_card_generated(self, agent_md_file, skills_dir, mock_create_deep_agent):
         runtime = AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")

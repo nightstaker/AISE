@@ -293,6 +293,18 @@ class TestLsInfo:
         paths = [e["path"] for e in entries]
         assert any("src" in p for p in paths)
 
+    def test_ls_rejects_escape_path(self, backend):
+        """Symmetric with write/edit/read: escape paths now raise instead
+        of silently returning the project root's contents. The old
+        fallback fooled LLMs into believing ``ls /home/.../AISE/src``
+        worked, after which they'd confidently ``write_file`` to the
+        same escape path.
+        """
+        with pytest.raises(PermissionError, match="outside this project's root"):
+            backend.ls_info("/home/ntstaker/workspace/AISE/src")
+        with pytest.raises(PermissionError, match="outside this project's root"):
+            backend.ls_info("/etc/passwd")
+
 
 # -- glob_info -------------------------------------------------------------
 
@@ -315,6 +327,10 @@ class TestGlobInfo:
         paths = [r["path"] for r in results]
         assert any("a.py" in p for p in paths)
 
+    def test_glob_rejects_escape_path(self, backend):
+        with pytest.raises(PermissionError, match="outside this project's root"):
+            backend.glob_info("*.py", path="/home/ntstaker/workspace/AISE")
+
 
 # -- grep_raw --------------------------------------------------------------
 
@@ -332,6 +348,10 @@ class TestGrepRaw:
         backend.write("/src/main.py", "findme\n")
         results = backend.grep_raw("findme", path="/src")
         assert not isinstance(results, str)
+
+    def test_grep_rejects_escape_path(self, backend):
+        with pytest.raises(PermissionError, match="outside this project's root"):
+            backend.grep_raw("needle", path="/home/ntstaker/workspace/AISE")
 
     def test_grep_with_glob_kwarg(self, backend):
         """Regression: norm_grep must accept glob keyword argument."""
