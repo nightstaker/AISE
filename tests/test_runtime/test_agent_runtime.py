@@ -218,6 +218,49 @@ class TestAgentRuntimeTodos:
         assert captured[0][0]["status"] == "in_progress"
 
 
+class TestSummarizationPatch:
+    """Validate the deepagents SummarizationMiddleware max_arg_length override.
+
+    Without this patch, the default 2000-byte threshold truncates past
+    ``write_file.content`` arguments to a 43-byte marker, which weak LLMs
+    then copy back into new write_file calls — destroying the real file
+    on disk (observed in dispatch 0b83037d0155).
+    """
+
+    def test_summarization_defaults_include_max_length(self):
+        from deepagents import graph as da_graph
+
+        from aise.runtime.agent_runtime import _SUMMARIZATION_MAX_ARG_LENGTH
+
+        # Build a lightweight stand-in model that satisfies the
+        # ``has_profile`` branch of ``_compute_summarization_defaults``.
+        class _FakeModel:
+            profile = {"max_input_tokens": 200_000}
+
+        defaults = da_graph._compute_summarization_defaults(_FakeModel())
+        truncate = defaults.get("truncate_args_settings") or {}
+        assert truncate.get("max_length") == _SUMMARIZATION_MAX_ARG_LENGTH
+
+    def test_patch_is_idempotent(self):
+        from aise.runtime.agent_runtime import (
+            _install_summarization_max_arg_length_patch,
+        )
+
+        # Running a second time must not re-wrap the already-patched function.
+        _install_summarization_max_arg_length_patch()
+        _install_summarization_max_arg_length_patch()
+
+        from deepagents import graph as da_graph
+
+        class _FakeModel:
+            profile = {"max_input_tokens": 200_000}
+
+        # Still a single max_length override, not nested.
+        defaults = da_graph._compute_summarization_defaults(_FakeModel())
+        truncate = defaults.get("truncate_args_settings") or {}
+        assert "max_length" in truncate
+
+
 class TestAgentRuntimeCard:
     def test_agent_card_generated(self, agent_md_file, skills_dir, mock_create_deep_agent):
         runtime = AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
