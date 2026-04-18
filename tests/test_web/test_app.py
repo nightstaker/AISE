@@ -255,6 +255,31 @@ class TestWebPersistence:
         assert len(project_payload["requirements"]) == 1
         assert len(project_payload["runs"]) == 1
 
+    def test_get_project_returns_runs_in_insertion_order(self, monkeypatch, tmp_path):
+        """Regression guard: the frontend's "jump to latest run" logic
+        depends on understanding the order ``get_project`` returns runs
+        in. Backend returns them in insertion (chronological) order, so
+        ``runs[0]`` is the oldest. The frontend therefore must sort by
+        ``started_at`` before picking a target; previously it used
+        ``runs[0]`` and redirected users to a days-old failed run when
+        they clicked the project card.
+        """
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result)
+        project_id = service.create_project("OrderCheck", "local")
+        service.run_requirement(project_id, "first")
+        service.run_requirement(project_id, "second")
+        service.run_requirement(project_id, "third")
+        payload = service.get_project(project_id)
+        assert payload is not None
+        runs = payload["runs"]
+        assert len(runs) == 3
+        # Insertion order: earliest first. The sort stability matters
+        # because the frontend sort in ``pickLatestRun`` flips this.
+        times = [r["started_at"] for r in runs]
+        assert times == sorted(times), "Expected insertion (chronological) order; frontend depends on this contract."
+
     def test_zombie_running_run_is_reaped_on_startup(self, monkeypatch, tmp_path):
         """Runs stored as running/pending when the server starts have no live
         worker thread (``_active_workflow_runs`` is not persisted). Without
