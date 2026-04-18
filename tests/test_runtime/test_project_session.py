@@ -195,6 +195,77 @@ class TestPhase4EntryPointContract:
         assert "timeout" in body.lower()
 
 
+class TestPhase6DeliveryReport:
+    """Phase 6 must produce a real delivery report with measured metrics,
+    not the old three-bullet handwave ("modules implemented, test results,
+    known issues"). The prompt drives the PM through concrete data
+    gathering via execute_shell + dispatch to product_manager.
+    """
+
+    def test_phase6_prompt_collects_implementation_metrics(self, session):
+        phases = session._build_phase_prompts("Build a thing")
+        delivery = dict(phases).get("delivery", "")
+        # Runs shell commands to count files / LOC / tests / coverage.
+        assert "execute_shell" in delivery or "execute(" in delivery
+        # Source counting via find + wc -l (language-agnostic multi-ext).
+        assert "wc -l" in delivery
+        assert "find src" in delivery
+        # Test counting via pytest --collect-only.
+        assert "--collect-only" in delivery or "collect-only" in delivery
+        # Coverage attempted but optional — must mention --cov.
+        assert "--cov" in delivery
+
+    def test_phase6_prompt_dispatches_product_manager(self, session):
+        phases = session._build_phase_prompts("Build a thing")
+        delivery = dict(phases).get("delivery", "")
+        # PM agent dispatches the write step to product_manager.
+        assert "product_manager" in delivery
+        # Explicit file name.
+        assert "docs/delivery_report.md" in delivery
+        # Required sections appear in the task description.
+        for section in (
+            "Executive Summary",
+            "Design",
+            "Implementation Metrics",
+            "Testing Metrics",
+            "Known Issues",
+        ):
+            assert section in delivery, f"delivery prompt missing '{section}' section"
+
+    def test_phase6_prompt_forbids_fabricated_numbers(self, session):
+        phases = session._build_phase_prompts("Build a thing")
+        delivery = dict(phases).get("delivery", "")
+        # Explicit anti-fabrication clause — PM must cite real outputs.
+        assert (
+            "do not invent numbers" in delivery.lower()
+            or "do not fabricate" in delivery.lower()
+            or "do not guess" in delivery.lower()
+        )
+
+    def test_phase6_prompt_ends_with_mark_complete(self, session):
+        phases = session._build_phase_prompts("Build a thing")
+        delivery = dict(phases).get("delivery", "")
+        # Last step is mark_complete; any earlier phase prompt says "Do NOT
+        # call mark_complete", so this is the one phase where it fires.
+        assert "mark_complete" in delivery
+        # And the report in docs/delivery_report.md is referenced.
+        assert "docs/delivery_report.md" in delivery
+
+    def test_product_manager_md_acknowledges_delivery_report(self):
+        """product_manager.md must explicitly accept delivery-report
+        tasks and warn against fabricating numbers. Otherwise the
+        agent might refuse the dispatch as out of scope."""
+        from pathlib import Path as _P
+
+        import aise
+
+        md_path = _P(aise.__file__).resolve().parent / "agents" / "product_manager.md"
+        body = md_path.read_text(encoding="utf-8")
+        assert "delivery_report.md" in body
+        # Anti-fabrication warning so PM cites numbers verbatim.
+        assert "verbatim" in body.lower() or "do not invent" in body.lower()
+
+
 class TestProjectSessionRun:
     def test_run_calls_pm_runtime(self, session):
         # Simulate a phased workflow. mark_complete is only honored in the
