@@ -476,10 +476,24 @@ function setupProjectReact() {
 
     const [view, setView] = window.React.useState("default");
 
+    // Backend returns runs in insertion (chronological) order, so ``runs[0]``
+    // is the OLDEST run. Sort by started_at descending and pick the newest
+    // as the "latest run" target for the auto-redirect. Without this,
+    // clicking a project card could bounce the user to a run from days ago
+    // (e.g. an old failed dispatch) instead of whatever was just started.
+    function pickLatestRun(list) {
+      if (!list || list.length === 0) return null;
+      return [...list].sort((a, b) => {
+        const ta = Date.parse(a && a.started_at) || 0;
+        const tb = Date.parse(b && b.started_at) || 0;
+        return tb - ta;
+      })[0];
+    }
+
     // Auto-redirect to latest run if available
     window.React.useEffect(() => {
-      if (runs.length > 0) {
-        const latestRun = runs[0];
+      const latestRun = pickLatestRun(runs);
+      if (latestRun && latestRun.run_id) {
         window.location.href = `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(latestRun.run_id)}`;
       }
     }, []); // only on initial load
