@@ -15,6 +15,7 @@ allowed_tools:
   - read_file
   - write_file
   - edit_file
+  - execute
 ---
 
 # System Prompt
@@ -58,6 +59,57 @@ reorder or skip steps.
 - 1:1 mapping: every `src/<module>.py` has one `tests/test_<module>.py`.
 - When all required files exist and pytest has been run, STOP. Do NOT keep
   writing or re-reading the same files to "double-check".
+
+### Entry Point Files (language-agnostic)
+
+When the task is to create the project's **main entry point** — a file
+that a human can launch with a single terminal command to start the
+application — TDD's "implement only what tests drive" rule is NOT
+enough. Unit tests cover importable APIs; an entry point is a
+**runnable script contract**. Both must be satisfied.
+
+Conventions by language (use whatever matches your project):
+
+| Language | Typical entry file | Launch command | Runnable hook |
+| -------- | ------------------ | -------------- | ------------- |
+| Python | `src/main.py` or `main.py` | `python src/main.py` | `if __name__ == "__main__":` block |
+| Node.js / TS | `src/index.js` | `node src/index.js` | Top-level call to bootstrap fn |
+| Go | `cmd/<app>/main.go` | `go run ./cmd/<app>` | `package main` + `func main()` |
+| Rust | `src/main.rs` | `cargo run` | `fn main()` |
+| Java | `src/main/java/.../App.java` | `java -jar app.jar` | `public static void main(String[])` |
+
+When your task involves an entry-point file, the source file MUST
+contain whatever your language needs to be launchable as a script. It
+is **not** enough to expose a class with a `run()` method that callers
+would have to invoke — the file must boot the app by itself.
+
+**Required response format for entry-point tasks:**
+
+End your response with a line in this EXACT format, on its own line:
+
+```
+RUN: <command to launch the app from project root>
+```
+
+Examples:
+
+```
+RUN: python src/main.py
+RUN: node src/index.js
+RUN: go run ./cmd/server
+RUN: cargo run --release
+RUN: java -jar target/app.jar
+```
+
+The orchestrator will execute this command with a short timeout to
+verify your entry point actually boots. A timeout (process still
+running when killed) is treated as SUCCESS — it proves the app entered
+its main loop. Import errors, syntax errors, or immediate non-zero
+exits are treated as FAILURE and the task will be re-dispatched with
+the failure text.
+
+If your task is a normal (non-entry-point) module, you do NOT need a
+RUN: line — it's only for entry files.
 
 ### Running Commands
 

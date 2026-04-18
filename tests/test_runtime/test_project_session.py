@@ -137,6 +137,64 @@ class TestProjectSessionTools:
         assert "task_response" in types
 
 
+class TestPhase4EntryPointContract:
+    """The Phase 4 prompt must instruct the developer to produce an
+    entry-point file that is *runnable by its language's convention*,
+    not just an importable class. The orchestrator then extracts the
+    ``RUN:`` line from the developer's response and smoke-tests it.
+
+    Regression guard: the old Phase 4 prompt said "Write src/main.py"
+    with the TDD-first instruction, which led developers (following TDD
+    literally) to write a ``GameApp`` class with no ``if __name__ ==
+    "__main__":`` block — the file was importable but ``python
+    src/main.py`` did nothing.
+    """
+
+    def test_phase4_prompt_is_language_agnostic(self, session):
+        # Exercise the real phase builder via session (same helper used
+        # by session.run()).
+        phases = session._build_phase_prompts("Build a thing")
+        main_entry = dict(phases).get("main_entry", "")
+        # Prompt names multiple languages — not Python-only.
+        assert "src/main.py" in main_entry
+        assert "src/index.js" in main_entry or "node" in main_entry.lower()
+        assert "go run" in main_entry.lower() or "main.go" in main_entry
+        assert "cargo run" in main_entry.lower() or "main.rs" in main_entry
+
+    def test_phase4_prompt_requires_run_line(self, session):
+        phases = session._build_phase_prompts("Build a thing")
+        main_entry = dict(phases).get("main_entry", "")
+        # RUN: contract is described.
+        assert "RUN:" in main_entry
+        assert "execute_shell" in main_entry or "execute(" in main_entry
+        # Smoke-test semantics: timeout is success.
+        assert "timeout" in main_entry.lower()
+        assert "ImportError" in main_entry or "startup" in main_entry.lower()
+
+    def test_phase4_prompt_has_retry_loop(self, session):
+        phases = session._build_phase_prompts("Build a thing")
+        main_entry = dict(phases).get("main_entry", "")
+        # Retry up to 3 attempts on failure — matches Phase 3's pattern.
+        assert "3 attempts" in main_entry or "3 attempts" in main_entry.lower()
+
+    def test_developer_md_describes_run_contract(self):
+        """developer.md must teach the developer agent how to produce the
+        RUN: line the orchestrator expects."""
+        from pathlib import Path as _P
+
+        import aise
+
+        md_path = _P(aise.__file__).resolve().parent / "agents" / "developer.md"
+        body = md_path.read_text(encoding="utf-8")
+        assert "Entry Point Files" in body
+        assert "RUN:" in body
+        # Language-agnostic — examples cover at least Python + one other.
+        assert "python src/main.py" in body
+        assert "node src/index.js" in body or "cargo run" in body or "go run" in body
+        # The timeout-is-success semantics must be documented.
+        assert "timeout" in body.lower()
+
+
 class TestProjectSessionRun:
     def test_run_calls_pm_runtime(self, session):
         # Simulate a phased workflow. mark_complete is only honored in the
