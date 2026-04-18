@@ -367,6 +367,37 @@ class TestPathNormalization:
 
 
 class TestExecute:
+    def test_backend_is_sandbox_backend(self, backend):
+        """CRITICAL regression guard.
+
+        Deepagents' ``FilesystemMiddleware`` decides whether to register
+        the ``execute`` tool via
+        ``isinstance(backend, SandboxBackendProtocol)``. Previously we
+        attached ``execute``/``aexecute`` via ``setattr``, which left the
+        class hierarchy unchanged and the isinstance check returning
+        False — so worker agents silently did not get the ``execute``
+        tool, and the LLM correctly reported "I don't have a tool to
+        execute arbitrary shell commands" (observed in dispatch
+        ``e13a04cd449d``). The backend must subclass
+        ``SandboxBackendProtocol`` for the tool to be bound.
+        """
+        from deepagents.backends.protocol import SandboxBackendProtocol
+
+        assert isinstance(backend, SandboxBackendProtocol)
+
+    def test_backend_is_also_filesystem_backend(self, backend):
+        """Sanity: the subclass still IS a FilesystemBackend, so any
+        existing ``isinstance(backend, FilesystemBackend)`` branches in
+        deepagents continue to match."""
+        from deepagents.backends import FilesystemBackend
+
+        assert isinstance(backend, FilesystemBackend)
+
+    def test_backend_exposes_sandbox_id(self, backend, project_root):
+        """SandboxBackendProtocol requires ``id`` — deepagents logs it."""
+        assert backend.id
+        assert str(project_root) in backend.id
+
     def test_execute_available(self, backend):
         assert hasattr(backend, "execute")
         assert hasattr(backend, "aexecute")
@@ -381,6 +412,11 @@ class TestExecute:
         result = backend.execute(command="python src/hello.py")
         assert result.exit_code == 0
         assert "works" in result.output
+
+    def test_execute_cwd_is_project_root(self, backend, project_root):
+        result = backend.execute(command="pwd")
+        assert result.exit_code == 0
+        assert str(project_root.resolve()) in result.output
 
     def test_execute_pytest(self, backend, project_root):
         backend.write("/tests/test_trivial.py", "def test_ok():\n    assert True\n")
@@ -399,3 +435,10 @@ class TestExecute:
         sig = inspect.signature(backend.execute)
         params = list(sig.parameters.keys())
         assert params == ["command", "timeout"]
+
+    def test_aexecute_runs_command(self, backend):
+        import asyncio
+
+        result = asyncio.run(backend.aexecute(command="python --version"))
+        assert result.exit_code == 0
+        assert "Python" in result.output
