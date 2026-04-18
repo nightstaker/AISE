@@ -41,6 +41,61 @@ except ImportError:
     create_deep_agent = None  # type: ignore[assignment,misc]
 
 
+# Raise the deepagents SummarizationMiddleware ``max_arg_length`` from its
+# default of 2000 bytes to this value. The middleware truncates large
+# tool-call arguments in the CONVERSATION HISTORY (not on disk) to save
+# tokens, replacing them with ``<first 20 chars> + "...(argument
+# truncated)"``. For weak local LLMs this creates a destructive
+# self-referential loop: a later generation reads its own truncated
+# history, emits ``write_file(content="""... (argument truncated)""")``,
+# and that short marker gets written verbatim to disk — overwriting the
+# real test/source file with a 43-byte garbage string. A typical
+# test + source module in this project is 5–20 KB, so a 50 KB ceiling
+# keeps the real file content in history while still leaving room for
+# summarization of other oversized arguments.
+_SUMMARIZATION_MAX_ARG_LENGTH = 50000
+
+
+def _install_summarization_max_arg_length_patch() -> None:
+    """Monkey-patch deepagents' ``_compute_summarization_defaults`` to inject
+    ``max_length=_SUMMARIZATION_MAX_ARG_LENGTH`` into ``truncate_args_settings``.
+
+    ``create_deep_agent`` looks up ``_compute_summarization_defaults`` via its
+    own module-level import binding in ``deepagents.graph``; patching the
+    source module alone would not affect new calls. We therefore patch the
+    binding in ``deepagents.graph`` directly.
+
+    The patch is idempotent: a marker attribute on the replacement function
+    prevents double-wrapping if this module is re-imported.
+    """
+    try:
+        from deepagents import graph as _da_graph
+    except ImportError:
+        return
+
+    orig = getattr(_da_graph, "_compute_summarization_defaults", None)
+    if orig is None or getattr(orig, "_aise_max_arg_patched", False):
+        return
+
+    def patched(model):  # type: ignore[no-untyped-def]
+        defaults = dict(orig(model))
+        truncate = dict(defaults.get("truncate_args_settings") or {})
+        truncate.setdefault("max_length", _SUMMARIZATION_MAX_ARG_LENGTH)
+        defaults["truncate_args_settings"] = truncate
+        return defaults
+
+    patched._aise_max_arg_patched = True  # type: ignore[attr-defined]
+    _da_graph._compute_summarization_defaults = patched
+    logger.info(
+        "Patched deepagents SummarizationMiddleware max_arg_length=%d",
+        _SUMMARIZATION_MAX_ARG_LENGTH,
+    )
+
+
+if create_deep_agent is not None:
+    _install_summarization_max_arg_length_patch()
+
+
 class AgentRuntime:
     """Agent runtime built on the deepagents framework.
 

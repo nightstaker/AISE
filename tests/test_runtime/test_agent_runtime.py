@@ -218,6 +218,88 @@ class TestAgentRuntimeTodos:
         assert captured[0][0]["status"] == "in_progress"
 
 
+class TestExecuteToolBinding:
+    """End-to-end: verify the ``execute`` tool is bound to a real
+    ``CompiledStateGraph`` built via ``create_deep_agent``.
+
+    Prior to the SandboxFilesystemBackend subclassing fix, the policy
+    backend used ``setattr`` to attach ``execute``/``aexecute`` methods,
+    but deepagents' ``FilesystemMiddleware`` checks
+    ``isinstance(backend, SandboxBackendProtocol)`` to decide whether to
+    register the tool. That check returned False (non-runtime-checkable
+    ABC), so the ``execute`` tool was silently absent — worker agents'
+    LLMs correctly reported "I don't have a tool to execute arbitrary
+    shell commands" (dispatch e13a04cd449d, 2026-04-18).
+    """
+
+    def test_execute_tool_bound_on_deep_agent(self, agent_md_file, skills_dir, tmp_path):
+        from langchain_core.language_models.fake_chat_models import (
+            GenericFakeChatModel,
+        )
+        from langchain_core.messages import AIMessage
+
+        from aise.runtime.agent_runtime import AgentRuntime
+        from aise.runtime.policy_backend import make_policy_backend
+
+        # A real (non-mock) create_deep_agent run — required to prove the
+        # fix end-to-end. Use a GenericFakeChatModel so no real API calls
+        # happen.
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        backend = make_policy_backend(tmp_path)
+        runtime = AgentRuntime(
+            agent_md=agent_md_file,
+            skills_dir=skills_dir,
+            model=model,
+            backend=backend,
+        )
+        tool_node = runtime._agent.nodes["tools"].bound
+        tool_names = set(tool_node.tools_by_name.keys())
+        assert "execute" in tool_names, f"execute tool must be bound on worker deep agents; got {sorted(tool_names)}"
+
+
+class TestSummarizationPatch:
+    """Validate the deepagents SummarizationMiddleware max_arg_length override.
+
+    Without this patch, the default 2000-byte threshold truncates past
+    ``write_file.content`` arguments to a 43-byte marker, which weak LLMs
+    then copy back into new write_file calls — destroying the real file
+    on disk (observed in dispatch 0b83037d0155).
+    """
+
+    def test_summarization_defaults_include_max_length(self):
+        from deepagents import graph as da_graph
+
+        from aise.runtime.agent_runtime import _SUMMARIZATION_MAX_ARG_LENGTH
+
+        # Build a lightweight stand-in model that satisfies the
+        # ``has_profile`` branch of ``_compute_summarization_defaults``.
+        class _FakeModel:
+            profile = {"max_input_tokens": 200_000}
+
+        defaults = da_graph._compute_summarization_defaults(_FakeModel())
+        truncate = defaults.get("truncate_args_settings") or {}
+        assert truncate.get("max_length") == _SUMMARIZATION_MAX_ARG_LENGTH
+
+    def test_patch_is_idempotent(self):
+        from aise.runtime.agent_runtime import (
+            _install_summarization_max_arg_length_patch,
+        )
+
+        # Running a second time must not re-wrap the already-patched function.
+        _install_summarization_max_arg_length_patch()
+        _install_summarization_max_arg_length_patch()
+
+        from deepagents import graph as da_graph
+
+        class _FakeModel:
+            profile = {"max_input_tokens": 200_000}
+
+        # Still a single max_length override, not nested.
+        defaults = da_graph._compute_summarization_defaults(_FakeModel())
+        truncate = defaults.get("truncate_args_settings") or {}
+        assert "max_length" in truncate
+
+
 class TestAgentRuntimeCard:
     def test_agent_card_generated(self, agent_md_file, skills_dir, mock_create_deep_agent):
         runtime = AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")

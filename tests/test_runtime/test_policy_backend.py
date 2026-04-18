@@ -139,14 +139,64 @@ class TestWrite:
         assert r.error is None
         assert (project_root / "src" / "main.py").read_text() == "v2"
 
-    def test_write_normalizes_absolute_host_path(self, backend, project_root):
-        # Simulate LLM using absolute AISE repo path
+    def test_write_normalizes_absolute_project_root_path(self, backend, project_root):
+        """Absolute paths pointing INTO this project are still accepted."""
+        result = backend.write(f"{project_root}/src/test.py", "x=1")
+        assert result.error is None
+        assert (project_root / "src" / "test.py").read_text() == "x=1"
+
+    def test_write_rejects_absolute_non_project_path(self, backend, project_root):
+        """Regression: a confused agent wrote to the AISE repo's own source
+        (``/home/.../AISE/src/aise/docs/requirement.md``) and the backend
+        silently remapped it into the project, leaving the file at
+        ``projects/<proj>/src/aise/docs/...``. We now reject such escape
+        paths with a clear error so the LLM retries with a relative path.
+        """
         import aise
 
         aise_root = str(Path(aise.__file__).resolve().parent.parent.parent)
-        result = backend.write(f"{aise_root}/src/test.py", "x=1")
+        # This path is OUTSIDE the project_root tmp_path.
+        result = backend.write(f"{aise_root}/src/aise/docs/requirement.md", "x=1")
+        assert result.error is not None
+        assert "outside this project's root" in result.error
+        # Nothing should have been written inside the project either.
+        assert not (project_root / "src" / "aise" / "docs" / "requirement.md").exists()
+
+    def test_write_rejects_system_escape_paths(self, backend, project_root):
+        """Writes to /etc, /tmp, /var, etc. are rejected even if they don't
+        collide with the AISE repo."""
+        for escape in ("/etc/passwd", "/tmp/x.py", "/var/log/attack.sh"):
+            result = backend.write(escape, "pwn")
+            assert result.error is not None, f"expected rejection for {escape}"
+            assert "outside this project's root" in result.error
+
+    def test_write_rejects_summarization_truncation_marker(self, backend, project_root):
+        """When the SummarizationMiddleware has replaced a past write_file's
+        content argument in the conversation history with ``<first 20 chars>
+        + "...(argument truncated)"``, a weak LLM may copy that short marker
+        string into a new write_file call. Without this guard the marker
+        would be written verbatim to disk, destroying the real file.
+
+        Regression: dispatch 0b83037d0155 rewrote tests/test_entity.py down
+        to the 43-byte marker multiple times and hit recursion_limit=240.
+        """
+        content = '"""Comprehensive uni...(argument truncated)'
+        result = backend.write("/tests/test_foo.py", content)
+        assert result.error is not None
+        assert "truncation" in result.error.lower() or "truncated" in result.error.lower()
+        # File should NOT be written.
+        assert not (project_root / "tests" / "test_foo.py").exists()
+
+    def test_write_accepts_marker_substring_in_real_content(self, backend, project_root):
+        """Legitimate content that happens to MENTION the phrase ``argument
+        truncated`` (e.g. a test case about summarization) is fine. Only the
+        full marker ``"...(argument truncated)"`` is rejected."""
+        # Normal content mentioning the phrase without the full marker.
+        result = backend.write(
+            "/tests/test_foo.py",
+            "# this test checks argument handling — not the truncated marker",
+        )
         assert result.error is None
-        assert (project_root / "src" / "test.py").read_text() == "x=1"
 
 
 # -- Read ------------------------------------------------------------------
@@ -209,6 +259,20 @@ class TestEdit:
         result = backend.edit("/src/calc.py", "this does not exist", "new content")
         assert result.error is not None
         assert "write_file" in result.error
+
+    def test_edit_rejects_summarization_truncation_marker_in_new_string(self, backend):
+        """new_string containing the ``...(argument truncated)`` marker is a
+        copy-from-truncated-history bug; refuse the edit."""
+        backend.write("/src/calc.py", "x = 1")
+        result = backend.edit(
+            "/src/calc.py",
+            "x = 1",
+            '"""header...(argument truncated)',
+        )
+        assert result.error is not None
+        assert "truncation" in result.error.lower() or "truncated" in result.error.lower()
+        # File is not modified.
+        assert (backend._resolve_path("/src/calc.py")).read_text() == "x = 1"
 
 
 # -- ls_info ---------------------------------------------------------------
@@ -303,6 +367,37 @@ class TestPathNormalization:
 
 
 class TestExecute:
+    def test_backend_is_sandbox_backend(self, backend):
+        """CRITICAL regression guard.
+
+        Deepagents' ``FilesystemMiddleware`` decides whether to register
+        the ``execute`` tool via
+        ``isinstance(backend, SandboxBackendProtocol)``. Previously we
+        attached ``execute``/``aexecute`` via ``setattr``, which left the
+        class hierarchy unchanged and the isinstance check returning
+        False — so worker agents silently did not get the ``execute``
+        tool, and the LLM correctly reported "I don't have a tool to
+        execute arbitrary shell commands" (observed in dispatch
+        ``e13a04cd449d``). The backend must subclass
+        ``SandboxBackendProtocol`` for the tool to be bound.
+        """
+        from deepagents.backends.protocol import SandboxBackendProtocol
+
+        assert isinstance(backend, SandboxBackendProtocol)
+
+    def test_backend_is_also_filesystem_backend(self, backend):
+        """Sanity: the subclass still IS a FilesystemBackend, so any
+        existing ``isinstance(backend, FilesystemBackend)`` branches in
+        deepagents continue to match."""
+        from deepagents.backends import FilesystemBackend
+
+        assert isinstance(backend, FilesystemBackend)
+
+    def test_backend_exposes_sandbox_id(self, backend, project_root):
+        """SandboxBackendProtocol requires ``id`` — deepagents logs it."""
+        assert backend.id
+        assert str(project_root) in backend.id
+
     def test_execute_available(self, backend):
         assert hasattr(backend, "execute")
         assert hasattr(backend, "aexecute")
@@ -317,6 +412,11 @@ class TestExecute:
         result = backend.execute(command="python src/hello.py")
         assert result.exit_code == 0
         assert "works" in result.output
+
+    def test_execute_cwd_is_project_root(self, backend, project_root):
+        result = backend.execute(command="pwd")
+        assert result.exit_code == 0
+        assert str(project_root.resolve()) in result.output
 
     def test_execute_pytest(self, backend, project_root):
         backend.write("/tests/test_trivial.py", "def test_ok():\n    assert True\n")
@@ -335,3 +435,10 @@ class TestExecute:
         sig = inspect.signature(backend.execute)
         params = list(sig.parameters.keys())
         assert params == ["command", "timeout"]
+
+    def test_aexecute_runs_command(self, backend):
+        import asyncio
+
+        result = asyncio.run(backend.aexecute(command="python --version"))
+        assert result.exit_code == 0
+        assert "Python" in result.output

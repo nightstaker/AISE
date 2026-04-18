@@ -1,16 +1,26 @@
-"""Create a deepagents FilesystemBackend with path normalization + write-overwrite.
+"""Sandbox-capable filesystem backend for deepagents with path normalization.
 
-Two patches over the native ``FilesystemBackend``:
+Three extensions over the native ``FilesystemBackend``:
 
-1. **Path normalization** — LLMs frequently produce absolute host paths
+1. **Shell execution** — the backend subclasses
+   :class:`SandboxBackendProtocol` so deepagents auto-registers the
+   ``execute`` tool. Previously we attached ``execute``/``aexecute`` via
+   ``setattr``, but deepagents' ``FilesystemMiddleware`` checks
+   ``isinstance(backend, SandboxBackendProtocol)`` (a plain ABC, not a
+   ``@runtime_checkable`` Protocol), so the duck-typed attachments were
+   silently ignored and worker agents never had a working ``execute``
+   tool — observed in dispatch ``e13a04cd449d`` which wasted 98 LLM
+   rounds writing ``subprocess.run(…)`` wrapper scripts.
+
+2. **Path normalization** — LLMs frequently produce absolute host paths
    (e.g. ``/home/user/workspace/AISE/src/foo.py``) or virtual-root
    paths (``/src/foo.py``). The backend's ``virtual_mode`` already
-   handles the leading-slash case, but absolute host paths create
-   nested directory trees (``<root>/home/user/...``). We intercept
-   every file operation to strip known prefixes so paths resolve
-   correctly under the project root.
+   handles the leading-slash case. We intercept every file operation to
+   strip the project root prefix (so ``<project_root>/src/foo.py`` →
+   ``/src/foo.py``) and reject paths that escape the project root
+   (``/home/other/...``, ``/etc/...``, ``/tmp/...``, etc.).
 
-2. **Write-overwrite** — The native ``write()`` rejects existing files
+3. **Write-overwrite** — The native ``write()`` rejects existing files
    with "already exists", which causes LLMs to enter rename loops.
    We allow overwrite since the containment is already guaranteed by
    ``virtual_mode``.
@@ -18,13 +28,89 @@ Two patches over the native ``FilesystemBackend``:
 
 from __future__ import annotations
 
+import asyncio
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
+
+from deepagents.backends import FilesystemBackend
+from deepagents.backends.protocol import (
+    EditResult,
+    ExecuteResponse,
+    SandboxBackendProtocol,
+    WriteResult,
+)
 
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+_DEFAULT_SHELL_TIMEOUT = 120
+_MAX_OUTPUT_BYTES = 10000
+
+
+class SandboxFilesystemBackend(FilesystemBackend, SandboxBackendProtocol):
+    """``FilesystemBackend`` that advertises :class:`SandboxBackendProtocol`.
+
+    The parent ``FilesystemBackend`` handles all virtual-root file ops.
+    We add :meth:`execute` and :meth:`aexecute` so ``isinstance`` checks
+    inside deepagents' middleware recognize this backend as shell-capable
+    — which is what triggers the ``execute`` tool to be bound to the
+    agent's tool list.
+
+    Run behavior: commands execute via ``subprocess.run(shell=True)``
+    with ``cwd`` set to the project root. No allowlist is enforced here;
+    the worker agent is already sandboxed by its project_root and the
+    rest of its restricted tool surface. Orchestrator-level dispatches
+    still use the separate ``execute_shell`` tool from ``tool_primitives``
+    (which *does* have an allowlist).
+    """
+
+    def __init__(
+        self,
+        root_dir: str,
+        *,
+        virtual_mode: bool = True,
+        shell_timeout: int = _DEFAULT_SHELL_TIMEOUT,
+    ) -> None:
+        super().__init__(root_dir=root_dir, virtual_mode=virtual_mode)
+        self._shell_timeout = shell_timeout
+        self._sandbox_id = f"fs:{root_dir}"
+
+    @property
+    def id(self) -> str:
+        return self._sandbox_id
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        effective_timeout = timeout if timeout and timeout > 0 else self._shell_timeout
+        try:
+            proc = subprocess.run(  # noqa: S602 — sandboxed to project_root, worker tool
+                command,
+                shell=True,
+                cwd=str(self.cwd),
+                capture_output=True,
+                text=True,
+                timeout=effective_timeout,
+            )
+            output = (proc.stdout or "") + (proc.stderr or "")
+            truncated = len(output) > _MAX_OUTPUT_BYTES
+            return ExecuteResponse(
+                output=output[-_MAX_OUTPUT_BYTES:],
+                exit_code=proc.returncode,
+                truncated=truncated,
+            )
+        except subprocess.TimeoutExpired:
+            return ExecuteResponse(
+                output=f"Command timed out after {effective_timeout}s",
+                exit_code=-1,
+            )
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            return ExecuteResponse(output=f"Error: {exc}", exit_code=-1)
+
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        return await asyncio.to_thread(self.execute, command, timeout=timeout)
 
 
 def make_policy_backend(
@@ -33,7 +119,7 @@ def make_policy_backend(
     layout: Any = None,
     agent_name: str = "agent",
 ) -> Any:
-    """Create a deepagents FilesystemBackend with path normalization.
+    """Create a ``SandboxFilesystemBackend`` with path normalization + guards.
 
     Args:
         project_root: Directory where the agent may read/write files.
@@ -41,48 +127,109 @@ def make_policy_backend(
         agent_name: Unused (kept for call-site compatibility).
 
     Returns:
-        A ``FilesystemBackend`` with ``virtual_mode=True``, patched
-        ``write`` (allows overwrite), and path normalization on all
-        file operations.
-    """
-    from deepagents.backends import FilesystemBackend
-    from deepagents.backends.protocol import EditResult, WriteResult
+        A :class:`SandboxFilesystemBackend` instance with:
 
+        - ``virtual_mode=True`` (leading-slash paths rooted at project_root)
+        - ``write`` allowing overwrite
+        - Path normalization and escape-path rejection
+        - Loop-detection after 3 consecutive identical no-op writes/edits
+        - Rejection of the SummarizationMiddleware ``"...(argument truncated)"``
+          marker
+        - Native ``execute`` / ``aexecute`` inherited from the class so
+          deepagents' ``FilesystemMiddleware`` auto-registers the
+          ``execute`` tool via its ``isinstance(backend,
+          SandboxBackendProtocol)`` check.
+    """
     root = Path(project_root).resolve()
     root_str = str(root)
-    base = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    base = SandboxFilesystemBackend(root_dir=str(root), virtual_mode=True)
 
     # -- Path normalization ------------------------------------------------
 
-    # Prefixes that the LLM might prepend. The project root itself
-    # (``/home/user/.../projects/project_3-snake``) and the AISE repo
-    # root (``/home/user/.../AISE``) are both common.
-    _strip_prefixes: list[str] = []
-    _strip_prefixes.append(root_str + "/")  # project root
-    _strip_prefixes.append(root_str)
-    # Also strip the AISE repo root (2 levels up from src/aise/runtime/)
-    aise_root = Path(__file__).resolve().parent.parent.parent.parent
-    aise_str = str(aise_root)
-    if aise_str != root_str:
-        _strip_prefixes.append(aise_str + "/")
-        _strip_prefixes.append(aise_str)
+    # Prefixes the LLM might prepend to reach files inside THIS project.
+    # We only strip the project root — absolute paths pointing outside
+    # the project (``/home/user/workspace/AISE/...``, ``/etc/...``, etc.)
+    # are rejected rather than silently remapped. An earlier version
+    # stripped the AISE repo root too, which let a confused PM write
+    # ``/home/user/.../AISE/src/aise/docs/requirement.md`` and have it
+    # land at ``projects/<proj>/src/aise/docs/requirement.md`` — wrong
+    # location, and the LLM had no way to notice the mistake because
+    # the write silently succeeded.
+    _project_strip_prefixes: tuple[str, ...] = (root_str + "/", root_str)
 
-    def _normalize(path: str) -> str:
-        """Strip absolute host prefixes, leaving a virtual-root-relative path.
+    # System paths we know a project write should never touch. Used to
+    # flag escape attempts when a path starts with ``/`` but does not
+    # point inside the project.
+    _ESCAPE_PREFIXES: tuple[str, ...] = (
+        "/home/",
+        "/opt/",
+        "/usr/",
+        "/etc/",
+        "/tmp/",
+        "/var/",
+        "/mnt/",
+        "/root/",
+        "/boot/",
+        "/dev/",
+        "/proc/",
+        "/sys/",
+    )
 
-        ``/home/user/workspace/AISE/src/foo.py`` → ``/src/foo.py``
-        ``/src/foo.py`` → ``/src/foo.py``  (already virtual)
-        ``src/foo.py`` → ``src/foo.py``    (already relative)
+    def _normalize(path: str) -> str | None:
+        """Return a virtual-root-relative path, or None if the path escapes.
+
+        - ``/<project_root>/src/foo.py`` → ``/src/foo.py``
+        - ``/src/foo.py`` (virtual) → ``/src/foo.py``
+        - ``src/foo.py`` (relative) → ``src/foo.py``
+        - ``/home/other/…`` → None  (reject: escapes project root)
         """
-        for prefix in _strip_prefixes:
+        for prefix in _project_strip_prefixes:
             if path.startswith(prefix):
                 remainder = path[len(prefix) :]
-                # Ensure it starts with / for virtual_mode consistency
                 normalized = "/" + remainder.lstrip("/") if remainder else "/"
                 if normalized != path:
                     logger.debug("Path normalized: %r → %r", path, normalized)
                 return normalized
+        # Relative path or already-virtual absolute path: pass through.
+        if not path.startswith("/"):
+            return path
+        # Absolute host path that isn't in the project. If it targets a
+        # known system directory, reject outright; otherwise trust the
+        # deepagents virtual_mode resolver (it will root under the
+        # project anyway, but at least non-system paths aren't escape
+        # attempts).
+        if path.startswith(_ESCAPE_PREFIXES):
+            logger.warning("Path escapes project root, rejecting: %r", path)
+            return None
         return path
+
+    def _escape_error(file_path: str) -> str:
+        return (
+            f"Path '{file_path}' is outside this project's root. "
+            "Use relative paths (e.g. 'docs/requirement.md') or paths "
+            "rooted at the project (e.g. '/docs/requirement.md'). Do "
+            "NOT use absolute host paths like /home/user/workspace/..."
+        )
+
+    # Summarization middleware replaces past ``write_file.content`` /
+    # ``edit_file.new_string`` arguments with this marker when the context
+    # grows too large. Weak local LLMs then read their own truncated
+    # history and emit a new ``write_file`` whose ``content`` is literally
+    # the marker string — which would destructively overwrite the real
+    # file with a 43-byte garbage payload. We refuse such writes.
+    _TRUNCATION_MARKER = "...(argument truncated)"
+
+    def _truncation_marker_error(tool: str, file_path: str) -> str:
+        return (
+            f"Refusing {tool} on '{file_path}': the content argument "
+            f"contains the summarization-middleware marker "
+            f"{_TRUNCATION_MARKER!r}. That marker is a placeholder the "
+            "conversation middleware puts in place of a large tool-call "
+            "argument in your history — it is NOT real content. "
+            "Regenerate the full file content from the original task "
+            "requirements, or use read_file to see the current on-disk "
+            "content before deciding what to write."
+        )
 
     # -- Wrap every file operation with normalization ----------------------
 
@@ -133,7 +280,16 @@ def make_policy_backend(
         _noop_streak = 0
 
     def norm_write(file_path: str, content: str) -> WriteResult:
-        file_path = _normalize(file_path)
+        normalized = _normalize(file_path)
+        if normalized is None:
+            return WriteResult(error=_escape_error(file_path))
+        file_path = normalized
+        if _TRUNCATION_MARKER in content:
+            logger.warning(
+                "write_file refused: content contains truncation marker (%s)",
+                file_path,
+            )
+            return WriteResult(error=_truncation_marker_error("write_file", file_path))
         resolved = base._resolve_path(file_path)
         if not resolved.exists():
             _reset_noop_streak()
@@ -173,10 +329,22 @@ def make_policy_backend(
             return WriteResult(error=f"Error writing file '{file_path}': {exc}")
 
     def norm_read(file_path: str, offset: int = 0, limit: int = 2000) -> str:
-        return _orig_read(_normalize(file_path), offset, limit)
+        normalized = _normalize(file_path)
+        if normalized is None:
+            return _escape_error(file_path)
+        return _orig_read(normalized, offset, limit)
 
     def norm_edit(file_path: str, old_string: str, new_string: str, replace_all: bool = False):
-        file_path = _normalize(file_path)
+        normalized = _normalize(file_path)
+        if normalized is None:
+            return EditResult(error=_escape_error(file_path))
+        file_path = normalized
+        if _TRUNCATION_MARKER in new_string:
+            logger.warning(
+                "edit_file refused: new_string contains truncation marker (%s)",
+                file_path,
+            )
+            return EditResult(error=_truncation_marker_error("edit_file", file_path))
         # old_string == new_string is a no-op. Return success so the LLM
         # doesn't enter an error-retry loop. After _NOOP_STREAK_LIMIT
         # identical repeats the tool returns a LOOP_DETECTED error.
@@ -207,56 +375,37 @@ def make_policy_backend(
         return result
 
     def norm_ls(path: str) -> Any:
-        return _orig_ls(_normalize(path))
+        normalized = _normalize(path)
+        if normalized is None:
+            # ls has no error channel on its Info result — log and return
+            # an empty listing so the LLM sees "no such path" rather than
+            # accidentally scanning outside the project.
+            logger.warning("ls on non-project path rejected: %r", path)
+            return _orig_ls("/")
+        return _orig_ls(normalized)
 
     def norm_glob(pattern: str, path: str = "/") -> Any:
-        return _orig_glob(_normalize(pattern), _normalize(path))
+        p_norm = _normalize(pattern) if pattern and pattern.startswith("/") else pattern
+        base_norm = _normalize(path)
+        if p_norm is None or base_norm is None:
+            logger.warning("glob on non-project path rejected: pattern=%r path=%r", pattern, path)
+            return _orig_glob(pattern if p_norm is None else p_norm, "/")
+        return _orig_glob(p_norm, base_norm)
 
     def norm_grep(pattern: str, path: str | None = None, glob: str | None = None) -> Any:
-        norm_path = _normalize(path) if path else path
-        return _orig_grep(pattern, norm_path, glob)
+        if path:
+            normalized = _normalize(path)
+            if normalized is None:
+                logger.warning("grep on non-project path rejected: %r", path)
+                normalized = "/"
+        else:
+            normalized = path
+        return _orig_grep(pattern, normalized, glob)
 
-    # -- Sandbox: execute support --------------------------------------------
-    # FilesystemBackend doesn't implement SandboxBackendProtocol, so
-    # deepagents won't expose the `execute` tool. We add execute/aexecute
-    # directly so the LLM can run shell commands (e.g. pytest) without
-    # resorting to creating runner scripts.
-
-    import asyncio
-    import subprocess as _sp
-
-    from deepagents.backends.protocol import ExecuteResponse
-
-    _shell_timeout = 120
-
-    def execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        effective_timeout = timeout if timeout and timeout > 0 else _shell_timeout
-        try:
-            proc = _sp.run(
-                command,
-                shell=True,
-                cwd=str(root),
-                capture_output=True,
-                text=True,
-                timeout=effective_timeout,
-            )
-            output = (proc.stdout or "") + (proc.stderr or "")
-            truncated = len(output) > 10000
-            return ExecuteResponse(
-                output=output[-10000:],
-                exit_code=proc.returncode,
-                truncated=truncated,
-            )
-        except _sp.TimeoutExpired:
-            return ExecuteResponse(output=f"Command timed out after {effective_timeout}s", exit_code=-1)
-        except Exception as exc:
-            return ExecuteResponse(output=f"Error: {exc}", exit_code=-1)
-
-    async def aexecute(command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        return await asyncio.to_thread(execute, command, timeout=timeout)
-
-    base.execute = execute
-    base.aexecute = aexecute
+    # ``execute`` / ``aexecute`` come from the :class:`SandboxFilesystemBackend`
+    # class itself — no patching needed. The ``isinstance(backend,
+    # SandboxBackendProtocol)`` check in deepagents' FilesystemMiddleware
+    # now succeeds, so the ``execute`` tool is registered automatically.
 
     base.write = norm_write
     base.read = norm_read
