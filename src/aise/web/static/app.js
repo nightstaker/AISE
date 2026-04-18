@@ -926,10 +926,19 @@ function setupRunReact() {
               taskResponse: ev.taskId ? taskResponseByTaskId[ev.taskId] : null,
             }))),
       ),
-      run.result ? h("div", { className: "run-section" },
-        h("div", { className: "run-section-title" }, "\u4ea4\u4ed8\u62a5\u544a"),
-        h("pre", { className: "run-result-text" }, run.result),
-      ) : null,
+      // The delivery report (``run.result``) is produced by Phase 6 /
+      // the ``delivery`` stage. It's noisy to show on every view of the
+      // run detail page, so scope it: only render when the user has
+      // actively filtered the log to the delivery stage (by clicking
+      // the delivery chip). When no filter is applied or a different
+      // stage is selected, the report is hidden and the rest of the
+      // A2A log takes the space.
+      run.result && stageFilter && /deliver/i.test(stageFilter)
+        ? h("div", { className: "run-section" },
+            h("div", { className: "run-section-title" }, "\u4ea4\u4ed8\u62a5\u544a"),
+            h("pre", { className: "run-result-text" }, run.result),
+          )
+        : null,
       run.error ? h("div", { className: "run-section run-error-section" },
         h("div", { className: "run-section-title" }, "\u9519\u8bef"),
         h("pre", { className: "run-error-text" }, run.error),
@@ -982,7 +991,16 @@ function setupRunReact() {
     if (ev.type === "task_request") {
       var payload = ev.payload || {};
       var fullTask = payload.task || "";
-      var preview = fullTask.length > 120 ? fullTask.substring(0, 120) + "..." : fullTask;
+      // The task row shows the task's GOAL (what it is, not the full
+      // description text sent to the worker). Prefer ``payload.step``
+      // (e.g. "impl_config_loader", "phase_2_design") — it is the
+      // orchestrator's short identifier for what the task accomplishes.
+      // Fall back to the first line of the task description, which is
+      // typically a goal-like sentence.
+      var goalText =
+        payload.step ||
+        (fullTask ? fullTask.split("\n")[0].slice(0, 100) : "") ||
+        "任务";
       var response = taskResponse || null;
       var responsePayload = (response && response.payload) || {};
       var responseStatus = response ? response.status : null;
@@ -1009,7 +1027,7 @@ function setupRunReact() {
               ? (responseStatus === "completed" ? "✓ 已完成" : responseStatus === "failed" ? "✕ 失败" : responseStatus)
               : "● 进行中",
           ),
-          h("span", { className: "run-log-detail" }, expanded ? "" : preview),
+          h("span", { className: "run-log-detail" }, goalText),
           h("span", { className: "run-log-ts" }, ts),
         ),
         showTodos ? h(TaskTodoProgress, { todos: todosForTask }) : null,
