@@ -1393,11 +1393,20 @@ tr:hover td {
 
 .run-log-stage { background: var(--primary-light); border-color: var(--primary-border); }
 .run-log-stage-label { font-weight: 600; color: var(--primary); }
-.run-log-request { border-left: 3px solid var(--running); }
-.run-log-response.log-completed { border-left: 3px solid var(--success); }
-.run-log-response.log-completed .run-log-status-tag { background: var(--success-light); color: var(--success); }
-.run-log-response.log-failed { border-left: 3px solid var(--error); }
-.run-log-response.log-failed .run-log-status-tag { background: var(--error-light); color: var(--error); }
+/* Unified task card — request+response merged. Border colour tracks task status. */
+.run-log-request.log-running { border-left: 3px solid var(--running); }
+.run-log-request.log-completed { border-left: 3px solid var(--success); }
+.run-log-request.log-failed { border-left: 3px solid var(--error); }
+.run-log-request.log-running .run-log-status-tag { background: var(--primary-light); color: var(--primary); }
+.run-log-request.log-completed .run-log-status-tag { background: var(--success-light); color: var(--success); }
+.run-log-request.log-failed .run-log-status-tag { background: var(--error-light); color: var(--error); }
+/* Collapsed tool_call rows are visually de-emphasized vs task rows */
+.run-log-tool { opacity: 0.7; }
+.run-log-tool.run-log-expanded { opacity: 1; }
+.run-log-tool .run-log-tool-name { font-family: var(--mono, monospace); font-size: 12px; color: var(--muted); }
+/* Expanded task body — description / result subsections */
+.run-log-subsection { margin-top: 12px; }
+.run-log-subsection-title { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
 
 /* ── Per-task todos progress strip ── */
 .run-log-todos { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--surface-muted, rgba(120, 130, 160, 0.08)); border: 1px solid var(--line-light); }
