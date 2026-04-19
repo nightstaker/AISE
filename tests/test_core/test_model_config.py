@@ -93,6 +93,43 @@ class TestAgentConfigWithModel:
         assert cfg.model.provider == "anthropic"
 
 
+class TestProjectConfigUILanguage:
+    """The ``ui_language`` field drives the web console's i18n layer.
+    It round-trips through ``to_dict`` / ``from_dict`` and defaults to
+    ``zh`` (the existing UI's language) when absent."""
+
+    def test_default_is_zh(self):
+        cfg = ProjectConfig()
+        assert cfg.ui_language == "zh"
+
+    def test_roundtrip_zh(self):
+        cfg = ProjectConfig(ui_language="zh")
+        data = cfg.to_dict()
+        assert data["ui_language"] == "zh"
+        assert ProjectConfig.from_dict(data).ui_language == "zh"
+
+    def test_roundtrip_en(self):
+        cfg = ProjectConfig(ui_language="en")
+        data = cfg.to_dict()
+        assert data["ui_language"] == "en"
+        assert ProjectConfig.from_dict(data).ui_language == "en"
+
+    def test_missing_field_falls_back_to_default(self):
+        cfg = ProjectConfig.from_dict({})
+        assert cfg.ui_language == "zh"
+
+    def test_unknown_language_is_clamped_to_default(self):
+        """Accepting arbitrary locale codes would silently break the
+        frontend (which only knows zh/en). The loader clamps unknown
+        values to the field default instead of propagating them."""
+        cfg = ProjectConfig.from_dict({"ui_language": "fr"})
+        assert cfg.ui_language == "zh"
+
+    def test_language_is_case_insensitive_on_load(self):
+        cfg = ProjectConfig.from_dict({"ui_language": "EN"})
+        assert cfg.ui_language == "en"
+
+
 class TestProjectConfigModelResolution:
     def test_default_model_fallback(self):
         default = ModelConfig(provider="anthropic", model="claude-sonnet-4-20250514")

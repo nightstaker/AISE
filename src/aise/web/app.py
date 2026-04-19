@@ -345,6 +345,17 @@ class WebProjectService:
                 payload = self.project_manager.create_default_project_config("Template").to_dict()
             return json.dumps(payload, indent=2, ensure_ascii=False)
 
+    def get_ui_language(self) -> str:
+        """Return the currently configured UI language (``zh`` or ``en``).
+
+        Used by the Jinja template layer to seed ``window.__AISE_LANG``
+        on every page so the frontend's ``t()`` helper can route each
+        string to the right translation.
+        """
+        with self._lock:
+            lang = (self.project_manager._global_config.ui_language or "zh").strip().lower()
+            return lang if lang in ("zh", "en") else "zh"
+
     def get_global_config_data(self) -> dict[str, Any]:
         with self._lock:
             cfg = self.project_manager._global_config
@@ -352,6 +363,7 @@ class WebProjectService:
             model_options = [{"id": m.id, "default": m.is_default} for m in cfg.models]
             return {
                 "development_mode": cfg.development_mode,
+                "ui_language": cfg.ui_language,
                 "model_providers": [
                     {"provider": p.provider, "api_key": p.api_key, "base_url": p.base_url, "enabled": p.enabled}
                     for p in cfg.model_providers
@@ -519,10 +531,17 @@ class WebProjectService:
             updated.to_json_file(self.project_manager._global_config_path)
             self.project_manager._global_config = updated
 
-    def save_global_workspace_data(self, workspace: dict[str, Any]) -> None:
+    def save_global_workspace_data(
+        self,
+        workspace: dict[str, Any],
+        *,
+        ui_language: str | None = None,
+    ) -> None:
         with self._lock:
             payload = self.project_manager._global_config.to_dict()
             payload["workspace"] = workspace
+            if ui_language is not None:
+                payload["ui_language"] = ui_language
             updated = ProjectConfig.from_dict(payload)
             updated.to_json_file(self.project_manager._global_config_path)
             self.project_manager._global_config = updated
@@ -827,6 +846,11 @@ def create_app() -> FastAPI:
     templates = Jinja2Templates(directory=str(_template_dir()))
     service = WebProjectService()
     app.state.web_service = service
+    # Expose ``ui_language`` to every template via a Jinja global so
+    # ``layout.html`` (shared by all pages) can seed
+    # ``window.__AISE_LANG`` without every route having to plumb it
+    # through the context dict.
+    templates.env.globals["get_ui_language"] = service.get_ui_language
     oauth = _build_oauth()
     dev_login_enabled = os.environ.get("AISE_WEB_ENABLE_DEV_LOGIN", "").lower() in {"1", "true", "yes"}
     local_admin_username = os.environ.get("AISE_ADMIN_USERNAME", "admin")
@@ -1064,12 +1088,15 @@ def create_app() -> FastAPI:
                     agent_model_selection=selections,
                 )
             elif section == "workspace":
+                raw_lang = str(form.get("ui_language", "")).strip().lower()
+                ui_language = raw_lang if raw_lang in ("zh", "en") else None
                 service.save_global_workspace_data(
                     {
                         "projects_root": str(form.get("projects_root", "projects")),
                         "artifacts_root": str(form.get("artifacts_root", "artifacts")),
                         "auto_create_dirs": str(form.get("auto_create_dirs", "")) == "on",
-                    }
+                    },
+                    ui_language=ui_language,
                 )
             elif section == "workflow":
                 service.save_global_workflow_data(

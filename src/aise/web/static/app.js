@@ -32,12 +32,166 @@ function mountReact(rootId, componentFactory) {
   root.render(componentFactory(window.React));
 }
 
+// ---------------------------------------------------------------------------
+// i18n
+// ---------------------------------------------------------------------------
+//
+// Every user-facing string on the run-detail and task-detail pages (the
+// pages the user spends the most time on) is routed through ``t(key)``.
+// The language is chosen by the user in Settings; the server emits it
+// as ``window.__AISE_LANG`` (see layout.html) before this file loads.
+//
+// Supported languages: ``zh`` (Simplified Chinese), ``en`` (English).
+// When a key is missing in the chosen language we fall back to English,
+// then to the raw key — loud so missing translations are visible during
+// development instead of silently showing "undefined".
+//
+// Keys use dotted namespaces (``run.section.stage_progress``). Plain
+// string values with ``{placeholder}`` tokens are substituted via the
+// second argument to ``t()``.
+const TRANSLATIONS = {
+  zh: {
+    "run.back.project_fallback": "Project",
+    "run.title": "执行详情",
+    "run.status.completed": "已完成",
+    "run.status.failed": "失败",
+    "run.status.running": "运行中",
+    "run.status.pending": "等待",
+    "run.section.requirement": "需求",
+    "run.stat.stages": "阶段",
+    "run.stat.dispatches": "任务派发",
+    "run.stat.completed": "已完成",
+    "run.stat.failed": "失败",
+    "run.section.stage_progress": "阶段进度",
+    "run.section.stage_progress_filter_hint": " — 点击取消筛选",
+    "run.section.log_title": "A2A 任务日志",
+    "run.log.waiting": "等待任务派发...",
+    "run.log.empty": "无任务日志",
+    "run.section.delivery_report": "交付报告",
+    "run.section.error": "错误",
+    "entry.meta.stage": "阶段: ",
+    "entry.meta.status": "状态: ",
+    "entry.meta.task_id": "任务: ",
+    "entry.meta.step": "步骤: ",
+    "entry.meta.phase": "阶段: ",
+    "entry.meta.output": "输出: {n} 字符",
+    "entry.status.completed": "✓ 已完成",
+    "entry.status.failed": "✕ 失败",
+    "entry.status.running": "● 进行中",
+    "entry.task_description_title": "任务描述",
+    "entry.execution_result_title": "执行结果",
+    "entry.no_text_output": "(无文本输出 — agent 已直接写入文件)",
+    "entry.fallback_task_name": "任务",
+    "entry.summary_no_summary": "(无摘要)",
+    "entry.tool_fallback_name": "tool",
+    "todo.title": "任务步骤",
+    "todo.status.pending": "待处理",
+    "todo.status.in_progress": "进行中",
+    "todo.status.completed": "已完成",
+    "task.title": "任务详情",
+    "task.field.phase": "阶段",
+    "task.field.task_key": "任务",
+    "task.field.status": "状态",
+    "stage.process_selection": "流程选择",
+    "stage.team_assembly": "团队组建",
+    "stage.workflow_planning": "流程规划",
+    "stage.execution": "任务执行",
+    "stage.phase_1_requirement": "需求分析",
+    "stage.phase_2_design": "架构设计",
+    "stage.phase_3_implementation": "开发实现",
+    "stage.phase_4_verification": "测试验证",
+    "stage.requirement": "需求分析",
+    "stage.design": "架构设计",
+    "stage.implementation": "开发实现",
+    "stage.testing": "测试验证",
+    "stage.sprint_planning": "迭代规划",
+    "stage.sprint_execution": "快速开发",
+    "stage.sprint_review": "迭代评审",
+  },
+  en: {
+    "run.back.project_fallback": "Project",
+    "run.title": "Run Details",
+    "run.status.completed": "Completed",
+    "run.status.failed": "Failed",
+    "run.status.running": "Running",
+    "run.status.pending": "Pending",
+    "run.section.requirement": "Requirement",
+    "run.stat.stages": "Stages",
+    "run.stat.dispatches": "Dispatches",
+    "run.stat.completed": "Completed",
+    "run.stat.failed": "Failed",
+    "run.section.stage_progress": "Stage Progress",
+    "run.section.stage_progress_filter_hint": " — click to clear filter",
+    "run.section.log_title": "A2A Task Log",
+    "run.log.waiting": "Waiting for dispatches...",
+    "run.log.empty": "No task log",
+    "run.section.delivery_report": "Delivery Report",
+    "run.section.error": "Error",
+    "entry.meta.stage": "Stage: ",
+    "entry.meta.status": "Status: ",
+    "entry.meta.task_id": "Task: ",
+    "entry.meta.step": "Step: ",
+    "entry.meta.phase": "Phase: ",
+    "entry.meta.output": "Output: {n} chars",
+    "entry.status.completed": "✓ Completed",
+    "entry.status.failed": "✕ Failed",
+    "entry.status.running": "● Running",
+    "entry.task_description_title": "Task description",
+    "entry.execution_result_title": "Execution result",
+    "entry.no_text_output": "(no text output — agent wrote files directly)",
+    "entry.fallback_task_name": "Task",
+    "entry.summary_no_summary": "(no summary)",
+    "entry.tool_fallback_name": "tool",
+    "todo.title": "Task Steps",
+    "todo.status.pending": "Pending",
+    "todo.status.in_progress": "In progress",
+    "todo.status.completed": "Completed",
+    "task.title": "Task Details",
+    "task.field.phase": "Phase",
+    "task.field.task_key": "Task",
+    "task.field.status": "Status",
+    "stage.process_selection": "Process Selection",
+    "stage.team_assembly": "Team Assembly",
+    "stage.workflow_planning": "Workflow Planning",
+    "stage.execution": "Execution",
+    "stage.phase_1_requirement": "Requirements",
+    "stage.phase_2_design": "Architecture",
+    "stage.phase_3_implementation": "Implementation",
+    "stage.phase_4_verification": "Verification",
+    "stage.requirement": "Requirements",
+    "stage.design": "Architecture",
+    "stage.implementation": "Implementation",
+    "stage.testing": "Testing",
+    "stage.sprint_planning": "Sprint Planning",
+    "stage.sprint_execution": "Sprint Execution",
+    "stage.sprint_review": "Sprint Review",
+  },
+};
+
+function currentLang() {
+  const raw = (window.__AISE_LANG || "zh").toString().toLowerCase();
+  return TRANSLATIONS[raw] ? raw : "zh";
+}
+
+function t(key, params) {
+  const lang = currentLang();
+  const table = TRANSLATIONS[lang] || TRANSLATIONS.zh;
+  let template = table[key];
+  if (template === undefined) template = TRANSLATIONS.en[key];
+  if (template === undefined) template = key;
+  if (!params) return template;
+  return template.replace(/\{(\w+)\}/g, function (m, name) {
+    return Object.prototype.hasOwnProperty.call(params, name) ? params[name] : m;
+  });
+}
+
 function formatLocalTime(ts) {
   if (!ts) return "";
   try {
     const d = new Date(ts);
     if (isNaN(d.getTime())) return String(ts);
-    return d.toLocaleString("zh-CN", {
+    const locale = currentLang() === "en" ? "en-US" : "zh-CN";
+    return d.toLocaleString(locale, {
       year: "numeric", month: "2-digit", day: "2-digit",
       hour: "2-digit", minute: "2-digit", second: "2-digit",
       hour12: false
@@ -682,30 +836,18 @@ function setupRunReact() {
   const initial = readScriptJson("run-initial-data", { project: null, run: null });
   if (!initial.project || !initial.run) return;
 
-  const STAGE_LABELS = {
-    process_selection: "流程选择",
-    team_assembly: "团队组建",
-    workflow_planning: "流程规划",
-    execution: "任务执行",
-    phase_1_requirement: "需求分析",
-    phase_2_design: "架构设计",
-    phase_3_implementation: "开发实现",
-    phase_4_verification: "测试验证",
-    requirement: "需求分析",
-    design: "架构设计",
-    implementation: "开发实现",
-    testing: "测试验证",
-    sprint_planning: "迭代规划",
-    sprint_execution: "快速开发",
-    sprint_review: "迭代评审",
-  };
-
+  // Stage names live in the top-level ``TRANSLATIONS`` table under the
+  // ``stage.<id>`` namespace — see the i18n block at the top of this
+  // file. Resolution below consults the active language via ``t()``.
   // Dynamic stage label resolver (handles implementation_cycle_1, etc.)
   function resolveStageLabel(stage) {
-    if (STAGE_LABELS[stage]) return STAGE_LABELS[stage];
+    var translated = t("stage." + stage);
+    if (translated !== "stage." + stage) return translated;
     var cycleMatch = stage.match(/^(.+)_cycle_(\d+)$/);
     if (cycleMatch) {
-      var base = STAGE_LABELS[cycleMatch[1]] || cycleMatch[1];
+      var baseKey = "stage." + cycleMatch[1];
+      var base = t(baseKey);
+      if (base === baseKey) base = cycleMatch[1];
       return base + " #" + cycleMatch[2];
     }
     return stage;
@@ -719,11 +861,13 @@ function setupRunReact() {
     parallel_start: "≡",
   };
 
-  const TODO_STATUS_LABEL = {
-    pending: "待处理",
-    in_progress: "进行中",
-    completed: "已完成",
-  };
+  // Todo status labels resolve via ``t()`` — see ``todo.status.*`` keys
+  // in the top-level TRANSLATIONS table.
+  function todoStatusLabel(status) {
+    var key = "todo.status." + status;
+    var translated = t(key);
+    return translated === key ? status : translated;
+  }
 
   function TaskTodoProgress({ todos }) {
     const h = window.React.createElement;
@@ -732,7 +876,7 @@ function setupRunReact() {
     var done = todos.filter((t) => t && t.status === "completed").length;
     return h("div", { className: "run-log-todos" },
       h("div", { className: "run-log-todos-header" },
-        h("span", { className: "run-log-todos-title" }, "任务步骤"),
+        h("span", { className: "run-log-todos-title" }, t("todo.title")),
         h("span", { className: "run-log-todos-progress" }, done + " / " + total),
       ),
       h("ol", { className: "run-log-todos-list" },
@@ -743,7 +887,7 @@ function setupRunReact() {
           return h("li", { key: i, className: "run-log-todo-item run-log-todo-" + status },
             h("span", { className: "run-log-todo-marker" }, marker),
             h("span", { className: "run-log-todo-text" }, label),
-            h("span", { className: "run-log-todo-status" }, TODO_STATUS_LABEL[status] || status),
+            h("span", { className: "run-log-todo-status" }, todoStatusLabel(status)),
           );
         }),
       ),
@@ -876,27 +1020,30 @@ function setupRunReact() {
     return h("div", { className: "run-container" },
       h("div", { className: "run-header" },
         h("div", { className: "run-header-left" },
-          h("a", { className: "run-back-link", href: "/projects/" + project.info.project_id }, "\u2190 " + (project.info.name || "Project")),
-          h("h1", { className: "run-title" }, "\u6267\u884c\u8be6\u60c5"),
+          h("a", { className: "run-back-link", href: "/projects/" + project.info.project_id }, "\u2190 " + (project.info.name || t("run.back.project_fallback"))),
+          h("h1", { className: "run-title" }, t("run.title")),
           h("span", { className: "run-id-label" }, run.run_id),
         ),
         h("span", { className: "run-status-badge " + statusCls },
           isRunning ? h("span", { className: "monitor-task-pulse" }) : null,
-          runStatus === "completed" ? "\u5df2\u5b8c\u6210" : runStatus === "failed" ? "\u5931\u8d25" : runStatus === "running" ? "\u8fd0\u884c\u4e2d" : "\u7b49\u5f85",
+          runStatus === "completed" ? t("run.status.completed")
+            : runStatus === "failed" ? t("run.status.failed")
+            : runStatus === "running" ? t("run.status.running")
+            : t("run.status.pending"),
         ),
       ),
       h("div", { className: "run-section" },
-        h("div", { className: "run-section-title" }, "\u9700\u6c42"),
+        h("div", { className: "run-section-title" }, t("run.section.requirement")),
         h("div", { className: "run-requirement-text" }, run.requirement_text || ""),
       ),
       h("div", { className: "run-stats" },
-        h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, stages.length), h("span", { className: "run-stat-label" }, "\u9636\u6bb5")),
-        h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, requests.length), h("span", { className: "run-stat-label" }, "\u4efb\u52a1\u6d3e\u53d1")),
-        h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, completed), h("span", { className: "run-stat-label" }, "\u5df2\u5b8c\u6210")),
-        failed > 0 ? h("div", { className: "run-stat run-stat-error" }, h("span", { className: "run-stat-value" }, failed), h("span", { className: "run-stat-label" }, "\u5931\u8d25")) : null,
+        h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, stages.length), h("span", { className: "run-stat-label" }, t("run.stat.stages"))),
+        h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, requests.length), h("span", { className: "run-stat-label" }, t("run.stat.dispatches"))),
+        h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, completed), h("span", { className: "run-stat-label" }, t("run.stat.completed"))),
+        failed > 0 ? h("div", { className: "run-stat run-stat-error" }, h("span", { className: "run-stat-value" }, failed), h("span", { className: "run-stat-label" }, t("run.stat.failed"))) : null,
       ),
       stages.length > 0 ? h("div", { className: "run-section" },
-        h("div", { className: "run-section-title" }, "\u9636\u6bb5\u8fdb\u5ea6" + (stageFilter ? " \u2014 \u70b9\u51fb\u53d6\u6d88\u7b5b\u9009" : "")),
+        h("div", { className: "run-section-title" }, t("run.section.stage_progress") + (stageFilter ? t("run.section.stage_progress_filter_hint") : "")),
         h("div", { className: "run-stages-flow" },
           stages.map((s, i) => {
             var lastStageIdx = stages.length - 1;
@@ -916,9 +1063,9 @@ function setupRunReact() {
         ),
       ) : null,
       h("div", { className: "run-section" },
-        h("div", { className: "run-section-title" }, "A2A \u4efb\u52a1\u65e5\u5fd7 (" + filteredLog.length + (stageFilter ? " / " + taskLog.length : "") + ")"),
+        h("div", { className: "run-section-title" }, t("run.section.log_title") + " (" + filteredLog.length + (stageFilter ? " / " + taskLog.length : "") + ")"),
         filteredLog.length === 0
-          ? h("div", { className: "run-log-empty" }, isRunning ? "\u7b49\u5f85\u4efb\u52a1\u6d3e\u53d1..." : "\u65e0\u4efb\u52a1\u65e5\u5fd7")
+          ? h("div", { className: "run-log-empty" }, isRunning ? t("run.log.waiting") : t("run.log.empty"))
           : h("div", { className: "run-task-log" }, filteredLog.map((ev, idx) => h(RunLogEntry, {
               key: idx,
               event: ev,
@@ -935,12 +1082,12 @@ function setupRunReact() {
       // A2A log takes the space.
       run.result && stageFilter && /deliver/i.test(stageFilter)
         ? h("div", { className: "run-section" },
-            h("div", { className: "run-section-title" }, "\u4ea4\u4ed8\u62a5\u544a"),
+            h("div", { className: "run-section-title" }, t("run.section.delivery_report")),
             h("pre", { className: "run-result-text" }, run.result),
           )
         : null,
       run.error ? h("div", { className: "run-section run-error-section" },
-        h("div", { className: "run-section-title" }, "\u9519\u8bef"),
+        h("div", { className: "run-section-title" }, t("run.section.error")),
         h("pre", { className: "run-error-text" }, run.error),
       ) : null,
     );
@@ -966,8 +1113,8 @@ function setupRunReact() {
           h("span", { className: "run-log-ts" }, ts),
         ),
         expanded ? h("div", { className: "run-log-body run-log-stage-detail" },
-          h("div", { className: "run-log-meta" }, "Stage: " + ev.stage),
-          ev.status ? h("div", { className: "run-log-meta" }, "Status: " + ev.status) : null,
+          h("div", { className: "run-log-meta" }, t("entry.meta.stage") + ev.stage),
+          ev.status ? h("div", { className: "run-log-meta" }, t("entry.meta.status") + ev.status) : null,
         ) : null,
       );
     }
@@ -979,11 +1126,11 @@ function setupRunReact() {
         h("div", { className: "run-log-row" },
           h("span", { className: "run-log-toggle" }, expanded ? "\u25bc" : "\u25b6"),
           h("span", { className: "run-log-icon" }, EVENT_ICONS.tool_call),
-          h("span", { className: "run-log-tool-name" }, ev.tool || "tool"),
+          h("span", { className: "run-log-tool-name" }, ev.tool || t("entry.tool_fallback_name")),
           h("span", { className: "run-log-ts" }, ts),
         ),
         expanded ? h("div", { className: "run-log-body" },
-          ev.summary ? h("pre", { className: "run-log-full-text" }, ev.summary) : h("div", { className: "run-log-meta" }, "(no summary)"),
+          ev.summary ? h("pre", { className: "run-log-full-text" }, ev.summary) : h("div", { className: "run-log-meta" }, t("entry.summary_no_summary")),
         ) : null,
       );
     }
@@ -1000,7 +1147,7 @@ function setupRunReact() {
       var goalText =
         payload.step ||
         (fullTask ? fullTask.split("\n")[0].slice(0, 100) : "") ||
-        "任务";
+        t("entry.fallback_task_name");
       var response = taskResponse || null;
       var responsePayload = (response && response.payload) || {};
       var responseStatus = response ? response.status : null;
@@ -1024,8 +1171,10 @@ function setupRunReact() {
           payload.phase ? h("span", { className: "run-log-phase-tag" }, payload.phase) : null,
           h("span", { className: "run-log-status-tag " + statusTagCls },
             response
-              ? (responseStatus === "completed" ? "✓ 已完成" : responseStatus === "failed" ? "✕ 失败" : responseStatus)
-              : "● 进行中",
+              ? (responseStatus === "completed" ? t("entry.status.completed")
+                 : responseStatus === "failed" ? t("entry.status.failed")
+                 : responseStatus)
+              : t("entry.status.running"),
           ),
           h("span", { className: "run-log-detail" }, goalText),
           h("span", { className: "run-log-ts" }, ts),
@@ -1033,21 +1182,21 @@ function setupRunReact() {
         showTodos ? h(TaskTodoProgress, { todos: todosForTask }) : null,
         expanded ? h("div", { className: "run-log-body" },
           h("div", { className: "run-log-response-meta" },
-            ev.taskId ? h("span", null, "Task: " + ev.taskId) : null,
-            payload.step ? h("span", null, "Step: " + payload.step) : null,
-            payload.phase ? h("span", null, "Phase: " + payload.phase) : null,
-            outputLen > 0 ? h("span", null, "Output: " + outputLen + " chars") : null,
+            ev.taskId ? h("span", null, t("entry.meta.task_id") + ev.taskId) : null,
+            payload.step ? h("span", null, t("entry.meta.step") + payload.step) : null,
+            payload.phase ? h("span", null, t("entry.meta.phase") + payload.phase) : null,
+            outputLen > 0 ? h("span", null, t("entry.meta.output", { n: outputLen })) : null,
             savedTo ? h("span", null, "\u2713 " + savedTo) : null,
           ),
           fullTask ? h("div", { className: "run-log-subsection" },
-            h("div", { className: "run-log-subsection-title" }, "任务描述"),
+            h("div", { className: "run-log-subsection-title" }, t("entry.task_description_title")),
             h("pre", { className: "run-log-full-text" }, fullTask),
           ) : null,
           response ? h("div", { className: "run-log-subsection" },
-            h("div", { className: "run-log-subsection-title" }, "执行结果"),
+            h("div", { className: "run-log-subsection-title" }, t("entry.execution_result_title")),
             outputText
               ? h("pre", { className: "run-log-full-text" }, outputText)
-              : h("div", { className: "run-log-meta" }, "(no text output — agent wrote files directly)"),
+              : h("div", { className: "run-log-meta" }, t("entry.no_text_output")),
           ) : null,
         ) : null,
       );
@@ -1070,14 +1219,16 @@ function setupTaskReact() {
   function TaskApp() {
     const h = window.React.createElement;
     const task = initial.task || {};
+    const backLabel = currentLang() === "en" ? "\u2190 Back to Run Details" : "\u2190 返回执行详情";
+    const artifactLabel = currentLang() === "en" ? "Artifact ID" : "产物ID";
     return h(
       "section",
       { className: "card card-glow" },
-      h("h1", null, "任务详情"),
-      h("p", null, `阶段: ${initial.phase_name}`),
-      h("p", null, `任务: ${initial.task_key}`),
-      h("p", null, `状态: ${task.status || ""}`),
-      task.artifact_id ? h("p", null, `产物ID: ${task.artifact_id}`) : null,
+      h("h1", null, t("task.title")),
+      h("p", null, `${t("task.field.phase")}: ${initial.phase_name}`),
+      h("p", null, `${t("task.field.task_key")}: ${initial.task_key}`),
+      h("p", null, `${t("task.field.status")}: ${task.status || ""}`),
+      task.artifact_id ? h("p", null, `${artifactLabel}: ${task.artifact_id}`) : null,
       task.error ? h("pre", { className: "error" }, task.error) : null,
       h(
         "a",
@@ -1085,7 +1236,7 @@ function setupTaskReact() {
           className: "btn secondary",
           href: `/projects/${encodeURIComponent(initial.project_id)}/runs/${encodeURIComponent(initial.run_id)}`,
         },
-        "返回执行详情"
+        backLabel,
       )
     );
   }

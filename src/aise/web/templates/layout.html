@@ -70,9 +70,10 @@
   <template id="legacy-compat">
     <header class="topbar"><nav class="topnav"></nav></header>
   </template>
+  <script>window.__AISE_LANG = {{ get_ui_language()|tojson }};</script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="/static/app.js?v=20260418c"></script>
+  <script src="/static/app.js?v=20260419a"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

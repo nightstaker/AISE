@@ -151,6 +151,12 @@ class ProjectConfig:
 
     project_name: str = "Untitled Project"
     development_mode: str = "local"  # "local" or "github"
+    # UI language for the web console. ``zh`` (Simplified Chinese) or
+    # ``en`` (English). The web app reads this at render time and emits
+    # it as ``window.__AISE_LANG`` so the frontend ``t()`` helper can
+    # route each string to the right translation. Default is ``zh`` —
+    # matches what the existing UI showed before the i18n refactor.
+    ui_language: str = "zh"
     default_model: ModelConfig = field(default_factory=ModelConfig)
     model_providers: list[ModelProvider] = field(default_factory=list)
     models: list[ModelDefinition] = field(default_factory=list)
@@ -457,6 +463,7 @@ class ProjectConfig:
         return {
             "project_name": self.project_name,
             "development_mode": self.development_mode,
+            "ui_language": self.ui_language,
             "default_model": {
                 "provider": self.default_model.provider,
                 "model": self.default_model.model,
@@ -546,6 +553,12 @@ class ProjectConfig:
             config.project_name = str(data["project_name"])
         if "development_mode" in data:
             config.development_mode = str(data["development_mode"])
+        if "ui_language" in data:
+            raw_lang = str(data["ui_language"]).strip().lower()
+            # Clamp to the two supported values; fall back to the default
+            # rather than accepting arbitrary locale codes that the
+            # frontend translation table wouldn't cover.
+            config.ui_language = raw_lang if raw_lang in ("zh", "en") else config.ui_language
 
         model_data = data.get("default_model", {})
         if isinstance(model_data, dict):

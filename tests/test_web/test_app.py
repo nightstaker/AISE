@@ -140,6 +140,80 @@ class TestWebApi:
         assert run_later.json()["status"] == "completed"
         assert len(run_later.json()["phase_results"]) == 1
 
+    def test_layout_injects_ui_language(self, monkeypatch, tmp_path):
+        """Every page extends ``layout.html`` which must emit
+        ``window.__AISE_LANG`` so the React frontend's ``t()`` helper
+        knows which language table to use. Pinned here because a
+        missing injection is invisible until a user hits a page in a
+        different locale and sees mixed Chinese/English."""
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+        app = create_app()
+        client = TestClient(app)
+        _login_dev(client)
+
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "window.__AISE_LANG" in resp.text
+        # Default language is ``zh`` — the original UI locale.
+        assert '"zh"' in resp.text
+
+    def test_settings_language_roundtrip(self, monkeypatch, tmp_path):
+        """Posting the workspace settings form with a language switch
+        must persist the new ``ui_language`` to the global config and
+        surface it on the next page render via the layout injection."""
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+        app = create_app()
+        client = TestClient(app)
+        _login_dev(client)
+
+        resp = client.post(
+            "/config/global/workspace",
+            data={
+                "ui_language": "en",
+                "projects_root": "projects",
+                "artifacts_root": "artifacts",
+                "auto_create_dirs": "on",
+            },
+            follow_redirects=False,
+        )
+        # The handler redirects back to the settings page on success.
+        assert resp.status_code in (200, 302, 303)
+
+        # Verify the choice persisted + is served to subsequent pages.
+        svc = app.state.web_service
+        assert svc.get_ui_language() == "en"
+
+        page = client.get("/")
+        assert '"en"' in page.text
+
+    def test_settings_language_bogus_value_is_ignored(self, monkeypatch, tmp_path):
+        """An unknown locale code must not corrupt the config. The
+        backend clamps unknown values; the existing language is
+        preserved."""
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+        app = create_app()
+        client = TestClient(app)
+        _login_dev(client)
+
+        svc = app.state.web_service
+        assert svc.get_ui_language() == "zh"  # default
+
+        resp = client.post(
+            "/config/global/workspace",
+            data={
+                "ui_language": "not-a-real-locale",
+                "projects_root": "projects",
+                "artifacts_root": "artifacts",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code in (200, 302, 303)
+        # Still the default — the bogus value was rejected.
+        assert svc.get_ui_language() == "zh"
+
     def test_local_admin_login(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
         app = create_app()
