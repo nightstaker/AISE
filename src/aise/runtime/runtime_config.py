@@ -61,13 +61,28 @@ class SafetyLimits:
 # Conservative default allowlist. Anything not on the list is rejected by
 # the ``execute_shell`` primitive. Override at construction time.
 DEFAULT_SHELL_ALLOWLIST: tuple[str, ...] = (
+    # Interpreters / runners
     "python",
     "python3",
     "pytest",
-    "ruff",
     "node",
     "npm",
+    "npx",
     "go",
+    "cargo",
+    # Static analyzers used by the ``code_inspection`` skill.
+    # Python: ruff (lint) + mypy (types). JS/TS: eslint + tsc.
+    # Go: go vet + gofmt. Rust: clippy runs via ``cargo clippy``.
+    "ruff",
+    "mypy",
+    "pyright",
+    "eslint",
+    "tsc",
+    "gofmt",
+    # Mermaid CLI used by the ``mermaid`` skill to validate diagrams.
+    "mmdc",
+    # Filesystem / text utilities used for collecting metrics and
+    # inspecting outputs.
     "ls",
     "cat",
     "head",

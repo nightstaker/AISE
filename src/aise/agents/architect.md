@@ -13,6 +13,8 @@ output_layout:
 allowed_tools:
   - read_file
   - write_file
+  - edit_file
+  - execute
 ---
 
 # System Prompt
@@ -114,6 +116,14 @@ C4Context
   Rel(app, store, "Distributed via")
 ```
 
+### Diagram Validation (MANDATORY)
+
+After writing `docs/architecture.md` (or any document with Mermaid
+fences), follow the `mermaid` skill to validate every ```mermaid
+block and fix any syntax error before reporting the task complete.
+Do NOT skip this step — a document whose diagrams fail to parse is
+useless to readers.
+
 ## Skills
 
 - deep_architecture_workflow: Run Architecture Designer, Reviewer, and Subsystem Architect workflow
@@ -125,4 +135,5 @@ C4Context
 - functional_design: Produce functional design documents
 - status_tracking: Track design phase progress
 - architecture_document_generation: Generate architecture documentation
+- mermaid: Validate every Mermaid code fence in the document after writing and fix any syntax errors [mermaid, diagram, validation]
 - pr_review: Review pull requests

@@ -345,6 +345,131 @@ class TestPhase6DeliveryReport:
         for c4_type in ("C4Context", "C4Container", "C4Component"):
             assert c4_type in architecture, f"phase-2 prompt must name the {c4_type} requirement"
 
+    # --- New skills: code_inspection + mermaid --------------------------
+
+    def test_developer_md_declares_code_inspection_skill(self):
+        """developer.md must declare ``code_inspection`` in its
+        ``## Skills`` block so the skill body gets inlined by the
+        per-agent filter."""
+        from pathlib import Path as _P
+
+        import aise
+
+        md_path = _P(aise.__file__).resolve().parent / "agents" / "developer.md"
+        body = md_path.read_text(encoding="utf-8")
+        assert "code_inspection" in body
+        # The developer's own system prompt must reference the skill
+        # so the agent runs it, not just declare it in the skill list.
+        assert "analyzer" in body.lower()
+
+    def test_architect_md_declares_mermaid_skill(self):
+        """architect.md must declare ``mermaid`` so the validation
+        skill body is inlined into its system prompt."""
+        from pathlib import Path as _P
+
+        import aise
+
+        md_path = _P(aise.__file__).resolve().parent / "agents" / "architect.md"
+        body = md_path.read_text(encoding="utf-8")
+        assert "mermaid" in body.lower()
+        # Body should reference the skill in the Skills bullet AND the
+        # MANDATORY validation note in the system prompt.
+        assert "Diagram Validation" in body or "mermaid skill" in body.lower()
+
+    def test_product_manager_md_declares_mermaid_skill(self):
+        from pathlib import Path as _P
+
+        import aise
+
+        md_path = _P(aise.__file__).resolve().parent / "agents" / "product_manager.md"
+        body = md_path.read_text(encoding="utf-8")
+        assert "mermaid" in body.lower()
+        assert "Diagram Validation" in body or "mermaid skill" in body.lower()
+
+    def test_product_manager_md_requires_use_case_diagram_per_requirement(self):
+        """PM.md must instruct the agent to draw a Mermaid use case
+        diagram for every requirement. Without this, the requirement
+        document is prose-only and loses the visual actor→use-case
+        mapping."""
+        from pathlib import Path as _P
+
+        import aise
+
+        md_path = _P(aise.__file__).resolve().parent / "agents" / "product_manager.md"
+        body = md_path.read_text(encoding="utf-8")
+        lowered = body.lower()
+        assert "use case diagram" in lowered
+        # The actor + use-case shape conventions must be spelled out
+        # so the agent doesn't invent its own incompatible notation.
+        assert "actor_" in body
+        assert "uc_" in body
+
+    def test_phase1_prompt_requires_use_case_diagram(self, session):
+        """The requirements-phase prompt must carry the use-case-diagram
+        requirement through to the architect-agnostic dispatch, so even
+        a weakened PM.md still receives the instruction."""
+        phases = session._build_phase_prompts("Build a thing")
+        requirements = dict(phases).get("requirements", "")
+        lowered = requirements.lower()
+        assert "use case diagram" in lowered
+        # Actor + use-case shape identifiers must be in the prompt so
+        # the PM writes correct Mermaid.
+        assert "actor_" in requirements
+        assert "uc_" in requirements
+
+    def test_phase1_prompt_requires_mermaid_validation(self, session):
+        """Phase 1 prompt must instruct the PM to validate Mermaid
+        blocks after writing the requirement document."""
+        phases = session._build_phase_prompts("Build a thing")
+        requirements = dict(phases).get("requirements", "")
+        assert "mermaid" in requirements.lower()
+
+    def test_phase2_prompt_requires_mermaid_validation(self, session):
+        """Phase 2 prompt must instruct the architect to validate
+        Mermaid blocks after writing the architecture document."""
+        phases = session._build_phase_prompts("Build a thing")
+        architecture = dict(phases).get("architecture", "")
+        assert "mermaid" in architecture.lower()
+
+    def test_phase3_prompt_requires_code_inspection(self, session):
+        """Phase 3 prompt must instruct the developer to run the
+        static analyzer via the ``code_inspection`` skill after tests
+        pass."""
+        phases = session._build_phase_prompts("Build a thing")
+        implementation = dict(phases).get("implementation", "")
+        assert "code_inspection" in implementation
+        assert "ruff" in implementation or "static analyzer" in implementation.lower()
+
+    def test_code_inspection_skill_file_exists(self):
+        """The ``code_inspection`` skill body must live at the
+        expected path so the runtime's per-agent filter can inline it
+        into the developer prompt."""
+        from pathlib import Path as _P
+
+        import aise
+
+        skill = _P(aise.__file__).resolve().parent / "agents" / "_runtime_skills" / "code_inspection" / "SKILL.md"
+        assert skill.is_file()
+        body = skill.read_text(encoding="utf-8")
+        # Language → toolset mapping table must cover the main
+        # languages the developer works in.
+        for tool in ("ruff", "mypy", "eslint", "tsc", "go vet", "cargo clippy"):
+            assert tool in body, f"code_inspection skill must list {tool}"
+
+    def test_mermaid_skill_file_exists(self):
+        """The ``mermaid`` skill body must live at the expected path."""
+        from pathlib import Path as _P
+
+        import aise
+
+        skill = _P(aise.__file__).resolve().parent / "agents" / "_runtime_skills" / "mermaid" / "SKILL.md"
+        assert skill.is_file()
+        body = skill.read_text(encoding="utf-8")
+        # The skill must name the validation tool and include a
+        # fallback self-review checklist for when mmdc is absent.
+        assert "mmdc" in body
+        assert "self-review" in body.lower() or "manual" in body.lower()
+
 
 class TestProjectSessionRun:
     def test_run_calls_pm_runtime(self, session):
