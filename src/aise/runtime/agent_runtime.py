@@ -134,24 +134,46 @@ to guess the host location.
 """.strip()
 
 
-def _load_inline_skill_content(skills_dir: Path) -> list[tuple[str, str]]:
-    """Read every ``*/SKILL.md`` from ``skills_dir`` and return its content.
+def _load_inline_skill_content(
+    skills_dir: Path,
+    declared_skill_names: set[str],
+) -> list[tuple[str, str]]:
+    """Read the ``*/SKILL.md`` files the agent actually declared.
 
-    Returns a list of ``(skill_name, skill_body)`` pairs. Uses a simple
-    directory scan (no deepagents involvement) so no absolute host paths
-    appear anywhere. The content is inlined into the agent's system
-    prompt by :func:`_compose_system_prompt`.
+    Returns a list of ``(skill_name, skill_body)`` pairs. Each agent's
+    ``agent.md`` lists its skills in a ``## Skills`` block (parsed into
+    ``AgentDefinition.skills``); only skills whose directory name matches
+    one of those names get their body inlined. This is a per-agent
+    filter — TDD guidance belongs in the developer's prompt, not in the
+    architect's or project_manager's.
+
+    Previously this function inlined every ``*/SKILL.md`` body into every
+    agent's prompt. Because ``_runtime_skills/`` contains only
+    ``tdd/SKILL.md`` (developer-specific), non-developer agents were
+    receiving 3.5 KB of "Write tests first, then src, verify with
+    pytest" instructions that contradicted their role, causing the
+    architect to emit a "Let me write..." bridging sentence and exit
+    its turn without calling ``write_file`` (4/4 dispatches failed on
+    project_3-snake, 2026-04-18).
+
+    Uses a simple directory scan (no deepagents involvement) so no
+    absolute host paths appear anywhere. The filtered content is
+    inlined into the agent's system prompt by
+    :func:`_compose_system_prompt`.
     """
     results: list[tuple[str, str]] = []
     if not skills_dir.is_dir():
         return results
     for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+        skill_name = skill_md.parent.name
+        if skill_name not in declared_skill_names:
+            continue
         try:
             body = skill_md.read_text(encoding="utf-8")
         except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("Failed to read skill %s: %s", skill_md.parent.name, exc)
+            logger.warning("Failed to read skill %s: %s", skill_name, exc)
             continue
-        results.append((skill_md.parent.name, body))
+        results.append((skill_name, body))
     return results
 
 
@@ -258,7 +280,12 @@ class AgentRuntime:
         # to ``create_deep_agent``, we read the skill content ourselves and
         # inline it into the agent's system prompt. The LLM sees the skill
         # knowledge but never sees any absolute host path.
-        inlined_skills = _load_inline_skill_content(self._skills_dir)
+        # Use ``s.id`` (the raw ``skill_id`` from the agent.md bullet,
+        # e.g. ``tdd``) to match the ``*/SKILL.md`` directory name.
+        # ``s.name`` is a human-facing Title Case form (``"Tdd"``) and
+        # would never match the directory.
+        declared_skill_names = {s.id for s in self._definition.skills}
+        inlined_skills = _load_inline_skill_content(self._skills_dir, declared_skill_names)
         system_prompt = _compose_system_prompt(
             self._definition.system_prompt or "",
             inlined_skills,

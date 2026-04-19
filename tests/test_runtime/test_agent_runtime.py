@@ -332,33 +332,189 @@ class TestSystemPromptAssembly:
         _, kwargs = mock_factory.call_args
         assert "skills" not in kwargs or kwargs["skills"] is None
 
-    def test_system_prompt_inlines_skill_bodies(self, agent_md_file, skills_dir, mock_create_deep_agent):
-        """Skills in ``skills_dir/*/SKILL.md`` are inlined into the
-        system prompt (so the LLM gets the skill content without having
-        to ``read_file`` a host-absolute skill path)."""
-        skill_dir = skills_dir / "sample_skill"
+    def test_system_prompt_inlines_declared_skill_bodies(self, agent_md_file, skills_dir, mock_create_deep_agent):
+        """Skills in ``skills_dir/<name>/SKILL.md`` are inlined into the
+        system prompt when ``<name>`` matches one of the agent's declared
+        skills (parsed from the ``## Skills`` block in agent.md)."""
+        # SAMPLE_AGENT_MD declares ``test_skill`` — so a skill directory
+        # named ``test_skill`` is the one that should be inlined.
+        skill_dir = skills_dir / "test_skill"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("# sample_skill\n\nThis is a MAGIC_SKILL_MARKER body.\n")
+        (skill_dir / "SKILL.md").write_text("# test_skill\n\nThis is a MAGIC_SKILL_MARKER body.\n")
         mock_factory, _ = mock_create_deep_agent
         AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
         _, kwargs = mock_factory.call_args
         prompt = kwargs.get("system_prompt", "")
         assert "## Available Skills" in prompt
-        assert "### sample_skill" in prompt
+        assert "### test_skill" in prompt
         assert "MAGIC_SKILL_MARKER" in prompt
+
+    def test_system_prompt_excludes_undeclared_skill_bodies(self, agent_md_file, skills_dir, mock_create_deep_agent):
+        """Regression guard for PR #101: a ``SKILL.md`` in ``skills_dir``
+        that the agent does NOT declare in its ``## Skills`` block must
+        not be inlined into the prompt. Previously every skill was
+        broadcast to every agent, so developer-specific TDD guidance
+        leaked into the architect's prompt and caused 4/4 architect
+        dispatches to exit without tool calls."""
+        declared_dir = skills_dir / "test_skill"  # declared in SAMPLE_AGENT_MD
+        declared_dir.mkdir()
+        (declared_dir / "SKILL.md").write_text("# test_skill\ndeclared body\n")
+        undeclared_dir = skills_dir / "tdd"  # NOT declared by SAMPLE_AGENT_MD
+        undeclared_dir.mkdir()
+        (undeclared_dir / "SKILL.md").write_text("# tdd\nUNDECLARED_SKILL_MARKER: write tests first, then src.\n")
+        mock_factory, _ = mock_create_deep_agent
+        AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
+        _, kwargs = mock_factory.call_args
+        prompt = kwargs.get("system_prompt", "")
+        assert "### test_skill" in prompt
+        assert "### tdd" not in prompt
+        assert "UNDECLARED_SKILL_MARKER" not in prompt
 
     def test_system_prompt_no_absolute_aise_paths_with_skills(self, agent_md_file, skills_dir, mock_create_deep_agent):
         """Even with a skill present, the resulting prompt should have
         zero references to ``/home/*/AISE`` — the skill body is inlined
-        by filename (``### sample``) not path."""
-        skill_dir = skills_dir / "sample"
+        by filename (``### test_skill``) not path."""
+        skill_dir = skills_dir / "test_skill"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("# sample\ncontent\n")
+        (skill_dir / "SKILL.md").write_text("# test_skill\ncontent\n")
         mock_factory, _ = mock_create_deep_agent
         AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
         _, kwargs = mock_factory.call_args
         prompt = kwargs.get("system_prompt", "")
         assert str(skills_dir) not in prompt, f"skills_dir absolute path leaked into prompt: {skills_dir}"
+
+
+class TestSystemPromptSkillFiltering:
+    """The per-agent skill filter (added after PR #101 leaked
+    developer-only TDD guidance into every agent's prompt) is tested
+    here through the public ``AgentRuntime`` surface: each test builds
+    a runtime with a specific ``## Skills`` declaration and a set of
+    skill directories, then inspects the system prompt passed to
+    ``create_deep_agent`` to confirm which skill bodies were inlined.
+    """
+
+    def _agent_md(self, tmp_path: Path, declared_skills: list[str]) -> Path:
+        bullets = "\n".join(f"- {name}: {name} skill" for name in declared_skills)
+        f = tmp_path / "agent.md"
+        f.write_text(
+            "---\n"
+            "name: FilterAgent\n"
+            "description: filter test\n"
+            "version: 1.0.0\n"
+            "---\n\n"
+            "# System Prompt\n\n"
+            "You are a filter test.\n\n"
+            "## Skills\n\n" + bullets + "\n"
+        )
+        return f
+
+    def _write_skill(self, skills_dir: Path, name: str, marker: str) -> None:
+        d = skills_dir / name
+        d.mkdir()
+        (d / "SKILL.md").write_text(f"# {name}\n{marker}\n")
+
+    def test_only_declared_skills_inlined(self, tmp_path, mock_create_deep_agent):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._write_skill(skills_dir, "tdd", "TDD_MARKER")
+        self._write_skill(skills_dir, "design", "DESIGN_MARKER")
+        self._write_skill(skills_dir, "review", "REVIEW_MARKER")
+        agent_md = self._agent_md(tmp_path, ["tdd", "review"])
+
+        mock_factory, _ = mock_create_deep_agent
+        AgentRuntime(agent_md=agent_md, skills_dir=skills_dir, model="openai:gpt-4o")
+        _, kwargs = mock_factory.call_args
+        prompt = kwargs.get("system_prompt", "") or ""
+
+        assert "### tdd" in prompt and "TDD_MARKER" in prompt
+        assert "### review" in prompt and "REVIEW_MARKER" in prompt
+        assert "### design" not in prompt and "DESIGN_MARKER" not in prompt
+
+    def test_agent_with_no_declared_skills_gets_no_inline_bodies(self, tmp_path, mock_create_deep_agent):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._write_skill(skills_dir, "tdd", "TDD_MARKER")
+        # agent.md with an empty ## Skills section: no bullets → no
+        # SkillInfo parsed → no skills should be inlined.
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            "---\nname: Empty\ndescription: no skills\nversion: 1.0.0\n---\n\n"
+            "# System Prompt\n\nno skills.\n\n## Skills\n\n"
+        )
+
+        mock_factory, _ = mock_create_deep_agent
+        AgentRuntime(agent_md=agent_md, skills_dir=skills_dir, model="openai:gpt-4o")
+        _, kwargs = mock_factory.call_args
+        prompt = kwargs.get("system_prompt", "") or ""
+
+        assert "### tdd" not in prompt
+        assert "TDD_MARKER" not in prompt
+
+    def test_missing_skills_dir_does_not_crash(self, tmp_path, mock_create_deep_agent):
+        agent_md = self._agent_md(tmp_path, ["tdd"])
+        missing = tmp_path / "does_not_exist"
+        mock_factory, _ = mock_create_deep_agent
+        AgentRuntime(agent_md=agent_md, skills_dir=missing, model="openai:gpt-4o")
+        _, kwargs = mock_factory.call_args
+        prompt = kwargs.get("system_prompt", "") or ""
+        # No skills directory → no "## Available Skills" block at all.
+        assert "## Available Skills" not in prompt
+
+
+class TestRealAgentPromptsSkillIsolation:
+    """End-to-end regression guard using the actual agent.md files and
+    the actual ``_runtime_skills/`` directory shipped with the repo.
+    PR #101 inlined every ``*/SKILL.md`` into every agent's system
+    prompt; the only skill present was ``tdd/SKILL.md`` (intended for
+    developer), so architect, product_manager, and qa_engineer prompts
+    all ended up containing RED/GREEN/VERIFY instructions that
+    contradicted their roles. This test pins the fix.
+    """
+
+    AGENTS_DIR = Path(__file__).resolve().parents[2] / "src" / "aise" / "agents"
+    SKILLS_DIR = AGENTS_DIR / "_runtime_skills"
+
+    def _prompt_for(self, agent_name: str, mock_factory) -> str:
+        agent_md = self.AGENTS_DIR / f"{agent_name}.md"
+        assert agent_md.is_file(), f"missing fixture: {agent_md}"
+        AgentRuntime(agent_md=agent_md, skills_dir=self.SKILLS_DIR, model="openai:gpt-4o")
+        _, kwargs = mock_factory.call_args
+        return kwargs.get("system_prompt", "") or ""
+
+    def test_developer_prompt_contains_tdd_skill(self, mock_create_deep_agent):
+        """Positive: developer declares ``tdd`` in its ``## Skills``
+        block, so the TDD body must appear in its prompt."""
+        mock_factory, _ = mock_create_deep_agent
+        prompt = self._prompt_for("developer", mock_factory)
+        assert "### tdd" in prompt
+        # Check for a stable phrase from tdd/SKILL.md so a future
+        # rename in the body triggers a visible failure:
+        assert "Test-Driven" in prompt or "test" in prompt.lower()
+
+    def test_architect_prompt_does_not_contain_tdd_skill(self, mock_create_deep_agent):
+        """Negative (the PR #101 regression guard): architect does not
+        declare ``tdd`` in its ``## Skills`` block, so the TDD body
+        must NOT appear in its prompt."""
+        mock_factory, _ = mock_create_deep_agent
+        prompt = self._prompt_for("architect", mock_factory)
+        assert "### tdd" not in prompt, (
+            "TDD skill body leaked into architect prompt — this is the PR #101 "
+            "regression. Architect does not declare tdd in its ## Skills; the "
+            "filter in _load_inline_skill_content must exclude it."
+        )
+
+    def test_product_manager_prompt_does_not_contain_tdd_skill(self, mock_create_deep_agent):
+        mock_factory, _ = mock_create_deep_agent
+        prompt = self._prompt_for("project_manager", mock_factory)
+        assert "### tdd" not in prompt
+
+    def test_qa_engineer_prompt_does_not_contain_tdd_skill(self, mock_create_deep_agent):
+        mock_factory, _ = mock_create_deep_agent
+        qa_md = self.AGENTS_DIR / "qa_engineer.md"
+        if not qa_md.is_file():
+            pytest.skip("qa_engineer.md not present in this tree")
+        prompt = self._prompt_for("qa_engineer", mock_factory)
+        assert "### tdd" not in prompt
 
 
 class TestAgentRuntimeCard:
