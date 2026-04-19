@@ -136,7 +136,7 @@ to guess the host location.
 
 def _load_inline_skill_content(
     skills_dir: Path,
-    declared_skill_names: set[str] | None = None,
+    declared_skill_names: set[str],
 ) -> list[tuple[str, str]]:
     """Read the ``*/SKILL.md`` files the agent actually declared.
 
@@ -145,7 +145,7 @@ def _load_inline_skill_content(
     ``AgentDefinition.skills``); only skills whose directory name matches
     one of those names get their body inlined. This is a per-agent
     filter — TDD guidance belongs in the developer's prompt, not in the
-    architect's or product_manager's.
+    architect's or project_manager's.
 
     Previously this function inlined every ``*/SKILL.md`` body into every
     agent's prompt. Because ``_runtime_skills/`` contains only
@@ -155,10 +155,6 @@ def _load_inline_skill_content(
     architect to emit a "Let me write..." bridging sentence and exit
     its turn without calling ``write_file`` (4/4 dispatches failed on
     project_3-snake, 2026-04-18).
-
-    When ``declared_skill_names`` is ``None`` (legacy callers / tests),
-    the filter is bypassed and every skill is loaded — preserving the
-    old behavior for code paths that explicitly want "everything".
 
     Uses a simple directory scan (no deepagents involvement) so no
     absolute host paths appear anywhere. The filtered content is
@@ -170,7 +166,7 @@ def _load_inline_skill_content(
         return results
     for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
         skill_name = skill_md.parent.name
-        if declared_skill_names is not None and skill_name not in declared_skill_names:
+        if skill_name not in declared_skill_names:
             continue
         try:
             body = skill_md.read_text(encoding="utf-8")

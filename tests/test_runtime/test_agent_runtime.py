@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aise.runtime.agent_runtime import AgentRuntime, _load_inline_skill_content
+from aise.runtime.agent_runtime import AgentRuntime
 from aise.runtime.models import AgentState
 
 SAMPLE_AGENT_MD = """\
@@ -384,43 +384,81 @@ class TestSystemPromptAssembly:
         assert str(skills_dir) not in prompt, f"skills_dir absolute path leaked into prompt: {skills_dir}"
 
 
-class TestLoadInlineSkillContentFilter:
-    """Unit tests for the per-agent skill filter in
-    ``_load_inline_skill_content``. The filter (added after PR #101
-    leaked developer-only TDD guidance into every agent's prompt) must:
-
-    - when called with ``declared_skill_names=None``, load every skill
-      in the directory (legacy behavior, used by tests that don't care);
-    - when called with a set, load ONLY skills whose directory name is
-      a member of that set.
+class TestSystemPromptSkillFiltering:
+    """The per-agent skill filter (added after PR #101 leaked
+    developer-only TDD guidance into every agent's prompt) is tested
+    here through the public ``AgentRuntime`` surface: each test builds
+    a runtime with a specific ``## Skills`` declaration and a set of
+    skill directories, then inspects the system prompt passed to
+    ``create_deep_agent`` to confirm which skill bodies were inlined.
     """
 
-    def _write_skill(self, skills_dir: Path, name: str, body: str) -> None:
+    def _agent_md(self, tmp_path: Path, declared_skills: list[str]) -> Path:
+        bullets = "\n".join(f"- {name}: {name} skill" for name in declared_skills)
+        f = tmp_path / "agent.md"
+        f.write_text(
+            "---\n"
+            "name: FilterAgent\n"
+            "description: filter test\n"
+            "version: 1.0.0\n"
+            "---\n\n"
+            "# System Prompt\n\n"
+            "You are a filter test.\n\n"
+            "## Skills\n\n" + bullets + "\n"
+        )
+        return f
+
+    def _write_skill(self, skills_dir: Path, name: str, marker: str) -> None:
         d = skills_dir / name
         d.mkdir()
-        (d / "SKILL.md").write_text(body)
+        (d / "SKILL.md").write_text(f"# {name}\n{marker}\n")
 
-    def test_none_loads_everything(self, skills_dir):
-        self._write_skill(skills_dir, "tdd", "# tdd\nbody\n")
-        self._write_skill(skills_dir, "design", "# design\nbody\n")
-        got = _load_inline_skill_content(skills_dir, None)
-        assert {name for name, _ in got} == {"tdd", "design"}
+    def test_only_declared_skills_inlined(self, tmp_path, mock_create_deep_agent):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._write_skill(skills_dir, "tdd", "TDD_MARKER")
+        self._write_skill(skills_dir, "design", "DESIGN_MARKER")
+        self._write_skill(skills_dir, "review", "REVIEW_MARKER")
+        agent_md = self._agent_md(tmp_path, ["tdd", "review"])
 
-    def test_empty_set_loads_nothing(self, skills_dir):
-        self._write_skill(skills_dir, "tdd", "# tdd\nbody\n")
-        got = _load_inline_skill_content(skills_dir, set())
-        assert got == []
+        mock_factory, _ = mock_create_deep_agent
+        AgentRuntime(agent_md=agent_md, skills_dir=skills_dir, model="openai:gpt-4o")
+        _, kwargs = mock_factory.call_args
+        prompt = kwargs.get("system_prompt", "") or ""
 
-    def test_filters_by_declared_names(self, skills_dir):
-        self._write_skill(skills_dir, "tdd", "# tdd\ntdd body\n")
-        self._write_skill(skills_dir, "design", "# design\ndesign body\n")
-        self._write_skill(skills_dir, "review", "# review\nreview body\n")
-        got = _load_inline_skill_content(skills_dir, {"tdd", "review"})
-        assert {name for name, _ in got} == {"tdd", "review"}
+        assert "### tdd" in prompt and "TDD_MARKER" in prompt
+        assert "### review" in prompt and "REVIEW_MARKER" in prompt
+        assert "### design" not in prompt and "DESIGN_MARKER" not in prompt
 
-    def test_missing_skills_dir_returns_empty(self, tmp_path):
-        got = _load_inline_skill_content(tmp_path / "does_not_exist", {"tdd"})
-        assert got == []
+    def test_agent_with_no_declared_skills_gets_no_inline_bodies(self, tmp_path, mock_create_deep_agent):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._write_skill(skills_dir, "tdd", "TDD_MARKER")
+        # agent.md with an empty ## Skills section: no bullets → no
+        # SkillInfo parsed → no skills should be inlined.
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            "---\nname: Empty\ndescription: no skills\nversion: 1.0.0\n---\n\n"
+            "# System Prompt\n\nno skills.\n\n## Skills\n\n"
+        )
+
+        mock_factory, _ = mock_create_deep_agent
+        AgentRuntime(agent_md=agent_md, skills_dir=skills_dir, model="openai:gpt-4o")
+        _, kwargs = mock_factory.call_args
+        prompt = kwargs.get("system_prompt", "") or ""
+
+        assert "### tdd" not in prompt
+        assert "TDD_MARKER" not in prompt
+
+    def test_missing_skills_dir_does_not_crash(self, tmp_path, mock_create_deep_agent):
+        agent_md = self._agent_md(tmp_path, ["tdd"])
+        missing = tmp_path / "does_not_exist"
+        mock_factory, _ = mock_create_deep_agent
+        AgentRuntime(agent_md=agent_md, skills_dir=missing, model="openai:gpt-4o")
+        _, kwargs = mock_factory.call_args
+        prompt = kwargs.get("system_prompt", "") or ""
+        # No skills directory → no "## Available Skills" block at all.
+        assert "## Available Skills" not in prompt
 
 
 class TestRealAgentPromptsSkillIsolation:
