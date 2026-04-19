@@ -135,7 +135,15 @@ class ShellConfig:
 
 # Floor for max_tokens. Many tool-calling workflows need lots of headroom
 # for tool arguments + responses; a 4 KB ceiling causes silent truncation.
-DEFAULT_MIN_MAX_TOKENS = 16384
+# Reasoning-capable models (qwen3.x et al.) emit a hidden ``<think>…</think>``
+# block whose tokens count against this budget but are stripped from the
+# visible content. Observed on project_3-snake (2026-04-19): the architect
+# burned 16384 completion tokens in the think block for a "produce complete
+# architecture blueprint" dispatch, leaving zero budget for the
+# ``write_file`` tool call that would have actually created the document.
+# A 64 KB floor gives room for both the reasoning chain and the composed
+# output on large-artifact tasks.
+DEFAULT_MIN_MAX_TOKENS = 65536
 
 
 @dataclass
