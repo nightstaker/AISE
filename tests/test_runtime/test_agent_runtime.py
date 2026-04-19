@@ -300,6 +300,180 @@ class TestSummarizationPatch:
         assert "max_length" in truncate
 
 
+class TestEmptyAIMessageNudge:
+    """The handle_message loop must detect terminal empty AIMessages
+    (``content="", tool_calls=None``) and re-invoke the graph with a
+    generic corrective HumanMessage appended. This compensates for the
+    local-LLM pathology where the model occasionally exits its turn
+    without saying anything or calling a tool.
+
+    The nudge text is deliberately agent-/tool-neutral so it applies
+    uniformly to every runtime; these tests pin both the detection
+    shape and the neutrality of the injected text.
+    """
+
+    def _empty_terminal_result(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        return {
+            "messages": [
+                HumanMessage(content="the task"),
+                AIMessage(content="", tool_calls=[]),
+            ]
+        }
+
+    def test_nudge_fires_on_empty_terminal(self, agent_md_file, skills_dir, mock_create_deep_agent):
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        _, mock_agent = mock_create_deep_agent
+        # First invoke: empty terminal. Second invoke (the nudge): real response.
+        mock_agent.invoke.side_effect = [
+            self._empty_terminal_result(),
+            {
+                "messages": [
+                    HumanMessage(content="the task"),
+                    AIMessage(content="", tool_calls=[]),
+                    HumanMessage(content="nudge"),
+                    AIMessage(content="recovered response"),
+                ]
+            },
+        ]
+
+        runtime = AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
+        runtime.evoke()
+        response = runtime.handle_message("hello")
+        assert response == "recovered response"
+        assert mock_agent.invoke.call_count == 2
+        # The second invoke's messages list must contain a HumanMessage
+        # whose content is the generic nudge text (not the original task).
+        second_state = mock_agent.invoke.call_args_list[1].args[0]
+        human_contents = [m.content for m in second_state["messages"] if isinstance(m, HumanMessage)]
+        # The last HumanMessage must be the nudge, not the original "hello".
+        assert "no content and no tool call" in human_contents[-1]
+
+    def test_nudge_does_not_fire_on_text_terminal(self, agent_md_file, skills_dir, mock_create_deep_agent):
+        """Non-empty content terminals are treated as real finishes;
+        the nudge only targets the specific ``empty content + no
+        tool_calls`` shape."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        _, mock_agent = mock_create_deep_agent
+        mock_agent.invoke.return_value = {"messages": [HumanMessage(content="x"), AIMessage(content="Let me write...")]}
+
+        runtime = AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
+        runtime.evoke()
+        response = runtime.handle_message("hello")
+        assert response == "Let me write..."
+        assert mock_agent.invoke.call_count == 1
+
+    def test_nudge_capped(self, agent_md_file, skills_dir, mock_create_deep_agent):
+        """When the LLM keeps producing empty terminals the runtime must
+        stop nudging after ``_EMPTY_NUDGE_MAX`` attempts and return
+        whatever it has, rather than looping forever."""
+        from aise.runtime.agent_runtime import _EMPTY_NUDGE_MAX
+
+        _, mock_agent = mock_create_deep_agent
+        mock_agent.invoke.side_effect = [self._empty_terminal_result() for _ in range(_EMPTY_NUDGE_MAX + 5)]
+
+        runtime = AgentRuntime(agent_md=agent_md_file, skills_dir=skills_dir, model="openai:gpt-4o")
+        runtime.evoke()
+        runtime.handle_message("hello")
+        # First invoke + up to MAX nudges.
+        assert mock_agent.invoke.call_count == 1 + _EMPTY_NUDGE_MAX
+
+    def test_nudge_text_is_agent_and_tool_neutral(self):
+        """Pin that the injected nudge text contains no agent-, tool-,
+        skill-, or filename-specific tokens, so it applies uniformly
+        regardless of which agent is running."""
+        from aise.runtime.agent_runtime import _EMPTY_NUDGE_TEXT
+
+        banned = [
+            "architect",
+            "developer",
+            "qa_engineer",
+            "project_manager",
+            "product_manager",
+            "write_file",
+            "edit_file",
+            "execute",
+            "pytest",
+            "tdd",
+            "docs/",
+            "src/",
+            "tests/",
+            ".md",
+            ".py",
+        ]
+        lowered = _EMPTY_NUDGE_TEXT.lower()
+        for needle in banned:
+            assert needle.lower() not in lowered, f"nudge text contains customized token: {needle!r}"
+
+
+class TestIsEmptyTerminal:
+    """Unit tests for the ``_is_empty_terminal`` detector.
+
+    Detection is shape-based: a dict with a ``messages`` list whose
+    last entry is an :class:`AIMessage` having empty/whitespace content
+    AND no tool_calls. Any other shape is not-empty-terminal.
+    """
+
+    def test_empty_content_no_tool_calls(self):
+        from langchain_core.messages import AIMessage
+
+        from aise.runtime.agent_runtime import _is_empty_terminal
+
+        assert _is_empty_terminal({"messages": [AIMessage(content="", tool_calls=[])]})
+
+    def test_whitespace_only_content_no_tool_calls(self):
+        from langchain_core.messages import AIMessage
+
+        from aise.runtime.agent_runtime import _is_empty_terminal
+
+        assert _is_empty_terminal({"messages": [AIMessage(content="   \n\t", tool_calls=[])]})
+
+    def test_non_empty_content_is_not_terminal(self):
+        from langchain_core.messages import AIMessage
+
+        from aise.runtime.agent_runtime import _is_empty_terminal
+
+        assert not _is_empty_terminal({"messages": [AIMessage(content="hi")]})
+
+    def test_empty_content_with_tool_calls_is_not_terminal(self):
+        """An AIMessage with empty text but an active tool_call is a
+        normal mid-loop state — LangGraph will execute the tool and
+        resume. Do NOT nudge this."""
+        from langchain_core.messages import AIMessage
+
+        from aise.runtime.agent_runtime import _is_empty_terminal
+
+        ai = AIMessage(
+            content="",
+            tool_calls=[{"id": "x", "name": "read_file", "args": {}}],
+        )
+        assert not _is_empty_terminal({"messages": [ai]})
+
+    def test_non_dict_result_is_not_terminal(self):
+        from aise.runtime.agent_runtime import _is_empty_terminal
+
+        assert not _is_empty_terminal("some string")
+        assert not _is_empty_terminal(None)
+
+    def test_missing_messages_key(self):
+        from aise.runtime.agent_runtime import _is_empty_terminal
+
+        assert not _is_empty_terminal({})
+
+    def test_trailing_tool_message_is_not_terminal(self):
+        """If the last message is a ToolMessage (not AIMessage) the
+        graph is still mid-step, not terminal."""
+        from langchain_core.messages import ToolMessage
+
+        from aise.runtime.agent_runtime import _is_empty_terminal
+
+        tm = ToolMessage(content="result", tool_call_id="x")
+        assert not _is_empty_terminal({"messages": [tm]})
+
+
 class TestSystemPromptAssembly:
     """The final system_prompt passed to ``create_deep_agent`` must:
 
