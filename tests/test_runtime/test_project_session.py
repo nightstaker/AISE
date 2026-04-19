@@ -281,17 +281,35 @@ class TestPhase6DeliveryReport:
         assert "```mermaid" in body
         # Explicit bans to prevent regressions.
         assert "ascii art" in lowered
-        # At least one diagram-type hint so the agent picks the right one.
+        # Behavioral diagram types must remain named so the agent picks
+        # the right one for non-architecture views.
         assert any(
             kind in body
             for kind in (
-                "flowchart",
                 "sequenceDiagram",
-                "classDiagram",
                 "stateDiagram",
                 "erDiagram",
+                "flowchart",
             )
         )
+
+    def test_architect_md_requires_c4_for_architecture_views(self):
+        """Architecture views (system context, container decomposition,
+        component decomposition) must be C4 diagrams. architect.md
+        lists the required C4 Mermaid types and mandates minimum
+        coverage so the agent cannot drop any level."""
+        from pathlib import Path as _P
+
+        import aise
+
+        md_path = _P(aise.__file__).resolve().parent / "agents" / "architect.md"
+        body = md_path.read_text(encoding="utf-8")
+        # The three minimum-required C4 levels must be named explicitly.
+        for c4_type in ("C4Context", "C4Container", "C4Component"):
+            assert c4_type in body, f"architect.md must name the {c4_type} Mermaid type"
+        # The C4 model itself should be referenced by name so future
+        # maintainers can find the relevant docs.
+        assert "C4 model" in body or "C4 diagram" in body
 
     def test_product_manager_md_requires_mermaid_for_diagrams(self):
         """product_manager.md must instruct the PM to use Mermaid for
@@ -317,6 +335,15 @@ class TestPhase6DeliveryReport:
         # And the phase prompt should say "no ASCII art" (or an
         # equivalent) so the architect can't sidestep the requirement.
         assert "ascii art" in lowered or "no ascii" in lowered
+
+    def test_phase2_prompt_requires_c4_architecture_diagrams(self, session):
+        """The architecture-phase prompt must reinforce the C4
+        requirement at dispatch time so the PM cannot drop it even if
+        the architect system prompt is weakened in a future edit."""
+        phases = session._build_phase_prompts("Build a thing")
+        architecture = dict(phases).get("architecture", "")
+        for c4_type in ("C4Context", "C4Container", "C4Component"):
+            assert c4_type in architecture, f"phase-2 prompt must name the {c4_type} requirement"
 
 
 class TestProjectSessionRun:
