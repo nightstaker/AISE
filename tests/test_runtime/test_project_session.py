@@ -265,6 +265,59 @@ class TestPhase6DeliveryReport:
         # Anti-fabrication warning so PM cites numbers verbatim.
         assert "verbatim" in body.lower() or "do not invent" in body.lower()
 
+    def test_architect_md_requires_mermaid_diagrams(self):
+        """architect.md must instruct the agent to produce Mermaid
+        diagrams (inside fenced code blocks) for all design visuals,
+        not ASCII art or external images. Pins the contract for every
+        architecture document the agent writes."""
+        from pathlib import Path as _P
+
+        import aise
+
+        md_path = _P(aise.__file__).resolve().parent / "agents" / "architect.md"
+        body = md_path.read_text(encoding="utf-8")
+        lowered = body.lower()
+        assert "mermaid" in lowered
+        assert "```mermaid" in body
+        # Explicit bans to prevent regressions.
+        assert "ascii art" in lowered
+        # At least one diagram-type hint so the agent picks the right one.
+        assert any(
+            kind in body
+            for kind in (
+                "flowchart",
+                "sequenceDiagram",
+                "classDiagram",
+                "stateDiagram",
+                "erDiagram",
+            )
+        )
+
+    def test_product_manager_md_requires_mermaid_for_diagrams(self):
+        """product_manager.md must instruct the PM to use Mermaid for
+        any diagrams it includes in requirement or delivery documents."""
+        from pathlib import Path as _P
+
+        import aise
+
+        md_path = _P(aise.__file__).resolve().parent / "agents" / "product_manager.md"
+        body = md_path.read_text(encoding="utf-8")
+        assert "mermaid" in body.lower()
+        assert "```mermaid" in body
+
+    def test_phase2_prompt_requires_mermaid_diagrams(self, session):
+        """The architecture-phase prompt must tell the PM to instruct
+        the architect to produce Mermaid diagrams. Without this, the
+        architect.md text is necessary but not sufficient — the PM
+        needs the explicit reminder in the dispatch description."""
+        phases = session._build_phase_prompts("Build a thing")
+        architecture = dict(phases).get("architecture", "")
+        lowered = architecture.lower()
+        assert "mermaid" in lowered
+        # And the phase prompt should say "no ASCII art" (or an
+        # equivalent) so the architect can't sidestep the requirement.
+        assert "ascii art" in lowered or "no ascii" in lowered
+
 
 class TestProjectSessionRun:
     def test_run_calls_pm_runtime(self, session):

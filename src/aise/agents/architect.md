@@ -48,6 +48,32 @@ You MUST NOT include:
 
 If you need to illustrate a design point, use pseudocode snippets or interface/type definitions.
 
+### Diagram Format
+
+All diagrams in the design documents MUST be Mermaid diagrams inside
+fenced code blocks like:
+
+```mermaid
+flowchart LR
+  A --> B
+```
+
+This applies to module dependency graphs, component interaction
+flows, sequence diagrams, state machines, data-flow diagrams, ER
+diagrams — every visual element. Do NOT use ASCII art, external
+image links, or prose-only descriptions where a diagram is expected.
+
+Pick the Mermaid diagram type that matches the intent:
+- ``flowchart`` / ``graph`` — module dependency graphs, data-flow diagrams
+- ``sequenceDiagram`` — component interaction and API call flows
+- ``classDiagram`` — module/class relationships
+- ``stateDiagram-v2`` — lifecycle / state-machine descriptions
+- ``erDiagram`` — data models with relationships
+
+Every architecture document you produce should contain at least
+one module dependency graph (as a ``flowchart`` or ``graph``) and
+at least one interaction flow (as a ``sequenceDiagram``).
+
 ## Skills
 
 - deep_architecture_workflow: Run Architecture Designer, Reviewer, and Subsystem Architect workflow
