@@ -134,6 +134,44 @@ to guess the host location.
 """.strip()
 
 
+# Maximum number of in-graph corrective nudges a single ``handle_message``
+# call will issue when the LLM terminates with an empty AIMessage. A small
+# cap is enough: most runs recover on the first nudge, and if two nudges
+# do not unstick the model there is no point burning more tokens.
+_EMPTY_NUDGE_MAX = 2
+
+# Text appended as a HumanMessage after an empty-AIMessage termination.
+# Deliberately agent-, tool-, and skill-neutral — applies uniformly.
+_EMPTY_NUDGE_TEXT = (
+    "Your previous message contained no content and no tool call.\n"
+    "Either call an available tool to make progress, or reply with a\n"
+    "final answer. Do not end the turn with an empty message."
+)
+
+
+def _is_empty_terminal(result: Any) -> bool:
+    """Return True if the graph terminated with an empty AIMessage.
+
+    The target shape is ``AIMessage(content="", tool_calls=None)`` at the
+    tail of the message list — the exact pattern that makes LangGraph
+    end the loop with nothing to act on. Any other terminal (non-empty
+    content, or a trailing tool_call) is treated as a real finish and
+    not nudged.
+    """
+    if not isinstance(result, dict):
+        return False
+    messages = result.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return False
+    last = messages[-1]
+    if not isinstance(last, AIMessage):
+        return False
+    content = last.content if isinstance(last.content, str) else ""
+    tool_calls = getattr(last, "tool_calls", None)
+    has_tool_calls = isinstance(tool_calls, list) and len(tool_calls) > 0
+    return not content.strip() and not has_tool_calls
+
+
 def _load_inline_skill_content(
     skills_dir: Path,
     declared_skill_names: set[str],
@@ -491,6 +529,32 @@ class AgentRuntime:
                 {"messages": [HumanMessage(content=content)]},
                 config=config if config else None,
             )
+
+            # Empty-AIMessage in-graph nudge: the local LLM sometimes
+            # emits ``AIMessage(content="", tool_calls=None)`` which
+            # terminates the LangGraph loop with nothing to act on. Feed
+            # a generic corrective HumanMessage back into the same
+            # conversation (up to _EMPTY_NUDGE_MAX times) instead of
+            # tearing the session down. The nudge text is agent- and
+            # tool-neutral so it applies to every agent built by this
+            # runtime.
+            nudges_used = 0
+            while nudges_used < _EMPTY_NUDGE_MAX and _is_empty_terminal(result):
+                nudges_used += 1
+                logger.info(
+                    "Empty-AIMessage nudge %d/%d: agent=%s call=%s",
+                    nudges_used,
+                    _EMPTY_NUDGE_MAX,
+                    self.name,
+                    call_id,
+                )
+                messages = list(result.get("messages") or [])
+                messages.append(HumanMessage(content=_EMPTY_NUDGE_TEXT))
+                result = self._agent.invoke(
+                    {"messages": messages},
+                    config=config if config else None,
+                )
+
             response = _extract_response(result)
 
             with trace_lock:

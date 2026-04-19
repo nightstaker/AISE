@@ -422,6 +422,8 @@ class ProjectSession:
                 "1. Call list_processes, then get_process('waterfall.process.md').\n"
                 "2. Call list_agents to discover agents.\n"
                 "3. dispatch_task to product_manager to write docs/requirement.md.\n"
+                "   Pass expected_artifacts=['docs/requirement.md'] so the\n"
+                "   runtime retries once with context if the file is missing.\n"
                 "4. After it completes, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
@@ -430,6 +432,18 @@ class ProjectSession:
                 f"Project requirement: {requirement}\n\n"
                 "Execute Phase 2 — Architecture:\n"
                 "dispatch_task to architect to read docs/requirement.md and write docs/architecture.md.\n"
+                "In the task description, require that every diagram in the\n"
+                "document be a Mermaid diagram inside a fenced ```mermaid\n"
+                "code block. Architecture views MUST use the C4 model\n"
+                "(``C4Context``, ``C4Container``, ``C4Component``, and\n"
+                "``C4Dynamic`` / ``C4Deployment`` where relevant). The\n"
+                "document must include at minimum one ``C4Context``, one\n"
+                "``C4Container``, and one ``C4Component`` diagram.\n"
+                "Behavioral / data views (sequence, state machine, ER)\n"
+                "use the corresponding standard Mermaid types.\n"
+                "No ASCII art and no external image links.\n"
+                "Pass expected_artifacts=['docs/architecture.md'] so the\n"
+                "runtime retries once with context if the file is missing.\n"
                 "After it completes, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
@@ -445,6 +459,9 @@ class ProjectSession:
                 "   then run ONLY that module's test file with\n"
                 '   execute(command="python -m pytest tests/test_<module>.py -q --tb=short")\n'
                 "   and iterate (up to 3 attempts) until that module's tests pass.\n"
+                "   For each task object in the JSON, set\n"
+                "   expected_artifacts=['src/<module>.py', 'tests/test_<module>.py']\n"
+                "   so the runtime retries once with context if either file is missing.\n"
                 "3. Do NOT run the full pytest suite yourself — developers run\n"
                 "   their own per-module tests, and the QA engineer will run\n"
                 "   the full suite in Phase 5. Running full pytest here while\n"
@@ -512,6 +529,8 @@ class ProjectSession:
                 'execute(command="python -m pytest tests/ -q --tb=short")\n'
                 "and iterate up to 3 times until tests pass. Report the final\n"
                 "pytest result in your response.'\n"
+                "Pass expected_artifacts=['tests/test_integration.py'] so the\n"
+                "runtime retries once with context if the file is missing.\n"
                 "After it completes, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
@@ -542,6 +561,9 @@ class ProjectSession:
                 "   e) Coverage (optional — may fail if pytest-cov not installed):\n"
                 "      execute_shell('python -m pytest tests/ --cov=src --cov-report=term 2>&1 | tail -25')\n\n"
                 "2. Dispatch product_manager to write the final report.\n"
+                "   Pass expected_artifacts=['docs/delivery_report.md'] so\n"
+                "   the runtime retries once with context if the file is\n"
+                "   missing.\n"
                 "   Embed the ACTUAL tool outputs you gathered above into\n"
                 "   the task description so product_manager has the raw\n"
                 "   numbers to cite. Use a task description like:\n\n"

@@ -53,6 +53,83 @@ from .runtime_config import RuntimeConfig
 logger = get_logger(__name__)
 
 
+# Minimum byte size an expected artifact must have to be considered
+# "produced". Files that exist but contain only a few bytes (e.g. an
+# empty Python file, a one-line placeholder) are treated the same as
+# missing — the dispatch is re-issued with context.
+_MIN_ARTIFACT_BYTES = 64
+
+# Maximum number of context-augmented retries a single ``dispatch_task``
+# will issue after an empty response or missing artifacts. One retry is
+# enough in practice: if a fresh context-augmented attempt still fails,
+# looping further usually burns tokens without recovering.
+_MAX_DISPATCH_RETRIES = 1
+
+# Text prepended to the task description on a context-augmented retry.
+# Deliberately agent-, tool-, skill-, and file-neutral so it applies
+# uniformly to every dispatch. ``{prev}`` is filled with a truncated
+# verbatim copy of the previous response (or the literal ``(empty)`` if
+# the previous attempt returned nothing). ``{task}`` is the original
+# task description.
+_RETRY_CONTEXT_TEMPLATE = (
+    "[Retry context]\n"
+    "A previous attempt at this task ended without producing the\n"
+    "expected output. Its last message was:\n"
+    "<<<\n"
+    "{prev}\n"
+    ">>>\n"
+    "Continue the task. If the previous attempt described an intended\n"
+    "action without performing it, perform it now.\n\n"
+    "Original task:\n"
+    "{task}"
+)
+
+# Max bytes of the previous response to echo into the retry prompt.
+# Large responses would inflate the retry prompt without helping the
+# model; most useful signal is in the final few hundred characters.
+_RETRY_PREV_MAX_BYTES = 500
+
+
+def _artifact_shortfalls(
+    project_root: Path | None,
+    expected: list[str] | None,
+) -> list[str]:
+    """Return the subset of ``expected`` that is missing or too small.
+
+    An artifact counts as "produced" when the file exists under
+    ``project_root`` and is at least :data:`_MIN_ARTIFACT_BYTES` long.
+    Missing ``project_root`` or an empty ``expected`` list means no
+    verification is possible — an empty list is returned.
+    """
+    if project_root is None or not expected:
+        return []
+    shortfalls: list[str] = []
+    root = project_root.resolve()
+    for rel in expected:
+        rel_norm = rel.lstrip("/")
+        path = (project_root / rel_norm).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            shortfalls.append(rel)
+            continue
+        if not path.is_file() or path.stat().st_size < _MIN_ARTIFACT_BYTES:
+            shortfalls.append(rel)
+    return shortfalls
+
+
+def _build_retry_prompt(original_task: str, previous_response: str) -> str:
+    """Compose the context-augmented retry prompt for a dispatch."""
+    prev = previous_response.strip()
+    if not prev:
+        echoed = "(empty)"
+    elif len(prev) <= _RETRY_PREV_MAX_BYTES:
+        echoed = prev
+    else:
+        echoed = prev[-_RETRY_PREV_MAX_BYTES:]
+    return _RETRY_CONTEXT_TEMPLATE.format(prev=echoed, task=original_task)
+
+
 # -- Context ---------------------------------------------------------------
 
 
@@ -235,6 +312,7 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
         task_description: str,
         step_id: str = "",
         phase: str = "",
+        expected_artifacts: list[str] | None = None,
     ) -> str:
         """Send a task to an agent and return its response.
 
@@ -246,7 +324,31 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
             task_description: Detailed instructions for the agent.
             step_id: Optional workflow step identifier (free-form).
             phase: Optional workflow phase name (free-form).
+            expected_artifacts: Optional list of project-relative paths
+                this task must produce. After the agent returns, each
+                path is checked for existence and non-trivial size; if
+                any is missing, the dispatch is re-issued once with a
+                generic context prefix quoting the previous response.
         """
+        # Workflow-complete guard: once ``mark_complete`` has fired, no
+        # further dispatches are accepted in this session. This stops
+        # the "PM keeps dispatching after marking complete" pathology
+        # without referencing any specific step or agent.
+        if ctx.workflow_state.is_complete:
+            logger.info(
+                "dispatch_task refused: workflow already complete (to=%s step=%s)",
+                agent_name,
+                step_id,
+            )
+            return json.dumps(
+                {
+                    "status": "refused",
+                    "error": (
+                        "Workflow is already marked complete. Do not dispatch further tasks. Stop calling tools."
+                    ),
+                }
+            )
+
         max_dispatches = ctx.config.safety_limits.max_dispatches
         if ctx.dispatch_count() >= max_dispatches:
             logger.warning("dispatch_task refused: cap reached (%d)", max_dispatches)
@@ -318,10 +420,47 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
                     }
                 )
 
+            # First attempt.
             result = dispatch_rt.handle_message(
                 task_description,
                 on_todos_update=_on_todos_update,
             )
+
+            # Context-augmented retry loop. Triggers in two cases, both
+            # role-neutral:
+            #   a) the agent's response was effectively empty;
+            #   b) ``expected_artifacts`` were declared but are missing
+            #      or trivially small.
+            # The retry prompt quotes the previous response verbatim and
+            # asks the agent to continue — no agent-specific phrasing,
+            # no tool names, no filenames baked into the template.
+            retries_used = 0
+            while retries_used < _MAX_DISPATCH_RETRIES:
+                shortfalls = _artifact_shortfalls(ctx.project_root, expected_artifacts)
+                if result.strip() and not shortfalls:
+                    break
+                retries_used += 1
+                if shortfalls:
+                    logger.info(
+                        "Retry %d/%d for task=%s: missing artifacts=%s",
+                        retries_used,
+                        _MAX_DISPATCH_RETRIES,
+                        task_id,
+                        shortfalls,
+                    )
+                else:
+                    logger.info(
+                        "Retry %d/%d for task=%s: empty response",
+                        retries_used,
+                        _MAX_DISPATCH_RETRIES,
+                        task_id,
+                    )
+                retry_prompt = _build_retry_prompt(task_description, result)
+                result = dispatch_rt.handle_message(
+                    retry_prompt,
+                    on_todos_update=_on_todos_update,
+                )
+
             output_len = len(result)
             preview = result[:500] + "..." if output_len > 500 else result
             response_msg = {
@@ -334,10 +473,17 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
                 "payload": {
                     "output_preview": preview,
                     "output_length": output_len,
+                    "retries": retries_used,
                 },
             }
             ctx.emit(response_msg)
-            logger.info("Task completed: task=%s from=%s output=%d chars", task_id, agent_name, output_len)
+            logger.info(
+                "Task completed: task=%s from=%s output=%d chars retries=%d",
+                task_id,
+                agent_name,
+                output_len,
+                retries_used,
+            )
             return json.dumps(response_msg, ensure_ascii=False)
         except Exception as exc:
             error_msg = {
@@ -362,7 +508,7 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
 
         Args:
             tasks_json: JSON array of objects with keys agent_name,
-                task_description, step_id, phase.
+                task_description, step_id, phase, expected_artifacts.
         """
         try:
             tasks = json.loads(tasks_json)
@@ -382,6 +528,7 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
                     "task_description": t.get("task_description", ""),
                     "step_id": t.get("step_id", ""),
                     "phase": t.get("phase", ""),
+                    "expected_artifacts": t.get("expected_artifacts"),
                 }
             )
             return json.loads(raw)
@@ -532,6 +679,26 @@ def make_completion_tool(ctx: ToolContext) -> BaseTool:
         Args:
             report: The final delivery report (markdown text).
         """
+        # Idempotency guard: if the workflow is already complete, keep
+        # the first report and refuse the second call. Without this the
+        # LLM sometimes calls ``mark_complete`` twice in a row, the
+        # second call overwriting the first report (often with a
+        # shorter / lower-quality version) and also interleaving extra
+        # dispatches between the two calls.
+        if ctx.workflow_state.is_complete:
+            logger.info(
+                "mark_complete refused: already complete (existing_len=%d new_len=%d)",
+                len(ctx.workflow_state.final_report),
+                len(report),
+            )
+            return json.dumps(
+                {
+                    "status": "refused",
+                    "error": "Workflow is already marked complete.",
+                    "existing_report_length": len(ctx.workflow_state.final_report),
+                }
+            )
+
         ctx.workflow_state.is_complete = True
         ctx.workflow_state.final_report = report
         ctx.emit(

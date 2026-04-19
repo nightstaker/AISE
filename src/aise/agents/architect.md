@@ -48,6 +48,72 @@ You MUST NOT include:
 
 If you need to illustrate a design point, use pseudocode snippets or interface/type definitions.
 
+### Diagram Format
+
+All diagrams in the design documents MUST be Mermaid diagrams inside
+fenced code blocks like:
+
+```mermaid
+flowchart LR
+  A --> B
+```
+
+This applies to module dependency graphs, component interaction
+flows, sequence diagrams, state machines, data-flow diagrams, ER
+diagrams — every visual element. Do NOT use ASCII art, external
+image links, or prose-only descriptions where a diagram is expected.
+
+**For ARCHITECTURE views, use the C4 model via Mermaid's C4 diagram
+types.** The C4 model is the expected format for every diagram that
+describes the system's structure — it scales from high-level context
+down to component-level detail without ambiguity:
+
+- ``C4Context`` — system context: the system itself, its users, and
+  the external systems it interacts with. One per document, at the
+  top.
+- ``C4Container`` — container decomposition: the deployable / runnable
+  units (apps, services, databases, queues) that make up the system.
+- ``C4Component`` — component decomposition: the logical components
+  inside a container (modules, packages, classes). Zoom in on each
+  non-trivial container.
+- ``C4Dynamic`` — runtime interaction within a specific scenario
+  (user journey, request flow). Use for use-case flows that need the
+  C4 notation.
+- ``C4Deployment`` — runtime deployment topology (nodes, pods, VMs,
+  cloud regions) when that information is relevant.
+
+**For BEHAVIORAL / DATA views that are not architecture**, use the
+standard Mermaid diagram types:
+
+- ``sequenceDiagram`` — API call sequences and message-passing flows
+  where C4Dynamic is overkill
+- ``stateDiagram-v2`` — lifecycle / state-machine descriptions
+- ``erDiagram`` — data models with relationships and cardinalities
+- ``flowchart`` — data-flow diagrams, decision trees, algorithm
+  outlines
+
+**Minimum content for every architecture document:**
+- At least ONE ``C4Context`` diagram.
+- At least ONE ``C4Container`` diagram (even for a single-deployable
+  system — it documents the system boundary).
+- At least ONE ``C4Component`` diagram zooming into a non-trivial
+  container.
+- Supplementary behavioral diagrams (``sequenceDiagram``,
+  ``stateDiagram-v2``, ``erDiagram``, etc.) as needed to cover
+  critical flows and data models.
+
+Example C4 skeleton for a small service:
+
+```mermaid
+C4Context
+  title System Context
+  Person(user, "User")
+  System(app, "Snake APP", "Mobile game with online leaderboard")
+  System_Ext(store, "App Store / Play Store")
+  Rel(user, app, "Plays")
+  Rel(app, store, "Distributed via")
+```
+
 ## Skills
 
 - deep_architecture_workflow: Run Architecture Designer, Reviewer, and Subsystem Architect workflow

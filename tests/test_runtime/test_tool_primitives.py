@@ -293,6 +293,263 @@ class TestCompletionTool:
         types = [e["type"] for e in ctx.event_log]
         assert "workflow_complete" in types
 
+    def test_mark_complete_second_call_refused(self, ctx):
+        """Regression guard for the double-delivery_report pathology.
+
+        Observed on project_3-snake (2026-04-18): PM called
+        ``mark_complete`` twice in a row, the second invocation
+        overwriting a 1478-char report with an 852-char one. Once a
+        workflow is complete, the tool must refuse further calls and
+        keep the first report intact.
+        """
+        tool = make_completion_tool(ctx)
+        tool.invoke({"report": "original report, 1478 chars worth of text"})
+        first_len = len(ctx.workflow_state.final_report)
+        result = json.loads(tool.invoke({"report": "shorter overwrite"}))
+        assert result["status"] == "refused"
+        assert ctx.workflow_state.final_report == "original report, 1478 chars worth of text"
+        assert len(ctx.workflow_state.final_report) == first_len
+        # Only ONE workflow_complete event should have been emitted.
+        completes = [e for e in ctx.event_log if e.get("type") == "workflow_complete"]
+        assert len(completes) == 1
+
+
+class TestDispatchTaskCompletionGuard:
+    """Once ``mark_complete`` has fired, further dispatches must be refused.
+
+    Regression guard for the pathology observed on project_3-snake
+    (2026-04-18): PM dispatched ``delivery_report`` a second time AFTER
+    calling ``mark_complete``, which then triggered a second
+    ``mark_complete`` that overwrote the first report.
+    """
+
+    def test_dispatch_refused_after_mark_complete(self, ctx):
+        tools = make_dispatch_tools(ctx)
+        dispatch = next(t for t in tools if t.name == "dispatch_task")
+        ctx.workflow_state.is_complete = True
+        result = json.loads(dispatch.invoke({"agent_name": "developer", "task_description": "x"}))
+        assert result["status"] == "refused"
+        assert "already marked complete" in result["error"]
+
+    def test_dispatch_refused_emits_no_task_request(self, ctx):
+        tools = make_dispatch_tools(ctx)
+        dispatch = next(t for t in tools if t.name == "dispatch_task")
+        ctx.workflow_state.is_complete = True
+        dispatch.invoke({"agent_name": "developer", "task_description": "x"})
+        # A refused dispatch must not pollute the event log with a
+        # task_request (that would make the UI think work was started).
+        assert not any(e.get("type") == "task_request" for e in ctx.event_log)
+
+    def test_normal_dispatch_before_complete_still_works(self, ctx):
+        tools = make_dispatch_tools(ctx)
+        dispatch = next(t for t in tools if t.name == "dispatch_task")
+        result = json.loads(dispatch.invoke({"agent_name": "developer", "task_description": "x"}))
+        assert result["status"] == "completed"
+
+
+class TestDispatchTaskRetryWithContext:
+    """A dispatch that returns empty or misses its declared artifacts
+    must retry once with a context-augmented prompt that quotes the
+    previous response. No agent-, tool-, or file-specific wording.
+    """
+
+    def test_retry_on_empty_response(self, tmp_path, fake_manager):
+        from aise.runtime.tool_primitives import (
+            ToolContext,
+            WorkflowState,
+            make_dispatch_tools,
+        )
+
+        # Fake runtime that returns empty on first call, real content on second.
+        rt = fake_manager.runtimes["developer"]
+        rt.handle_message.side_effect = ["", "done"]
+        ctx_ = ToolContext(
+            manager=fake_manager,
+            project_root=tmp_path,
+            config=RuntimeConfig(),
+            workflow_state=WorkflowState(),
+        )
+        tools = make_dispatch_tools(ctx_)
+        dispatch = next(t for t in tools if t.name == "dispatch_task")
+        result = json.loads(dispatch.invoke({"agent_name": "developer", "task_description": "build X"}))
+        assert result["status"] == "completed"
+        assert result["payload"]["output_preview"] == "done"
+        assert result["payload"]["retries"] == 1
+        assert rt.handle_message.call_count == 2
+        # Second call must have been the retry prompt, not the raw task.
+        second_prompt = rt.handle_message.call_args_list[1].args[0]
+        assert "[Retry context]" in second_prompt
+        assert "Original task:\nbuild X" in second_prompt
+        assert "(empty)" in second_prompt  # previous was empty
+
+    def test_no_retry_when_response_is_non_empty_and_no_artifacts_required(self, tmp_path, fake_manager):
+        from aise.runtime.tool_primitives import (
+            ToolContext,
+            WorkflowState,
+            make_dispatch_tools,
+        )
+
+        rt = fake_manager.runtimes["developer"]
+        rt.handle_message.return_value = "first-try success"
+        rt.handle_message.side_effect = None
+        ctx_ = ToolContext(
+            manager=fake_manager,
+            project_root=tmp_path,
+            config=RuntimeConfig(),
+            workflow_state=WorkflowState(),
+        )
+        tools = make_dispatch_tools(ctx_)
+        dispatch = next(t for t in tools if t.name == "dispatch_task")
+        result = json.loads(dispatch.invoke({"agent_name": "developer", "task_description": "task"}))
+        assert result["payload"]["retries"] == 0
+        assert rt.handle_message.call_count == 1
+
+    def test_retry_on_missing_expected_artifact(self, tmp_path, fake_manager):
+        """If ``expected_artifacts`` includes a path that never appears,
+        or that appears but is trivially small, the dispatch retries
+        once with context."""
+        from aise.runtime.tool_primitives import (
+            ToolContext,
+            WorkflowState,
+            make_dispatch_tools,
+        )
+
+        rt = fake_manager.runtimes["developer"]
+        # Both attempts return non-empty text but the artifact is
+        # never written — the retry fires purely on artifact absence.
+        rt.handle_message.side_effect = ["first output", "second output"]
+        ctx_ = ToolContext(
+            manager=fake_manager,
+            project_root=tmp_path,
+            config=RuntimeConfig(),
+            workflow_state=WorkflowState(),
+        )
+        tools = make_dispatch_tools(ctx_)
+        dispatch = next(t for t in tools if t.name == "dispatch_task")
+        result = json.loads(
+            dispatch.invoke(
+                {
+                    "agent_name": "developer",
+                    "task_description": "write it",
+                    "expected_artifacts": ["docs/expected.md"],
+                }
+            )
+        )
+        assert result["payload"]["retries"] == 1
+        assert rt.handle_message.call_count == 2
+        # Previous response ("first output") must appear verbatim in the retry prompt.
+        second_prompt = rt.handle_message.call_args_list[1].args[0]
+        assert "first output" in second_prompt
+
+    def test_no_retry_when_artifact_is_present_and_large_enough(self, tmp_path, fake_manager):
+        from aise.runtime.tool_primitives import (
+            ToolContext,
+            WorkflowState,
+            make_dispatch_tools,
+        )
+
+        (tmp_path / "docs").mkdir()
+        # 200 bytes — well above the 64-byte minimum.
+        (tmp_path / "docs" / "expected.md").write_text("x" * 200)
+
+        rt = fake_manager.runtimes["developer"]
+        rt.handle_message.side_effect = None
+        rt.handle_message.return_value = "done"
+        ctx_ = ToolContext(
+            manager=fake_manager,
+            project_root=tmp_path,
+            config=RuntimeConfig(),
+            workflow_state=WorkflowState(),
+        )
+        tools = make_dispatch_tools(ctx_)
+        dispatch = next(t for t in tools if t.name == "dispatch_task")
+        result = json.loads(
+            dispatch.invoke(
+                {
+                    "agent_name": "developer",
+                    "task_description": "write it",
+                    "expected_artifacts": ["docs/expected.md"],
+                }
+            )
+        )
+        assert result["payload"]["retries"] == 0
+        assert rt.handle_message.call_count == 1
+
+    def test_retry_prompt_has_no_agent_or_tool_specific_content(self, tmp_path, fake_manager):
+        """The retry prompt template must be role- and tool-neutral so
+        it applies uniformly to every agent. This test pins that
+        contract: no agent name, no specific tool name, no filename
+        should be baked into the template itself."""
+        from aise.runtime.tool_primitives import _build_retry_prompt
+
+        prompt = _build_retry_prompt(
+            original_task="anything",
+            previous_response="prev response text",
+        )
+        # Must not mention any specific agent, tool, or filename.
+        banned = [
+            "architect",
+            "developer",
+            "qa_engineer",
+            "project_manager",
+            "product_manager",
+            "write_file",
+            "edit_file",
+            "execute",
+            "pytest",
+            "docs/",
+            "src/",
+            "tests/",
+            "tdd",
+            ".md",
+            ".py",
+        ]
+        lowered = prompt.lower()
+        for needle in banned:
+            assert needle.lower() not in lowered, f"retry template leaked customized token: {needle!r}"
+
+
+class TestDispatchTasksParallelForwardsExpectedArtifacts:
+    def test_parallel_forwards_expected_artifacts(self, tmp_path, fake_manager):
+        """``dispatch_tasks_parallel`` must forward ``expected_artifacts``
+        through to each inner ``dispatch_task``, otherwise the per-task
+        artifact contract is silently dropped."""
+        from aise.runtime.tool_primitives import (
+            ToolContext,
+            WorkflowState,
+            make_dispatch_tools,
+        )
+
+        rt = fake_manager.runtimes["developer"]
+        rt.handle_message.side_effect = ["one", "retry-one", "two", "retry-two"]
+        ctx_ = ToolContext(
+            manager=fake_manager,
+            project_root=tmp_path,
+            config=RuntimeConfig(),
+            workflow_state=WorkflowState(),
+        )
+        tools = make_dispatch_tools(ctx_)
+        parallel = next(t for t in tools if t.name == "dispatch_tasks_parallel")
+        payload = json.dumps(
+            [
+                {
+                    "agent_name": "developer",
+                    "task_description": "a",
+                    "expected_artifacts": ["docs/a.md"],
+                },
+                {
+                    "agent_name": "developer",
+                    "task_description": "b",
+                    "expected_artifacts": ["docs/b.md"],
+                },
+            ]
+        )
+        result = json.loads(parallel.invoke({"tasks_json": payload}))
+        # Each task's artifact is missing → each must retry once.
+        assert result["total"] == 2
+        retries = sorted(item["payload"]["retries"] for item in result["parallel_results"])
+        assert retries == [1, 1]
+
 
 # -- Aggregate -------------------------------------------------------------
 

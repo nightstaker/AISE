@@ -265,6 +265,86 @@ class TestPhase6DeliveryReport:
         # Anti-fabrication warning so PM cites numbers verbatim.
         assert "verbatim" in body.lower() or "do not invent" in body.lower()
 
+    def test_architect_md_requires_mermaid_diagrams(self):
+        """architect.md must instruct the agent to produce Mermaid
+        diagrams (inside fenced code blocks) for all design visuals,
+        not ASCII art or external images. Pins the contract for every
+        architecture document the agent writes."""
+        from pathlib import Path as _P
+
+        import aise
+
+        md_path = _P(aise.__file__).resolve().parent / "agents" / "architect.md"
+        body = md_path.read_text(encoding="utf-8")
+        lowered = body.lower()
+        assert "mermaid" in lowered
+        assert "```mermaid" in body
+        # Explicit bans to prevent regressions.
+        assert "ascii art" in lowered
+        # Behavioral diagram types must remain named so the agent picks
+        # the right one for non-architecture views.
+        assert any(
+            kind in body
+            for kind in (
+                "sequenceDiagram",
+                "stateDiagram",
+                "erDiagram",
+                "flowchart",
+            )
+        )
+
+    def test_architect_md_requires_c4_for_architecture_views(self):
+        """Architecture views (system context, container decomposition,
+        component decomposition) must be C4 diagrams. architect.md
+        lists the required C4 Mermaid types and mandates minimum
+        coverage so the agent cannot drop any level."""
+        from pathlib import Path as _P
+
+        import aise
+
+        md_path = _P(aise.__file__).resolve().parent / "agents" / "architect.md"
+        body = md_path.read_text(encoding="utf-8")
+        # The three minimum-required C4 levels must be named explicitly.
+        for c4_type in ("C4Context", "C4Container", "C4Component"):
+            assert c4_type in body, f"architect.md must name the {c4_type} Mermaid type"
+        # The C4 model itself should be referenced by name so future
+        # maintainers can find the relevant docs.
+        assert "C4 model" in body or "C4 diagram" in body
+
+    def test_product_manager_md_requires_mermaid_for_diagrams(self):
+        """product_manager.md must instruct the PM to use Mermaid for
+        any diagrams it includes in requirement or delivery documents."""
+        from pathlib import Path as _P
+
+        import aise
+
+        md_path = _P(aise.__file__).resolve().parent / "agents" / "product_manager.md"
+        body = md_path.read_text(encoding="utf-8")
+        assert "mermaid" in body.lower()
+        assert "```mermaid" in body
+
+    def test_phase2_prompt_requires_mermaid_diagrams(self, session):
+        """The architecture-phase prompt must tell the PM to instruct
+        the architect to produce Mermaid diagrams. Without this, the
+        architect.md text is necessary but not sufficient — the PM
+        needs the explicit reminder in the dispatch description."""
+        phases = session._build_phase_prompts("Build a thing")
+        architecture = dict(phases).get("architecture", "")
+        lowered = architecture.lower()
+        assert "mermaid" in lowered
+        # And the phase prompt should say "no ASCII art" (or an
+        # equivalent) so the architect can't sidestep the requirement.
+        assert "ascii art" in lowered or "no ascii" in lowered
+
+    def test_phase2_prompt_requires_c4_architecture_diagrams(self, session):
+        """The architecture-phase prompt must reinforce the C4
+        requirement at dispatch time so the PM cannot drop it even if
+        the architect system prompt is weakened in a future edit."""
+        phases = session._build_phase_prompts("Build a thing")
+        architecture = dict(phases).get("architecture", "")
+        for c4_type in ("C4Context", "C4Container", "C4Component"):
+            assert c4_type in architecture, f"phase-2 prompt must name the {c4_type} requirement"
+
 
 class TestProjectSessionRun:
     def test_run_calls_pm_runtime(self, session):
