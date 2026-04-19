@@ -175,6 +175,26 @@ class TestDispatchTools:
 # -- Shell -----------------------------------------------------------------
 
 
+class TestShellAllowlist:
+    """The ``DEFAULT_SHELL_ALLOWLIST`` exposes the exact set of
+    executables the agents may invoke. Tools required by the new
+    ``code_inspection`` and ``mermaid`` skills must be on the list —
+    otherwise the skill's example commands will be refused by
+    ``execute_shell`` and the skill is effectively inert."""
+
+    def test_code_inspection_tools_on_allowlist(self):
+        from aise.runtime.runtime_config import DEFAULT_SHELL_ALLOWLIST
+
+        required = {"ruff", "mypy", "eslint", "tsc", "gofmt", "cargo"}
+        missing = required - set(DEFAULT_SHELL_ALLOWLIST)
+        assert not missing, f"code_inspection tools missing from allowlist: {missing}"
+
+    def test_mermaid_cli_on_allowlist(self):
+        from aise.runtime.runtime_config import DEFAULT_SHELL_ALLOWLIST
+
+        assert "mmdc" in DEFAULT_SHELL_ALLOWLIST, "mermaid skill requires ``mmdc`` on the shell allowlist"
+
+
 class TestShellTool:
     def test_shell_refuses_non_allowlisted(self, ctx):
         tool = make_shell_tool(ctx)

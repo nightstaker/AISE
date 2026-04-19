@@ -690,6 +690,52 @@ class TestRealAgentPromptsSkillIsolation:
         prompt = self._prompt_for("qa_engineer", mock_factory)
         assert "### tdd" not in prompt
 
+    # --- code_inspection skill routing -----------------------------------
+
+    def test_developer_prompt_contains_code_inspection_skill(self, mock_create_deep_agent):
+        """Developer declares ``code_inspection``; its body must be in
+        the prompt so the agent actually runs static analyzers after
+        tests go green."""
+        mock_factory, _ = mock_create_deep_agent
+        prompt = self._prompt_for("developer", mock_factory)
+        assert "### code_inspection" in prompt
+        assert "ruff" in prompt and "mypy" in prompt
+
+    def test_architect_prompt_does_not_contain_code_inspection(self, mock_create_deep_agent):
+        """Code inspection is developer-specific — must not leak into
+        the architect, PM, or QA prompts."""
+        mock_factory, _ = mock_create_deep_agent
+        prompt = self._prompt_for("architect", mock_factory)
+        assert "### code_inspection" not in prompt
+
+    def test_product_manager_prompt_does_not_contain_code_inspection(self, mock_create_deep_agent):
+        mock_factory, _ = mock_create_deep_agent
+        prompt = self._prompt_for("project_manager", mock_factory)
+        assert "### code_inspection" not in prompt
+
+    # --- mermaid skill routing -------------------------------------------
+
+    def test_architect_prompt_contains_mermaid_skill(self, mock_create_deep_agent):
+        """Architect writes docs/architecture.md with many Mermaid
+        fences — the mermaid-validation skill body must be present so
+        the agent runs the post-write validation step."""
+        mock_factory, _ = mock_create_deep_agent
+        prompt = self._prompt_for("architect", mock_factory)
+        assert "### mermaid" in prompt
+        assert "mmdc" in prompt
+
+    def test_product_manager_prompt_contains_mermaid_skill(self, mock_create_deep_agent):
+        mock_factory, _ = mock_create_deep_agent
+        prompt = self._prompt_for("product_manager", mock_factory)
+        assert "### mermaid" in prompt
+
+    def test_developer_prompt_does_not_contain_mermaid_skill(self, mock_create_deep_agent):
+        """Developer writes source, not docs — the mermaid skill must
+        not leak into its prompt (keeps the system prompt focused)."""
+        mock_factory, _ = mock_create_deep_agent
+        prompt = self._prompt_for("developer", mock_factory)
+        assert "### mermaid" not in prompt
+
 
 class TestAgentRuntimeCard:
     def test_agent_card_generated(self, agent_md_file, skills_dir, mock_create_deep_agent):

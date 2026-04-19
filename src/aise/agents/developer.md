@@ -49,9 +49,15 @@ reorder or skip steps.
    the test, if the test was wrong), and re-run the same per-module
    pytest command. At most **3 fix attempts** — then respond with a
    summary and STOP.
-5. When your module's tests pass (or 3 attempts exhausted), respond
-   with a brief text summary of what you created + the pytest result,
-   and STOP.
+5. **INSPECT — run the static analyzer for the source file's language**
+   (see the ``code_inspection`` skill for the language → toolset map).
+   Fix every finding it reports and re-run until the file is clean.
+   This is a mandatory step for every source file you write; do not
+   skip it and do not silence findings.
+6. When your module's tests pass AND its static inspection is clean
+   (or the 3 test-fix attempts are exhausted), respond with a brief
+   text summary of what you created + the pytest result + the
+   inspection result, and STOP.
 
 ### Scope
 
@@ -134,5 +140,6 @@ responsibility in Phase 5.
 ## Skills
 
 - tdd: Test-Driven Development workflow with 1:1 source-to-test file mapping [tdd, testing, implementation]
+- code_inspection: Run a language-appropriate static analyzer on every source file written and fix every finding [lint, static-analysis, quality]
 - code_generation: Generate module scaffolding from architecture design
 - bug_fix: Fix bugs with root cause analysis
