@@ -80,6 +80,11 @@
 
     {% if section == "workspace" %}
     <form method="post" action="/config/global/workspace" class="stack">
+      <label>界面语言 / UI Language</label>
+      <select name="ui_language">
+        <option value="zh" {% if config_data.ui_language == "zh" %}selected{% endif %}>中文 (Simplified Chinese)</option>
+        <option value="en" {% if config_data.ui_language == "en" %}selected{% endif %}>English</option>
+      </select>
       <label>Projects Root</label>
       <input name="projects_root" value="{{ config_data.workspace.projects_root }}">
       <label>Artifacts Root</label>
