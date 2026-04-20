@@ -103,10 +103,15 @@ const TRANSLATIONS = {
     "stage.phase_2_design": "架构设计",
     "stage.phase_3_implementation": "开发实现",
     "stage.phase_4_verification": "测试验证",
+    // Phase names emitted by the orchestrator / PM at dispatch time
+    // (``phase=`` argument on ``dispatch_task``). These are the raw
+    // free-form strings the PM picks and they land verbatim in
+    // ``stage_update`` events. Keep the zh/en tables in lockstep.
     "stage.requirement": "需求分析",
     "stage.design": "架构设计",
     "stage.implementation": "开发实现",
     "stage.testing": "测试验证",
+    "stage.verification": "测试验证",
     "stage.sprint_planning": "迭代规划",
     "stage.sprint_design": "迭代设计",
     "stage.sprint_execution": "快速开发",
@@ -192,6 +197,7 @@ const TRANSLATIONS = {
     "stage.design": "Architecture",
     "stage.implementation": "Implementation",
     "stage.testing": "Testing",
+    "stage.verification": "Verification",
     "stage.sprint_planning": "Sprint Planning",
     "stage.sprint_design": "Sprint Design",
     "stage.sprint_execution": "Sprint Execution",
@@ -911,19 +917,50 @@ function setupRunReact() {
 
   // Stage names live in the top-level ``TRANSLATIONS`` table under the
   // ``stage.<id>`` namespace — see the i18n block at the top of this
-  // file. Resolution below consults the active language via ``t()``.
-  // Dynamic stage label resolver (handles implementation_cycle_1, etc.)
+  // file. Phase names are free-form strings the PM picks at dispatch
+  // time, so this resolver has to handle three cases:
+  //
+  //   1. Exact match on the full stage id  (``architecture`` → 架构设计)
+  //   2. Known suffix patterns that carry a numeric counter —
+  //      ``implementation_layer1`` / ``implementation_cycle_3`` /
+  //      ``design_part_2`` etc. Strip the suffix, translate the base,
+  //      append ``#N``.
+  //   3. Unknown stage id: humanize it (``impl_config_loader`` →
+  //      ``Impl Config Loader``) so the user never sees a raw
+  //      snake_case identifier among Chinese labels.
+  //
+  // ``t()`` returns the raw ``"stage.<id>"`` key when nothing matches,
+  // so we use string-equality with the probe key to detect a miss.
+  function humanizeStageId(stage) {
+    return String(stage)
+      .split(/[_-]+/)
+      .filter(function (w) { return w.length > 0; })
+      .map(function (w) {
+        return w.charAt(0).toUpperCase() + w.slice(1);
+      })
+      .join(" ");
+  }
+
+  // Trailing counter suffix: ``_layer1`` / ``_layer_1`` / ``_cycle2`` /
+  // ``_part_3`` / ``_iter4`` / ``_round_5`` / ``_v2``. Captures base +
+  // numeric N.
+  var STAGE_SUFFIX_RE = /^(.+?)_(?:layer|cycle|part|iter|iteration|round|stage|v|step)_?(\d+)$/;
+
   function resolveStageLabel(stage) {
-    var translated = t("stage." + stage);
-    if (translated !== "stage." + stage) return translated;
-    var cycleMatch = stage.match(/^(.+)_cycle_(\d+)$/);
-    if (cycleMatch) {
-      var baseKey = "stage." + cycleMatch[1];
+    if (!stage) return stage;
+    var probe = "stage." + stage;
+    var translated = t(probe);
+    if (translated !== probe) return translated;
+
+    var suffix = stage.match(STAGE_SUFFIX_RE);
+    if (suffix) {
+      var baseKey = "stage." + suffix[1];
       var base = t(baseKey);
-      if (base === baseKey) base = cycleMatch[1];
-      return base + " #" + cycleMatch[2];
+      if (base === baseKey) base = humanizeStageId(suffix[1]);
+      return base + " #" + suffix[2];
     }
-    return stage;
+
+    return humanizeStageId(stage);
   }
 
   const EVENT_ICONS = {
