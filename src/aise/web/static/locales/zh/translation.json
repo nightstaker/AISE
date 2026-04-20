@@ -1,0 +1,128 @@
+{
+  "run": {
+    "back": {
+      "project_fallback": "Project"
+    },
+    "title": "执行详情",
+    "status": {
+      "completed": "已完成",
+      "failed": "失败",
+      "running": "运行中",
+      "pending": "等待"
+    },
+    "mode": {
+      "initial": "初始",
+      "incremental": "增量",
+      "incremental_hint": "基于已完成的项目基线追加的新需求。执行增量设计、增量开发、全量测试。"
+    },
+    "section": {
+      "requirement": "需求",
+      "stage_progress": "阶段进度",
+      "stage_progress_filter_hint": " — 点击取消筛选",
+      "log_title": "A2A 任务日志",
+      "delivery_report": "交付报告",
+      "error": "错误"
+    },
+    "stat": {
+      "stages": "阶段",
+      "dispatches": "任务派发",
+      "completed": "已完成",
+      "failed": "失败"
+    },
+    "log": {
+      "waiting": "等待任务派发...",
+      "empty": "无任务日志"
+    },
+    "view": {
+      "timeline": "阶段视图",
+      "agents": "Agent 交互"
+    }
+  },
+  "entry": {
+    "meta": {
+      "stage": "阶段: ",
+      "status": "状态: ",
+      "task_id": "任务: ",
+      "step": "步骤: ",
+      "phase": "阶段: ",
+      "output": "输出: {{n}} 字符"
+    },
+    "status": {
+      "completed": "✓ 已完成",
+      "failed": "✕ 失败",
+      "running": "● 进行中"
+    },
+    "task_description_title": "任务描述",
+    "execution_result_title": "执行结果",
+    "no_text_output": "(无文本输出 — agent 已直接写入文件)",
+    "fallback_task_name": "任务",
+    "summary_no_summary": "(无摘要)",
+    "tool_fallback_name": "tool"
+  },
+  "todo": {
+    "title": "任务步骤",
+    "status": {
+      "pending": "待处理",
+      "in_progress": "进行中",
+      "completed": "已完成"
+    }
+  },
+  "task": {
+    "title": "任务详情",
+    "field": {
+      "phase": "阶段",
+      "task_key": "任务",
+      "status": "状态",
+      "artifact_id": "产物ID"
+    },
+    "back_to_run": "← 返回执行详情"
+  },
+  "stage": {
+    "process_selection": "流程选择",
+    "team_assembly": "团队组建",
+    "workflow_planning": "流程规划",
+    "execution": "任务执行",
+    "phase_1_requirement": "需求分析",
+    "phase_2_design": "架构设计",
+    "phase_3_implementation": "开发实现",
+    "phase_4_verification": "测试验证",
+    "requirement": "需求分析",
+    "requirements": "需求分析",
+    "design": "架构设计",
+    "architecture": "架构设计",
+    "implementation": "开发实现",
+    "main_entry": "入口验证",
+    "testing": "测试验证",
+    "verification": "测试验证",
+    "qa_testing": "集成测试",
+    "delivery": "交付报告",
+    "sprint_planning": "迭代规划",
+    "sprint_design": "迭代设计",
+    "sprint_execution": "快速开发",
+    "sprint_main_entry": "入口验证",
+    "sprint_review": "迭代评审",
+    "sprint_retrospective": "迭代复盘"
+  },
+  "agents": {
+    "section_title": "Agent 交互视图",
+    "role": {
+      "orchestrator": "编排",
+      "worker": "执行"
+    },
+    "status": {
+      "idle": "空闲",
+      "working": "执行中 ({{n}})",
+      "done": "已完成"
+    },
+    "stat": {
+      "running": "进行中任务",
+      "completed": "已完成任务",
+      "failed": "失败任务"
+    },
+    "tasks_heading": "任务列表",
+    "no_tasks": "暂无任务",
+    "no_participants": "本次执行尚无其他 Agent 参与。",
+    "waiting": "等待首个任务派发...",
+    "dispatches": "{{n}} 次派发"
+  }
+}

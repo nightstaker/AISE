@@ -37,7 +37,7 @@ aise = "aise.main:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"aise.web" = ["templates/*.html", "static/*.css", "static/*.js"]
+"aise.web" = ["templates/*.html", "static/*.css", "static/*.js", "static/*.ico", "static/*.png", "static/locales/*/*.json"]
 
 [tool.ruff]
 target-version = "py311"

@@ -1,28 +1,29 @@
-"""Regression guards for the frontend stage-label resolver.
+"""Regression guards for the frontend i18n translation resources.
 
-The React frontend in ``src/aise/web/static/app.js`` routes stage names
-through a ``resolveStageLabel`` helper. A screenshot on 2026-04-19
-showed the task-detail chips rendering as ``需求分析 → architecture
-→ implementation_layer1`` — mixed Chinese + raw English IDs — because:
+Translations live in standard i18next JSON resource files under
+``src/aise/web/static/locales/<lng>/translation.json`` (one folder per
+language, one JSON per namespace). These tests validate the resource
+files directly — no need to parse ``app.js``, no JS runtime needed.
 
-1. ``stage.architecture`` was missing from the translation table.
-2. The suffix matcher only handled ``_cycle_N``, not ``_layer1`` /
-   ``_part_2`` / ``_iter3`` etc.
-3. The fallback returned the raw snake_case ID instead of a
-   human-readable label.
+They pin three things:
 
-These tests pin the three fixes so a future edit can't reintroduce
-any of them.
+1. Every declared language has a resource file.
+2. The ``zh`` and ``en`` files have identical key sets — a missing key
+   on one side would make the UI fall through to i18next's fallback
+   language and render mixed Chinese/English, which is the exact
+   symptom that motivated this layer.
+3. Specific keys that the orchestrator / PM emits at dispatch time
+   (``stage.architecture``, ``stage.requirement``, etc.) are present.
+   These reflect phase names observed in project_3-snake runs.
 
-Because the resolver is JavaScript, we test it textually — grepping
-``app.js`` for the required translation keys and running Python
-regex against the published suffix pattern. That's enough to pin
-the contract; a JS-level unit test would require a JS runtime the
-repo does not have.
+The companion ``resolveStageLabel`` helper in ``app.js`` layers a
+suffix-stripper and humanize-fallback on top of i18next; that behavior
+is exercised indirectly by the regex + humanize presence checks below.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -30,82 +31,146 @@ import pytest
 
 import aise
 
-APP_JS = Path(aise.__file__).resolve().parent / "web" / "static" / "app.js"
+STATIC_DIR = Path(aise.__file__).resolve().parent / "web" / "static"
+LOCALES_DIR = STATIC_DIR / "locales"
+APP_JS = STATIC_DIR / "app.js"
+
+SUPPORTED_LANGS = ("zh", "en")
+
+# Phase names the orchestrator / PM emits at dispatch time (observed on
+# project_3-snake 2026-04-18 → 2026-04-19 plus the framework defaults
+# declared in project_session.py). Extending this list should go hand
+# in hand with extending both translation.json files.
+REQUIRED_STAGES: tuple[str, ...] = (
+    "requirement",
+    "requirements",
+    "architecture",
+    "design",
+    "implementation",
+    "main_entry",
+    "testing",
+    "verification",
+    "qa_testing",
+    "delivery",
+    "execution",
+)
 
 
-def _load_app_js() -> str:
-    assert APP_JS.is_file(), f"missing fixture: {APP_JS}"
-    return APP_JS.read_text(encoding="utf-8")
+def _flatten(obj: object, prefix: str = "") -> dict[str, str]:
+    """Flatten nested dicts into ``a.b.c`` dotted keys mapping to leaves."""
+    out: dict[str, str] = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            sub = f"{prefix}.{k}" if prefix else k
+            out.update(_flatten(v, sub))
+    else:
+        out[prefix] = obj  # type: ignore[assignment]
+    return out
 
 
-class TestStageTranslationCoverage:
-    """Every phase name the orchestrator / PM emits at dispatch time
-    must have a translation entry in BOTH the ``zh`` and ``en``
-    sections of the ``TRANSLATIONS`` table.
+def _load_locale(lang: str) -> dict[str, str]:
+    path = LOCALES_DIR / lang / "translation.json"
+    assert path.is_file(), f"missing i18next resource: {path}"
+    return _flatten(json.loads(path.read_text(encoding="utf-8")))
 
-    This list reflects phase names observed in production runs on
-    project_3-snake (2026-04-18 → 2026-04-19) plus the
-    orchestrator-framework defaults. New phase names added in the
-    future should extend both the table and this test.
-    """
 
-    REQUIRED_STAGES = (
-        # Orchestrator framework phases (project_session.py).
-        "requirement",
-        "requirements",
-        "architecture",
-        "design",
-        "implementation",
-        "main_entry",
-        "testing",
-        "verification",
-        "qa_testing",
-        "delivery",
-        "execution",
-    )
+class TestLocaleResourceFiles:
+    @pytest.mark.parametrize("lang", SUPPORTED_LANGS)
+    def test_resource_file_exists_and_parses(self, lang: str) -> None:
+        """Each declared language must have a parseable translation.json."""
+        entries = _load_locale(lang)
+        assert entries, f"{lang} translation.json parsed to empty dict"
 
-    @pytest.mark.parametrize("stage_id", REQUIRED_STAGES)
-    def test_key_present_in_zh_table(self, stage_id: str) -> None:
-        body = _load_app_js()
-        key = f'"stage.{stage_id}"'
-        # The zh table appears before the en table in the source, so
-        # finding the key anywhere implies at least one language has
-        # it — stricter assertion below pins both.
-        assert key in body, f"translation key missing: stage.{stage_id}"
+    def test_zh_and_en_have_identical_key_sets(self) -> None:
+        """Key parity between languages: a key missing on one side causes
+        i18next to fall back across languages, producing the mixed
+        Chinese/English rendering that motivated this whole layer.
 
-    @pytest.mark.parametrize("stage_id", REQUIRED_STAGES)
-    def test_key_present_in_both_tables(self, stage_id: str) -> None:
-        body = _load_app_js()
-        key = f'"stage.{stage_id}"'
-        # Both tables must have the key, so the occurrence count is 2
-        # (once in zh, once in en). A count of 1 means one table is
-        # missing the key and the frontend would fall back across
-        # languages for this stage.
-        assert body.count(key) == 2, (
-            f"stage.{stage_id} must appear in BOTH zh and en tables (found {body.count(key)} occurrences)"
+        Both sides must be in lockstep."""
+        zh = _load_locale("zh")
+        en = _load_locale("en")
+        only_in_zh = sorted(set(zh) - set(en))
+        only_in_en = sorted(set(en) - set(zh))
+        assert not only_in_zh, f"keys missing in en/translation.json: {only_in_zh}"
+        assert not only_in_en, f"keys missing in zh/translation.json: {only_in_en}"
+
+    @pytest.mark.parametrize("lang", SUPPORTED_LANGS)
+    @pytest.mark.parametrize("stage", REQUIRED_STAGES)
+    def test_required_stage_key_present(self, lang: str, stage: str) -> None:
+        """Every phase name the orchestrator / PM emits must have a
+        translation entry — otherwise the chip renders as a humanized
+        fallback alongside fully-translated siblings, which reads as
+        the same mixed-language problem."""
+        entries = _load_locale(lang)
+        key = f"stage.{stage}"
+        assert key in entries, f"{lang}/translation.json missing {key}"
+        assert entries[key].strip(), f"{lang}/translation.json has empty value for {key}"
+
+    def test_interpolation_tokens_use_i18next_syntax(self) -> None:
+        """i18next uses ``{{name}}`` for interpolation. Single-brace
+        ``{name}`` tokens would render literally — a common regression
+        when porting from ad-hoc templating."""
+        for lang in SUPPORTED_LANGS:
+            entries = _load_locale(lang)
+            for key, value in entries.items():
+                bad = re.findall(r"(?<!\{)\{(\w+)\}(?!\})", value)
+                assert not bad, (
+                    f"{lang}/{key} uses single-brace interpolation {{...}} instead of i18next's {{{{...}}}}: {value!r}"
+                )
+
+
+class TestI18nextBootstrap:
+    """Pin the client-side integration with the i18next library itself.
+
+    We still verify a couple of things against ``app.js`` by string
+    search — these are lightweight and guard against accidentally
+    rolling the integration back to an ad-hoc table."""
+
+    def test_app_js_initializes_i18next_with_http_backend(self) -> None:
+        body = APP_JS.read_text(encoding="utf-8")
+        # The integration uses i18next + i18next-http-backend; both
+        # must be referenced so the bundler / bootstrap knows to wait
+        # on them.
+        assert "i18next" in body
+        assert "i18nextHttpBackend" in body or "HttpBackend" in body
+        # Resources are loaded from the static mount.
+        assert "/static/locales/{{lng}}/{{ns}}.json" in body
+
+    def test_app_js_waits_for_i18n_before_mount(self) -> None:
+        """React mount must follow ``initI18n()`` so the first paint
+        has translated text, not raw keys."""
+        body = APP_JS.read_text(encoding="utf-8")
+        assert "initI18n()" in body
+        # The DOMContentLoaded handler must chain the setup calls after
+        # the init promise resolves.
+        assert re.search(r"initI18n\(\)\.(?:finally|then)\(", body), (
+            "DOMContentLoaded handler must await initI18n() before mounting"
+        )
+
+    def test_app_js_has_no_inline_translations_table(self) -> None:
+        """Regression: the old ``const TRANSLATIONS = { zh: {...} }``
+        inline table must be gone. All translations live in the JSON
+        resource files under locales/."""
+        body = APP_JS.read_text(encoding="utf-8")
+        assert "const TRANSLATIONS" not in body, (
+            "inline TRANSLATIONS table reintroduced; translations must live in locales/<lng>/translation.json only"
         )
 
 
-class TestStageSuffixPattern:
-    """The ``STAGE_SUFFIX_RE`` regex strips a trailing counter suffix
-    so labels like ``implementation_layer1`` resolve to "开发实现 #1"
-    / "Implementation #1" instead of being emitted verbatim.
-
-    The frontend regex is authored in JS; we extract it from app.js
-    and exercise it with Python's ``re`` (compatible syntax for the
-    patterns in use) so this test fails loudly if the pattern is
-    narrowed in a future edit."""
+class TestStageLabelResolverHelpers:
+    """The ``resolveStageLabel`` helper in app.js layers two extra
+    strategies on top of i18next: a counter-suffix stripper (so
+    ``implementation_layer1`` → ``Implementation #1``) and a humanize
+    fallback (so an unknown id renders as Title Case English instead of
+    raw snake_case)."""
 
     @pytest.fixture(scope="class")
-    def pattern(self) -> re.Pattern[str]:
-        body = _load_app_js()
+    def suffix_pattern(self) -> re.Pattern[str]:
+        body = APP_JS.read_text(encoding="utf-8")
         m = re.search(r"var STAGE_SUFFIX_RE = (/\^.+?\$/);", body)
         assert m, "STAGE_SUFFIX_RE declaration not found in app.js"
         js_re = m.group(1)
-        # Strip the JS delimiter ``/.../`` — what's inside is valid
-        # Python regex syntax for this pattern.
-        py_src = js_re[1:-1]
-        return re.compile(py_src)
+        return re.compile(js_re[1:-1])
 
     @pytest.mark.parametrize(
         "stage,expected_base,expected_counter",
@@ -124,12 +189,12 @@ class TestStageSuffixPattern:
     )
     def test_suffix_stripped_correctly(
         self,
-        pattern: re.Pattern[str],
+        suffix_pattern: re.Pattern[str],
         stage: str,
         expected_base: str,
         expected_counter: str,
     ) -> None:
-        m = pattern.match(stage)
+        m = suffix_pattern.match(stage)
         assert m, f"pattern failed to match {stage!r}"
         assert m.group(1) == expected_base
         assert m.group(2) == expected_counter
@@ -137,48 +202,35 @@ class TestStageSuffixPattern:
     @pytest.mark.parametrize(
         "stage",
         [
-            "architecture",  # no suffix → must NOT match
-            "implementation",  # no suffix
-            "main_entry",  # trailing token is not a counter suffix
-            "qa_testing",  # trailing token is not a counter suffix
-            "step_architecture_design",  # PM step id, no trailing counter
+            "architecture",
+            "implementation",
+            "main_entry",
+            "qa_testing",
+            "step_architecture_design",
         ],
     )
     def test_non_suffixed_stages_do_not_match(
         self,
-        pattern: re.Pattern[str],
+        suffix_pattern: re.Pattern[str],
         stage: str,
     ) -> None:
-        m = pattern.match(stage)
+        m = suffix_pattern.match(stage)
         assert not m, f"pattern wrongly matched {stage!r} — would strip valid stage id"
 
+    def test_resolver_uses_i18next_exists(self) -> None:
+        """The resolver must probe i18next via its public ``exists``
+        API, not via a string-equality trick against the return value
+        of ``t()``."""
+        body = APP_JS.read_text(encoding="utf-8")
+        assert "i18next.exists" in body
 
-class TestHumanizeFallbackPresent:
-    """When a stage id has no translation and no counter suffix the
-    resolver must fall back to a humanized Title Case label, not to
-    the raw snake_case id. Pinned by grepping for the helper and the
-    call site that uses it."""
-
-    def test_humanize_helper_defined(self) -> None:
-        body = _load_app_js()
-        assert "function humanizeStageId" in body
-
-    def test_resolver_falls_back_to_humanized_form(self) -> None:
-        """The unknown-stage fallback must call ``humanizeStageId`` —
-        pinning this prevents a future refactor from reinstating the
-        old ``return stage`` behavior that caused ``implementation_layer1``
-        to render verbatim among Chinese labels.
-
-        We locate the fallback by finding the ``resolveStageLabel``
-        declaration and asserting the body (up to the first balanced
-        closing brace at column 0 — the function's closing brace)
-        contains a ``return humanizeStageId(`` call.
-        """
-        body = _load_app_js()
+    def test_resolver_has_humanize_fallback(self) -> None:
+        """The final branch of ``resolveStageLabel`` must humanize the
+        unknown id — pins the fix for the 2026-04-19 screenshot where
+        ``implementation_layer1`` rendered verbatim."""
+        body = APP_JS.read_text(encoding="utf-8")
         start = body.find("function resolveStageLabel(stage)")
         assert start >= 0, "resolveStageLabel not found"
-        # Walk forward until the function's closing ``}`` by tracking
-        # brace depth. This is robust against inner ``if {}`` blocks.
         depth = 0
         end = -1
         in_fn = False
@@ -192,8 +244,6 @@ class TestHumanizeFallbackPresent:
                 if in_fn and depth == 0:
                     end = i
                     break
-        assert end > start, "could not locate end of resolveStageLabel"
+        assert end > start
         fn_src = body[start : end + 1]
-        assert "return humanizeStageId(stage)" in fn_src, (
-            "resolveStageLabel is missing the humanized-fallback branch — unknown stage ids must not be returned raw"
-        )
+        assert "return humanizeStageId(stage)" in fn_src
