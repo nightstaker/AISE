@@ -52,6 +52,7 @@ class ProjectSession:
         project_root: str | Path | None = None,
         on_event: Any | None = None,
         runtime_config: RuntimeConfig | None = None,
+        mode: str = "initial",
     ) -> None:
         """Initialize a project session.
 
@@ -63,12 +64,20 @@ class ProjectSession:
             runtime_config: Optional :class:`RuntimeConfig` for safety
                 caps and orchestrator selection. Defaults to
                 :class:`RuntimeConfig`'s defaults.
+            mode: ``"initial"`` (default — clean-slate run) or
+                ``"incremental"`` (dispatch new requirement on a project
+                that already has a baseline). Incremental mode rewrites
+                the phase prompts to instruct agents to READ existing
+                artifacts first and only add / update what the new
+                requirement demands.
         """
         self._manager = manager
         self._session_id = uuid.uuid4().hex[:12]
         self._project_root: Path | None = Path(project_root) if project_root else None
         self._config = runtime_config or RuntimeConfig()
         self._workflow_state = WorkflowState()
+        raw_mode = str(mode or "initial").strip().lower()
+        self._mode = raw_mode if raw_mode in ("initial", "incremental") else "initial"
 
         if self._project_root:
             self._scaffold_project_dirs(self._project_root)
@@ -413,7 +422,200 @@ class ProjectSession:
 
         Each prompt is self-contained: the PM gets a fresh runtime and
         this prompt tells it exactly what to do for this phase.
+
+        Branches on ``self._mode``: ``"incremental"`` produces a
+        different prompt set that instructs every agent to READ the
+        existing artifacts first and only add / update what the new
+        requirement demands. The QA phase stays full (runs the whole
+        test suite, not just new tests) regardless of mode.
         """
+        if self._mode == "incremental":
+            return self._build_incremental_phase_prompts(requirement)
+        return self._build_initial_phase_prompts(requirement)
+
+    def _build_incremental_phase_prompts(self, requirement: str) -> list[tuple[str, str]]:
+        """Phase prompts for a follow-up requirement on an established
+        project. The contract is:
+
+        - Phase 1 (requirement) — APPEND to ``docs/requirement.md``
+          under a dated "Incremental Requirement" section. Do not
+          rewrite or reorder the existing document.
+        - Phase 2 (architecture) — read the existing architecture
+          document and ADD / UPDATE only the sections the new
+          requirement affects. The document should grow, not shrink.
+        - Phase 3 (implementation) — developers read the existing
+          ``src/`` and only implement the NEW or CHANGED modules the
+          new requirement needs. Unrelated modules stay untouched.
+        - Phase 4 (main entry) — re-verify the existing entry still
+          boots; only write a new entry if none exists.
+        - Phase 5 (qa testing) — **FULL** test suite, not just new
+          integration tests. Incremental changes can silently break
+          existing flows; the full pass is the safety net.
+        - Phase 6 (delivery) — report scoped to the new requirement:
+          what was added, what existing modules were touched, pass
+          rate of the full suite after the change.
+        """
+        return [
+            (
+                "requirements",
+                f"New requirement to integrate: {requirement}\n\n"
+                "Execute Phase 1 — Requirements (INCREMENTAL):\n"
+                "1. Call list_processes, then get_process('waterfall.process.md').\n"
+                "2. Call list_agents to discover agents.\n"
+                "3. dispatch_task to product_manager. In the task description,\n"
+                "   require the PM to FIRST read docs/requirement.md (the\n"
+                "   existing requirement document from prior runs), then\n"
+                "   APPEND a new '## Incremental Requirement (<ISO date>)'\n"
+                "   section at the end. Do NOT rewrite, renumber, or reorder\n"
+                "   existing requirements. Every new requirement bullet in\n"
+                "   the appended section MUST carry its own Mermaid use case\n"
+                "   diagram (flowchart LR with actor / use case nodes — see\n"
+                "   product_manager.md). After writing, the PM validates\n"
+                "   every ```mermaid block via the mermaid skill and fixes\n"
+                "   any syntax error before responding.\n"
+                "   Pass expected_artifacts=['docs/requirement.md'].\n"
+                "4. After it completes, STOP.\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "architecture",
+                f"New requirement to integrate: {requirement}\n\n"
+                "Execute Phase 2 — Architecture (INCREMENTAL):\n"
+                "dispatch_task to architect. Require the architect to FIRST\n"
+                "read docs/architecture.md (the existing architecture from\n"
+                "prior runs) + docs/requirement.md (including the new\n"
+                "Incremental Requirement section). Then ADD / UPDATE only\n"
+                "the sections the new requirement affects: new modules, new\n"
+                "data flows, new API contracts, updated C4 diagrams for\n"
+                "containers / components that gained responsibilities.\n"
+                "Preserve every existing section that the new requirement\n"
+                "does not touch. The document should grow, not shrink.\n"
+                "Architecture views MUST stay C4 (C4Context / C4Container /\n"
+                "C4Component); behavioral views stay on standard Mermaid\n"
+                "types. Validate every ```mermaid block via the mermaid\n"
+                "skill and fix any syntax error before responding.\n"
+                "Pass expected_artifacts=['docs/architecture.md'].\n"
+                "After it completes, STOP.\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "implementation",
+                f"New requirement to integrate: {requirement}\n\n"
+                "Execute Phase 3 — Implementation (INCREMENTAL, TDD):\n"
+                "1. Read docs/architecture.md to see which modules are NEW or\n"
+                "   CHANGED because of the incremental requirement. Existing\n"
+                "   modules the requirement does not touch must stay\n"
+                "   untouched — read them only to understand interfaces.\n"
+                "2. For EACH new-or-changed module, dispatch developer via\n"
+                "   dispatch_tasks_parallel. In each task description:\n"
+                "   - Include the relevant architecture spec.\n"
+                "   - Instruct strict TDD: write tests/test_<module>.py, then\n"
+                "     src/<module>.py, then run ONLY that module's test file\n"
+                "     (python -m pytest tests/test_<module>.py -q --tb=short).\n"
+                "     Up to 3 fix attempts.\n"
+                "   - For CHANGED modules, the task description must say\n"
+                "     explicitly that the file already exists and the\n"
+                "     developer must EDIT it in place (edit_file), not\n"
+                "     rewrite. Existing tests must keep passing — new tests\n"
+                "     extend the file, not replace it.\n"
+                "   - Set expected_artifacts=['src/<module>.py',\n"
+                "     'tests/test_<module>.py'].\n"
+                "3. Do NOT run the full suite here. That is Phase 5's job.\n"
+                "4. When all dispatches return, STOP.\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "main_entry",
+                f"New requirement to integrate: {requirement}\n\n"
+                "Execute Phase 4 — Main Entry Point (INCREMENTAL, verify-only):\n"
+                "1. Check whether a main entry already exists (list src/ for\n"
+                "   main.py / index.js / main.go / main.rs / etc.). If it\n"
+                "   does, SKIP dispatching to the developer and jump straight\n"
+                "   to step 3 using the existing RUN command.\n"
+                "2. If no entry exists (rare for incremental runs), follow\n"
+                "   the initial-mode Phase 4 protocol — dispatch developer\n"
+                "   to write the entry file, extract the RUN: line.\n"
+                "3. Run the RUN command with execute_shell(timeout=5).\n"
+                "   Same interpretation as initial mode:\n"
+                "   - timeout after 5s → SUCCESS (main loop entered).\n"
+                "   - exit_code 0 with normal output → SUCCESS.\n"
+                "   - exit_code != 0 with ImportError / SyntaxError /\n"
+                "     ModuleNotFoundError / NameError / AttributeError at\n"
+                "     top level or startup failure → FAILURE.\n"
+                "4. If the verification FAILS, dispatch developer with the\n"
+                "   failure text and request a fix. Up to 3 attempts.\n"
+                "5. STOP after verification succeeds OR 3 attempts exhausted.\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "qa_testing",
+                f"New requirement to integrate: {requirement}\n\n"
+                "Execute Phase 5 — Integration Testing (FULL suite, not\n"
+                "partial). Even though implementation was incremental, the\n"
+                "test run is FULL — new changes can silently break existing\n"
+                "flows and only the full suite catches that.\n"
+                "dispatch_task to qa_engineer. The task description must:\n"
+                "- Instruct the QA agent to read docs/requirement.md\n"
+                "  (including the new Incremental Requirement section) and\n"
+                "  docs/architecture.md so it knows what to cover.\n"
+                "- Extend tests/test_integration.py (edit in place — do\n"
+                "  NOT recreate the file from scratch) with integration\n"
+                "  scenarios for the new requirement. Existing integration\n"
+                "  tests must keep running.\n"
+                "- RUN the FULL suite:\n"
+                '  execute(command="python -m pytest tests/ -q --tb=short")\n'
+                "  and iterate up to 3 times until all tests pass.\n"
+                "- Report final pass/fail counts in the response.\n"
+                "Pass expected_artifacts=['tests/test_integration.py'].\n"
+                "After it completes, STOP.\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "delivery",
+                f"New requirement to integrate: {requirement}\n\n"
+                "Execute Phase 6 — Delivery Report (INCREMENTAL scope):\n\n"
+                "Collect delta metrics for this incremental run and have\n"
+                "product_manager write a scoped delivery report. Cite real\n"
+                "tool outputs — do not guess numbers.\n\n"
+                "1. Collect incremental metrics:\n"
+                "   a) New or modified source files since the previous\n"
+                "      baseline run. Use git where available:\n"
+                "      execute_shell('git status --short 2>/dev/null || echo not-a-git-repo')\n"
+                "      execute_shell('git diff --name-only HEAD~1 2>/dev/null || true')\n"
+                "      Fall back to find -newer if git is not in play.\n"
+                "   b) Current source file count and LOC (full project):\n"
+                "      execute_shell('find src -type f -name \"*.py\" | wc -l')\n"
+                "      execute_shell('find src -type f -name \"*.py\" -exec wc -l {} + | sort -rn | head -30')\n"
+                "   c) Test count + FULL suite result:\n"
+                "      execute_shell('find tests -type f -name \"test_*.py\" 2>/dev/null | wc -l')\n"
+                "      execute_shell('python -m pytest tests/ --collect-only -q 2>&1 | tail -5')\n"
+                "      execute_shell('python -m pytest tests/ -q --tb=line 2>&1 | tail -20')\n\n"
+                "2. Dispatch product_manager to write docs/delivery_report.md.\n"
+                "   Pass expected_artifacts=['docs/delivery_report.md'].\n"
+                "   Require the report to cover:\n"
+                "   - Executive Summary — one paragraph scoped to the new\n"
+                "     requirement and whether the project remains production-ready.\n"
+                "   - Incremental Delta — bullet list of modules added and\n"
+                "     modules edited. Cite step a) outputs.\n"
+                "   - Full Implementation Metrics — counts from step b).\n"
+                "   - Testing Metrics — FULL-suite pass/fail/skipped from\n"
+                "     step c). Pass rate as a percentage.\n"
+                "   - Known Issues — failing tests with short descriptions,\n"
+                "     or 'none' if green.\n"
+                "   - Conclusion — one or two sentences on readiness AFTER\n"
+                "     the incremental change.\n"
+                "   EMBED the raw tool outputs into the task description so\n"
+                "   PM cites them verbatim (same protocol as initial Phase 6).\n\n"
+                "3. After product_manager returns, call mark_complete with a\n"
+                "   short paragraph that references docs/delivery_report.md.\n"
+                "   Include: project name, 'incremental', pass rate, number\n"
+                "   of new modules + edited modules, and whether the entry\n"
+                "   point verified successfully in Phase 4.",
+            ),
+        ]
+
+    def _build_initial_phase_prompts(self, requirement: str) -> list[tuple[str, str]]:
+        """Phase prompts for the first (clean-slate) requirement on a project."""
         return [
             (
                 "requirements",
