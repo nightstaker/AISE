@@ -224,6 +224,55 @@ class TestStageLabelResolverHelpers:
         body = APP_JS.read_text(encoding="utf-8")
         assert "i18next.exists" in body
 
+    def test_chip_strip_uses_resolveChipLabel_not_resolveStageLabel(self) -> None:
+        """The chip strip must call ``resolveChipLabel`` so multi-layer
+        phases render as one chip without a ``#N`` counter. An expanded
+        log entry still calls ``resolveStageLabel`` to show the raw
+        per-layer detail.
+
+        Regression guard for the pathology where
+        ``implementation_layer1`` / ``implementation_layer2`` each
+        rendered as their own chip, flooding the stage strip."""
+        body = APP_JS.read_text(encoding="utf-8")
+        # The chip .map() block references resolveChipLabel.
+        chip_block_start = body.find("run-stages-flow")
+        assert chip_block_start > 0
+        chip_block_end = body.find("run-log-empty", chip_block_start)
+        assert chip_block_end > chip_block_start
+        chip_block = body[chip_block_start:chip_block_end]
+        assert "resolveChipLabel" in chip_block, (
+            "chip strip must use resolveChipLabel; otherwise per-layer entries show with '#N' suffixes"
+        )
+        # And resolveStageLabel must still exist for the log-entry
+        # stage rows (expanded per-event detail).
+        assert "resolveStageLabel" in body
+
+    def test_normalize_stage_id_strips_suffix(self) -> None:
+        """``normalizeStageId`` is the function the chip accumulator
+        uses to dedupe. It must strip the same counter suffix that
+        ``STAGE_SUFFIX_RE`` recognizes, returning the base phase id."""
+        body = APP_JS.read_text(encoding="utf-8")
+        assert "function normalizeStageId(" in body, "normalizeStageId helper missing; chip collapse depends on it"
+        # The normalized id must be used in the stage accumulator — the
+        # chip list should be built from normalized ids, not raw ones.
+        acc_match = re.search(r"stages\.push\(curNormalizedStage\)", body)
+        assert acc_match, (
+            "stage accumulator must push curNormalizedStage, not the raw "
+            "ev.stage — otherwise implementation_layer1 and "
+            "implementation_layer2 become two separate chips"
+        )
+
+    def test_filter_uses_normalized_stage(self) -> None:
+        """Clicking the ``implementation`` chip must filter events
+        across every ``implementation_layer*`` variant, not just the
+        one raw id. The visibleStages array is therefore derived from
+        the NORMALIZED stage, not the raw one."""
+        body = APP_JS.read_text(encoding="utf-8")
+        assert re.search(
+            r"visibleStages\s*=\s*taskLog\s*\.\s*map\(\s*\(_,\s*i\)\s*=>\s*evStagesNormalized\[i\]\)",
+            body,
+        ), "visibleStages must be built from evStagesNormalized[i]"
+
     def test_resolver_has_humanize_fallback(self) -> None:
         """The final branch of ``resolveStageLabel`` must humanize the
         unknown id — pins the fix for the 2026-04-19 screenshot where

@@ -819,6 +819,19 @@ function setupRunReact() {
     return false;
   }
 
+  // Normalize a raw stage id down to its canonical "phase" id by
+  // stripping the counter suffix. ``implementation_layer1`` and
+  // ``implementation_layer2`` both normalize to ``implementation`` so
+  // the chip strip shows a single "开发实现 / Implementation" chip
+  // instead of one chip per layer. The expanded log entries still
+  // show the raw ``ev.stage`` value (``implementation_layer1``) so
+  // per-layer progress is not lost.
+  function normalizeStageId(stage) {
+    if (!stage) return stage;
+    var m = String(stage).match(STAGE_SUFFIX_RE);
+    return m ? m[1] : stage;
+  }
+
   function resolveStageLabel(stage) {
     if (!stage) return stage;
 
@@ -833,6 +846,17 @@ function setupRunReact() {
     }
 
     return humanizeStageId(stage);
+  }
+
+  // Chip-strip label: always uses the NORMALIZED stage id so
+  // ``implementation_layer2`` renders as just "Implementation" without
+  // a "#2" suffix. This keeps the phase progression readable when a
+  // phase has many sub-layers.
+  function resolveChipLabel(stage) {
+    if (!stage) return stage;
+    var normalized = normalizeStageId(stage);
+    if (stageKeyExists(normalized)) return t("stage." + normalized);
+    return humanizeStageId(normalized);
   }
 
   const EVENT_ICONS = {
@@ -898,17 +922,32 @@ function setupRunReact() {
       return () => { active = false; clearInterval(tid); };
     }, [project.info.project_id, run.run_id, isRunning]);
 
-    // Derive stages and tag each event with its stage
+    // Derive stages and tag each event with its stage.
+    //
+    // We track TWO things per event: the raw ``ev.stage`` (used in the
+    // expanded log entry so the per-layer detail stays visible) and
+    // the NORMALIZED stage id (e.g. ``implementation`` for
+    // ``implementation_layer1``). The chip strip only shows normalized
+    // ids, deduped, so multi-layer phases render as one chip.
     const stages = [];
-    const stageSet = new Set();
-    let curStage = null;
-    const evStages = taskLog.map((ev) => {
+    const normalizedSeen = new Set();
+    let curRawStage = null;
+    let curNormalizedStage = null;
+    const evStagesRaw = [];
+    const evStagesNormalized = [];
+    for (let i = 0; i < taskLog.length; i++) {
+      const ev = taskLog[i];
       if (ev.type === "stage_update" && ev.stage) {
-        curStage = ev.stage;
-        if (!stageSet.has(ev.stage)) { stageSet.add(ev.stage); stages.push(ev.stage); }
+        curRawStage = ev.stage;
+        curNormalizedStage = normalizeStageId(ev.stage);
+        if (!normalizedSeen.has(curNormalizedStage)) {
+          normalizedSeen.add(curNormalizedStage);
+          stages.push(curNormalizedStage);
+        }
       }
-      return curStage;
-    });
+      evStagesRaw.push(curRawStage);
+      evStagesNormalized.push(curNormalizedStage);
+    }
     const requests = taskLog.filter((e) => e.type === "task_request");
     const responses = taskLog.filter((e) => e.type === "task_response");
     const completed = responses.filter((e) => e.status === "completed").length;
@@ -984,8 +1023,11 @@ function setupRunReact() {
     const visibleLog = taskLog.filter(
       (e) => e.type !== "todos_update" && e.type !== "task_response",
     );
+    // Filter predicate uses the NORMALIZED stage so a single
+    // ``implementation`` chip matches every ``implementation_layer*``
+    // event, not just the one raw id the user clicked.
     const visibleStages = taskLog
-      .map((_, i) => evStages[i])
+      .map((_, i) => evStagesNormalized[i])
       .filter(
         (_, i) =>
           taskLog[i].type !== "todos_update" &&
@@ -1071,15 +1113,13 @@ function setupRunReact() {
             var lastStageIdx = stages.length - 1;
             var isDone = isRunning ? i < lastStageIdx : true;
             var isCurrent = isRunning && i === lastStageIdx;
-            var isCycle = /_cycle_\d+$/.test(s);
             var cls = "run-stage-chip run-stage-clickable"
-              + (isCycle ? " run-stage-cycle" : "")
               + (stageFilter === s ? " run-stage-selected" : "")
               + (isDone && !isCurrent ? " run-stage-done" : "")
               + (isCurrent ? " run-stage-active" : "");
             return h(window.React.Fragment, { key: s },
               i > 0 ? h("span", { className: "run-stage-arrow" + (isDone ? " run-stage-arrow-done" : "") }, "\u2192") : null,
-              h("span", { className: cls, onClick: function() { toggleStage(s); } }, resolveStageLabel(s) || s),
+              h("span", { className: cls, onClick: function() { toggleStage(s); } }, resolveChipLabel(s) || s),
             );
           }),
         ),
