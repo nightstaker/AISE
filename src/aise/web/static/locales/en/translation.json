@@ -1,0 +1,128 @@
+{
+  "run": {
+    "back": {
+      "project_fallback": "Project"
+    },
+    "title": "Run Details",
+    "status": {
+      "completed": "Completed",
+      "failed": "Failed",
+      "running": "Running",
+      "pending": "Pending"
+    },
+    "mode": {
+      "initial": "Initial",
+      "incremental": "Incremental",
+      "incremental_hint": "New requirement layered on an existing baseline. Runs incremental design, incremental implementation, and FULL test suite."
+    },
+    "section": {
+      "requirement": "Requirement",
+      "stage_progress": "Stage Progress",
+      "stage_progress_filter_hint": " — click to clear filter",
+      "log_title": "A2A Task Log",
+      "delivery_report": "Delivery Report",
+      "error": "Error"
+    },
+    "stat": {
+      "stages": "Stages",
+      "dispatches": "Dispatches",
+      "completed": "Completed",
+      "failed": "Failed"
+    },
+    "log": {
+      "waiting": "Waiting for dispatches...",
+      "empty": "No task log"
+    },
+    "view": {
+      "timeline": "Timeline",
+      "agents": "Agent Interactions"
+    }
+  },
+  "entry": {
+    "meta": {
+      "stage": "Stage: ",
+      "status": "Status: ",
+      "task_id": "Task: ",
+      "step": "Step: ",
+      "phase": "Phase: ",
+      "output": "Output: {{n}} chars"
+    },
+    "status": {
+      "completed": "✓ Completed",
+      "failed": "✕ Failed",
+      "running": "● Running"
+    },
+    "task_description_title": "Task description",
+    "execution_result_title": "Execution result",
+    "no_text_output": "(no text output — agent wrote files directly)",
+    "fallback_task_name": "Task",
+    "summary_no_summary": "(no summary)",
+    "tool_fallback_name": "tool"
+  },
+  "todo": {
+    "title": "Task Steps",
+    "status": {
+      "pending": "Pending",
+      "in_progress": "In progress",
+      "completed": "Completed"
+    }
+  },
+  "task": {
+    "title": "Task Details",
+    "field": {
+      "phase": "Phase",
+      "task_key": "Task",
+      "status": "Status",
+      "artifact_id": "Artifact ID"
+    },
+    "back_to_run": "← Back to Run Details"
+  },
+  "stage": {
+    "process_selection": "Process Selection",
+    "team_assembly": "Team Assembly",
+    "workflow_planning": "Workflow Planning",
+    "execution": "Execution",
+    "phase_1_requirement": "Requirements",
+    "phase_2_design": "Architecture",
+    "phase_3_implementation": "Implementation",
+    "phase_4_verification": "Verification",
+    "requirement": "Requirements",
+    "requirements": "Requirements",
+    "design": "Architecture",
+    "architecture": "Architecture",
+    "implementation": "Implementation",
+    "main_entry": "Entry Point",
+    "testing": "Testing",
+    "verification": "Verification",
+    "qa_testing": "Integration Testing",
+    "delivery": "Delivery",
+    "sprint_planning": "Sprint Planning",
+    "sprint_design": "Sprint Design",
+    "sprint_execution": "Sprint Execution",
+    "sprint_main_entry": "Entry Point",
+    "sprint_review": "Sprint Review",
+    "sprint_retrospective": "Retrospective"
+  },
+  "agents": {
+    "section_title": "Agent Interactions",
+    "role": {
+      "orchestrator": "Orchestrator",
+      "worker": "Worker"
+    },
+    "status": {
+      "idle": "Idle",
+      "working": "Working ({{n}})",
+      "done": "Done"
+    },
+    "stat": {
+      "running": "Running tasks",
+      "completed": "Completed tasks",
+      "failed": "Failed tasks"
+    },
+    "tasks_heading": "Tasks",
+    "no_tasks": "No tasks yet",
+    "no_participants": "No other agents have joined this run yet.",
+    "waiting": "Waiting for the first dispatch...",
+    "dispatches": "{{n}} dispatches"
+  }
+}

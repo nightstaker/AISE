@@ -73,7 +73,13 @@
   <script>window.__AISE_LANG = {{ get_ui_language()|tojson }};</script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="/static/app.js?v=20260421b"></script>
+  <!-- i18next: industry-standard i18n runtime. Resource JSON files live
+       under /static/locales/<lng>/<ns>.json. ``window.__AISE_LANG`` is
+       seeded by the server from the user's Settings so the initial
+       language is authoritative. -->
+  <script src="https://unpkg.com/i18next@23.11.5/dist/umd/i18next.min.js"></script>
+  <script src="https://unpkg.com/i18next-http-backend@2.5.2/i18nextHttpBackend.min.js"></script>
+  <script src="/static/app.js?v=20260421c"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

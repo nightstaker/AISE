@@ -33,210 +33,80 @@ function mountReact(rootId, componentFactory) {
 }
 
 // ---------------------------------------------------------------------------
-// i18n
+// i18n (i18next)
 // ---------------------------------------------------------------------------
 //
-// Every user-facing string on the run-detail and task-detail pages (the
-// pages the user spends the most time on) is routed through ``t(key)``.
-// The language is chosen by the user in Settings; the server emits it
-// as ``window.__AISE_LANG`` (see layout.html) before this file loads.
+// Translations are standard i18next JSON resource files served by
+// FastAPI's StaticFiles mount under ``/static/locales/<lng>/<ns>.json``.
+// Adding a new language = drop a new ``<code>/translation.json`` folder;
+// no code change required.
 //
-// Supported languages: ``zh`` (Simplified Chinese), ``en`` (English).
-// When a key is missing in the chosen language we fall back to English,
-// then to the raw key — loud so missing translations are visible during
-// development instead of silently showing "undefined".
+// The initial language is authoritative from the server (user's Settings)
+// and comes through the ``window.__AISE_LANG`` global seeded by layout.html.
+// i18next is loaded from CDN in layout.html alongside its http-backend
+// plugin, so by the time this file runs ``window.i18next`` exists.
 //
-// Keys use dotted namespaces (``run.section.stage_progress``). Plain
-// string values with ``{placeholder}`` tokens are substituted via the
-// second argument to ``t()``.
-const TRANSLATIONS = {
-  zh: {
-    "run.back.project_fallback": "Project",
-    "run.title": "执行详情",
-    "run.status.completed": "已完成",
-    "run.status.failed": "失败",
-    "run.status.running": "运行中",
-    "run.status.pending": "等待",
-    "run.mode.initial": "初始",
-    "run.mode.incremental": "增量",
-    "run.mode.incremental_hint": "基于已完成的项目基线追加的新需求。执行增量设计、增量开发、全量测试。",
-    "run.section.requirement": "需求",
-    "run.stat.stages": "阶段",
-    "run.stat.dispatches": "任务派发",
-    "run.stat.completed": "已完成",
-    "run.stat.failed": "失败",
-    "run.section.stage_progress": "阶段进度",
-    "run.section.stage_progress_filter_hint": " — 点击取消筛选",
-    "run.section.log_title": "A2A 任务日志",
-    "run.log.waiting": "等待任务派发...",
-    "run.log.empty": "无任务日志",
-    "run.section.delivery_report": "交付报告",
-    "run.section.error": "错误",
-    "entry.meta.stage": "阶段: ",
-    "entry.meta.status": "状态: ",
-    "entry.meta.task_id": "任务: ",
-    "entry.meta.step": "步骤: ",
-    "entry.meta.phase": "阶段: ",
-    "entry.meta.output": "输出: {n} 字符",
-    "entry.status.completed": "✓ 已完成",
-    "entry.status.failed": "✕ 失败",
-    "entry.status.running": "● 进行中",
-    "entry.task_description_title": "任务描述",
-    "entry.execution_result_title": "执行结果",
-    "entry.no_text_output": "(无文本输出 — agent 已直接写入文件)",
-    "entry.fallback_task_name": "任务",
-    "entry.summary_no_summary": "(无摘要)",
-    "entry.tool_fallback_name": "tool",
-    "todo.title": "任务步骤",
-    "todo.status.pending": "待处理",
-    "todo.status.in_progress": "进行中",
-    "todo.status.completed": "已完成",
-    "task.title": "任务详情",
-    "task.field.phase": "阶段",
-    "task.field.task_key": "任务",
-    "task.field.status": "状态",
-    "stage.process_selection": "流程选择",
-    "stage.team_assembly": "团队组建",
-    "stage.workflow_planning": "流程规划",
-    "stage.execution": "任务执行",
-    "stage.phase_1_requirement": "需求分析",
-    "stage.phase_2_design": "架构设计",
-    "stage.phase_3_implementation": "开发实现",
-    "stage.phase_4_verification": "测试验证",
-    "stage.requirement": "需求分析",
-    "stage.design": "架构设计",
-    "stage.implementation": "开发实现",
-    "stage.testing": "测试验证",
-    "stage.sprint_planning": "迭代规划",
-    "stage.sprint_design": "迭代设计",
-    "stage.sprint_execution": "快速开发",
-    "stage.sprint_main_entry": "入口验证",
-    "stage.sprint_review": "迭代评审",
-    "stage.sprint_retrospective": "迭代复盘",
-    "stage.delivery": "交付报告",
-    "stage.requirements": "需求分析",
-    "stage.architecture": "架构设计",
-    "stage.main_entry": "入口验证",
-    "stage.qa_testing": "集成测试",
-    "run.view.timeline": "阶段视图",
-    "run.view.agents": "Agent 交互",
-    "agents.section_title": "Agent 交互视图",
-    "agents.role.orchestrator": "编排",
-    "agents.role.worker": "执行",
-    "agents.status.idle": "空闲",
-    "agents.status.working": "执行中 ({n})",
-    "agents.status.done": "已完成",
-    "agents.stat.running": "进行中任务",
-    "agents.stat.completed": "已完成任务",
-    "agents.stat.failed": "失败任务",
-    "agents.tasks_heading": "任务列表",
-    "agents.no_tasks": "暂无任务",
-    "agents.no_participants": "本次执行尚无其他 Agent 参与。",
-    "agents.waiting": "等待首个任务派发...",
-    "agents.dispatches": "{n} 次派发",
-  },
-  en: {
-    "run.back.project_fallback": "Project",
-    "run.title": "Run Details",
-    "run.status.completed": "Completed",
-    "run.status.failed": "Failed",
-    "run.status.running": "Running",
-    "run.status.pending": "Pending",
-    "run.mode.initial": "Initial",
-    "run.mode.incremental": "Incremental",
-    "run.mode.incremental_hint": "New requirement layered on an existing baseline. Runs incremental design, incremental implementation, and FULL test suite.",
-    "run.section.requirement": "Requirement",
-    "run.stat.stages": "Stages",
-    "run.stat.dispatches": "Dispatches",
-    "run.stat.completed": "Completed",
-    "run.stat.failed": "Failed",
-    "run.section.stage_progress": "Stage Progress",
-    "run.section.stage_progress_filter_hint": " — click to clear filter",
-    "run.section.log_title": "A2A Task Log",
-    "run.log.waiting": "Waiting for dispatches...",
-    "run.log.empty": "No task log",
-    "run.section.delivery_report": "Delivery Report",
-    "run.section.error": "Error",
-    "entry.meta.stage": "Stage: ",
-    "entry.meta.status": "Status: ",
-    "entry.meta.task_id": "Task: ",
-    "entry.meta.step": "Step: ",
-    "entry.meta.phase": "Phase: ",
-    "entry.meta.output": "Output: {n} chars",
-    "entry.status.completed": "✓ Completed",
-    "entry.status.failed": "✕ Failed",
-    "entry.status.running": "● Running",
-    "entry.task_description_title": "Task description",
-    "entry.execution_result_title": "Execution result",
-    "entry.no_text_output": "(no text output — agent wrote files directly)",
-    "entry.fallback_task_name": "Task",
-    "entry.summary_no_summary": "(no summary)",
-    "entry.tool_fallback_name": "tool",
-    "todo.title": "Task Steps",
-    "todo.status.pending": "Pending",
-    "todo.status.in_progress": "In progress",
-    "todo.status.completed": "Completed",
-    "task.title": "Task Details",
-    "task.field.phase": "Phase",
-    "task.field.task_key": "Task",
-    "task.field.status": "Status",
-    "stage.process_selection": "Process Selection",
-    "stage.team_assembly": "Team Assembly",
-    "stage.workflow_planning": "Workflow Planning",
-    "stage.execution": "Execution",
-    "stage.phase_1_requirement": "Requirements",
-    "stage.phase_2_design": "Architecture",
-    "stage.phase_3_implementation": "Implementation",
-    "stage.phase_4_verification": "Verification",
-    "stage.requirement": "Requirements",
-    "stage.design": "Architecture",
-    "stage.implementation": "Implementation",
-    "stage.testing": "Testing",
-    "stage.sprint_planning": "Sprint Planning",
-    "stage.sprint_design": "Sprint Design",
-    "stage.sprint_execution": "Sprint Execution",
-    "stage.sprint_main_entry": "Entry Point",
-    "stage.sprint_review": "Sprint Review",
-    "stage.sprint_retrospective": "Retrospective",
-    "stage.delivery": "Delivery",
-    "stage.requirements": "Requirements",
-    "stage.architecture": "Architecture",
-    "stage.main_entry": "Entry Point",
-    "stage.qa_testing": "Integration Testing",
-    "run.view.timeline": "Timeline",
-    "run.view.agents": "Agent Interactions",
-    "agents.section_title": "Agent Interactions",
-    "agents.role.orchestrator": "Orchestrator",
-    "agents.role.worker": "Worker",
-    "agents.status.idle": "Idle",
-    "agents.status.working": "Working ({n})",
-    "agents.status.done": "Done",
-    "agents.stat.running": "Running tasks",
-    "agents.stat.completed": "Completed tasks",
-    "agents.stat.failed": "Failed tasks",
-    "agents.tasks_heading": "Tasks",
-    "agents.no_tasks": "No tasks yet",
-    "agents.no_participants": "No other agents have joined this run yet.",
-    "agents.waiting": "Waiting for the first dispatch...",
-    "agents.dispatches": "{n} dispatches",
-  },
-};
+// Rendering is async: the bootstrap waits on ``i18next.init()`` before
+// mounting React. This avoids a flash-of-raw-key on first paint.
+//
+// ``t(key, params)`` below is a thin wrapper that delegates to
+// ``i18next.t``. Keep it around so existing callers don't care whether
+// i18next is loaded yet.
 
-function currentLang() {
-  const raw = (window.__AISE_LANG || "zh").toString().toLowerCase();
-  return TRANSLATIONS[raw] ? raw : "zh";
+const I18N_SUPPORTED_LANGS = ["zh", "en"];
+const I18N_DEFAULT_LANG = "zh";
+
+function resolveInitialLang() {
+  const raw = (window.__AISE_LANG || "").toString().toLowerCase();
+  return I18N_SUPPORTED_LANGS.indexOf(raw) >= 0 ? raw : I18N_DEFAULT_LANG;
+}
+
+// Bootstraps i18next once per page load. Subsequent calls return the
+// same promise so multiple page-specific setup functions (dashboard,
+// run, task, etc.) can all ``await`` the shared init.
+let _i18nReady = null;
+function initI18n() {
+  if (_i18nReady) return _i18nReady;
+  if (!window.i18next || !window.i18nextHttpBackend) {
+    // Vendor scripts didn't load (offline / CDN blocked). Resolve the
+    // promise so pages still mount; ``t()`` will fall through to the
+    // raw key and at least be legible in English-ish form.
+    _i18nReady = Promise.resolve(null);
+    return _i18nReady;
+  }
+  _i18nReady = window.i18next.use(window.i18nextHttpBackend).init({
+    lng: resolveInitialLang(),
+    fallbackLng: "en",
+    supportedLngs: I18N_SUPPORTED_LANGS,
+    defaultNS: "translation",
+    ns: ["translation"],
+    backend: {
+      loadPath: "/static/locales/{{lng}}/{{ns}}.json",
+    },
+    interpolation: {
+      // React escapes children already — don't double-escape.
+      escapeValue: false,
+    },
+    returnEmptyString: false,
+  });
+  return _i18nReady;
 }
 
 function t(key, params) {
-  const lang = currentLang();
-  const table = TRANSLATIONS[lang] || TRANSLATIONS.zh;
-  let template = table[key];
-  if (template === undefined) template = TRANSLATIONS.en[key];
-  if (template === undefined) template = key;
-  if (!params) return template;
-  return template.replace(/\{(\w+)\}/g, function (m, name) {
-    return Object.prototype.hasOwnProperty.call(params, name) ? params[name] : m;
-  });
+  if (window.i18next && window.i18next.isInitialized) {
+    return window.i18next.t(key, params);
+  }
+  // Pre-init fallback: return the key itself. Any code that renders
+  // before ``await initI18n()`` will show raw keys — which is louder
+  // than silent undefined and easy to spot in dev.
+  return key;
+}
+
+function currentLang() {
+  if (window.i18next && window.i18next.language) {
+    return String(window.i18next.language).toLowerCase();
+  }
+  return resolveInitialLang();
 }
 
 function formatLocalTime(ts) {
@@ -909,21 +779,84 @@ function setupRunReact() {
   const initial = readScriptJson("run-initial-data", { project: null, run: null });
   if (!initial.project || !initial.run) return;
 
-  // Stage names live in the top-level ``TRANSLATIONS`` table under the
-  // ``stage.<id>`` namespace — see the i18n block at the top of this
-  // file. Resolution below consults the active language via ``t()``.
-  // Dynamic stage label resolver (handles implementation_cycle_1, etc.)
-  function resolveStageLabel(stage) {
-    var translated = t("stage." + stage);
-    if (translated !== "stage." + stage) return translated;
-    var cycleMatch = stage.match(/^(.+)_cycle_(\d+)$/);
-    if (cycleMatch) {
-      var baseKey = "stage." + cycleMatch[1];
-      var base = t(baseKey);
-      if (base === baseKey) base = cycleMatch[1];
-      return base + " #" + cycleMatch[2];
+  // Stage names live in the ``stage.<id>`` namespace of the i18next
+  // resource files under ``static/locales/<lng>/translation.json``.
+  // Phase names are free-form strings the PM picks at dispatch
+  // time, so this resolver has to handle three cases:
+  //
+  //   1. Exact match on the full stage id  (``architecture`` → 架构设计)
+  //   2. Known suffix patterns that carry a numeric counter —
+  //      ``implementation_layer1`` / ``implementation_cycle_3`` /
+  //      ``design_part_2`` etc. Strip the suffix, translate the base,
+  //      append ``#N``.
+  //   3. Unknown stage id: humanize it (``impl_config_loader`` →
+  //      ``Impl Config Loader``) so the user never sees a raw
+  //      snake_case identifier among Chinese labels.
+  //
+  // Missing-key detection uses i18next's built-in ``exists`` so we
+  // don't depend on any string-equality trick between the probe key
+  // and the return value.
+  function humanizeStageId(stage) {
+    return String(stage)
+      .split(/[_-]+/)
+      .filter(function (w) { return w.length > 0; })
+      .map(function (w) {
+        return w.charAt(0).toUpperCase() + w.slice(1);
+      })
+      .join(" ");
+  }
+
+  // Trailing counter suffix: ``_layer1`` / ``_layer_1`` / ``_cycle2`` /
+  // ``_part_3`` / ``_iter4`` / ``_round_5`` / ``_v2``. Captures base +
+  // numeric N.
+  var STAGE_SUFFIX_RE = /^(.+?)_(?:layer|cycle|part|iter|iteration|round|stage|v|step)_?(\d+)$/;
+
+  function stageKeyExists(stageId) {
+    var key = "stage." + stageId;
+    if (window.i18next && window.i18next.isInitialized) {
+      return window.i18next.exists(key);
     }
-    return stage;
+    return false;
+  }
+
+  // Normalize a raw stage id down to its canonical "phase" id by
+  // stripping the counter suffix. ``implementation_layer1`` and
+  // ``implementation_layer2`` both normalize to ``implementation`` so
+  // the chip strip shows a single "开发实现 / Implementation" chip
+  // instead of one chip per layer. The expanded log entries still
+  // show the raw ``ev.stage`` value (``implementation_layer1``) so
+  // per-layer progress is not lost.
+  function normalizeStageId(stage) {
+    if (!stage) return stage;
+    var m = String(stage).match(STAGE_SUFFIX_RE);
+    return m ? m[1] : stage;
+  }
+
+  function resolveStageLabel(stage) {
+    if (!stage) return stage;
+
+    if (stageKeyExists(stage)) return t("stage." + stage);
+
+    var suffix = stage.match(STAGE_SUFFIX_RE);
+    if (suffix) {
+      var base = stageKeyExists(suffix[1])
+        ? t("stage." + suffix[1])
+        : humanizeStageId(suffix[1]);
+      return base + " #" + suffix[2];
+    }
+
+    return humanizeStageId(stage);
+  }
+
+  // Chip-strip label: always uses the NORMALIZED stage id so
+  // ``implementation_layer2`` renders as just "Implementation" without
+  // a "#2" suffix. This keeps the phase progression readable when a
+  // phase has many sub-layers.
+  function resolveChipLabel(stage) {
+    if (!stage) return stage;
+    var normalized = normalizeStageId(stage);
+    if (stageKeyExists(normalized)) return t("stage." + normalized);
+    return humanizeStageId(normalized);
   }
 
   const EVENT_ICONS = {
@@ -935,7 +868,7 @@ function setupRunReact() {
   };
 
   // Todo status labels resolve via ``t()`` — see ``todo.status.*`` keys
-  // in the top-level TRANSLATIONS table.
+  // in the i18next locale resource files.
   function todoStatusLabel(status) {
     var key = "todo.status." + status;
     var translated = t(key);
@@ -989,17 +922,32 @@ function setupRunReact() {
       return () => { active = false; clearInterval(tid); };
     }, [project.info.project_id, run.run_id, isRunning]);
 
-    // Derive stages and tag each event with its stage
+    // Derive stages and tag each event with its stage.
+    //
+    // We track TWO things per event: the raw ``ev.stage`` (used in the
+    // expanded log entry so the per-layer detail stays visible) and
+    // the NORMALIZED stage id (e.g. ``implementation`` for
+    // ``implementation_layer1``). The chip strip only shows normalized
+    // ids, deduped, so multi-layer phases render as one chip.
     const stages = [];
-    const stageSet = new Set();
-    let curStage = null;
-    const evStages = taskLog.map((ev) => {
+    const normalizedSeen = new Set();
+    let curRawStage = null;
+    let curNormalizedStage = null;
+    const evStagesRaw = [];
+    const evStagesNormalized = [];
+    for (let i = 0; i < taskLog.length; i++) {
+      const ev = taskLog[i];
       if (ev.type === "stage_update" && ev.stage) {
-        curStage = ev.stage;
-        if (!stageSet.has(ev.stage)) { stageSet.add(ev.stage); stages.push(ev.stage); }
+        curRawStage = ev.stage;
+        curNormalizedStage = normalizeStageId(ev.stage);
+        if (!normalizedSeen.has(curNormalizedStage)) {
+          normalizedSeen.add(curNormalizedStage);
+          stages.push(curNormalizedStage);
+        }
       }
-      return curStage;
-    });
+      evStagesRaw.push(curRawStage);
+      evStagesNormalized.push(curNormalizedStage);
+    }
     const requests = taskLog.filter((e) => e.type === "task_request");
     const responses = taskLog.filter((e) => e.type === "task_response");
     const completed = responses.filter((e) => e.status === "completed").length;
@@ -1075,8 +1023,11 @@ function setupRunReact() {
     const visibleLog = taskLog.filter(
       (e) => e.type !== "todos_update" && e.type !== "task_response",
     );
+    // Filter predicate uses the NORMALIZED stage so a single
+    // ``implementation`` chip matches every ``implementation_layer*``
+    // event, not just the one raw id the user clicked.
     const visibleStages = taskLog
-      .map((_, i) => evStages[i])
+      .map((_, i) => evStagesNormalized[i])
       .filter(
         (_, i) =>
           taskLog[i].type !== "todos_update" &&
@@ -1162,15 +1113,13 @@ function setupRunReact() {
             var lastStageIdx = stages.length - 1;
             var isDone = isRunning ? i < lastStageIdx : true;
             var isCurrent = isRunning && i === lastStageIdx;
-            var isCycle = /_cycle_\d+$/.test(s);
             var cls = "run-stage-chip run-stage-clickable"
-              + (isCycle ? " run-stage-cycle" : "")
               + (stageFilter === s ? " run-stage-selected" : "")
               + (isDone && !isCurrent ? " run-stage-done" : "")
               + (isCurrent ? " run-stage-active" : "");
             return h(window.React.Fragment, { key: s },
               i > 0 ? h("span", { className: "run-stage-arrow" + (isDone ? " run-stage-arrow-done" : "") }, "\u2192") : null,
-              h("span", { className: cls, onClick: function() { toggleStage(s); } }, resolveStageLabel(s) || s),
+              h("span", { className: cls, onClick: function() { toggleStage(s); } }, resolveChipLabel(s) || s),
             );
           }),
         ),
@@ -1623,8 +1572,6 @@ function setupTaskReact() {
   function TaskApp() {
     const h = window.React.createElement;
     const task = initial.task || {};
-    const backLabel = currentLang() === "en" ? "\u2190 Back to Run Details" : "\u2190 返回执行详情";
-    const artifactLabel = currentLang() === "en" ? "Artifact ID" : "产物ID";
     return h(
       "section",
       { className: "card card-glow" },
@@ -1632,7 +1579,7 @@ function setupTaskReact() {
       h("p", null, `${t("task.field.phase")}: ${initial.phase_name}`),
       h("p", null, `${t("task.field.task_key")}: ${initial.task_key}`),
       h("p", null, `${t("task.field.status")}: ${task.status || ""}`),
-      task.artifact_id ? h("p", null, `${artifactLabel}: ${task.artifact_id}`) : null,
+      task.artifact_id ? h("p", null, `${t("task.field.artifact_id")}: ${task.artifact_id}`) : null,
       task.error ? h("pre", { className: "error" }, task.error) : null,
       h(
         "a",
@@ -1640,7 +1587,7 @@ function setupTaskReact() {
           className: "btn secondary",
           href: `/projects/${encodeURIComponent(initial.project_id)}/runs/${encodeURIComponent(initial.run_id)}`,
         },
-        backLabel,
+        t("task.back_to_run"),
       )
     );
   }
@@ -2173,11 +2120,16 @@ function setupMonitorReact() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  setupDashboardReact();
-  setupProjectReact();
-  setupRunReact();
-  setupTaskReact();
-  setupLoginReact();
-  setupModelsConfigPage();
-  setupMonitorReact();
+  // Wait for i18next to finish loading its resource files before
+  // mounting any React tree. First paint therefore has the correct
+  // translations — no flash of raw ``stage.xxx`` keys.
+  initI18n().finally(() => {
+    setupDashboardReact();
+    setupProjectReact();
+    setupRunReact();
+    setupTaskReact();
+    setupLoginReact();
+    setupModelsConfigPage();
+    setupMonitorReact();
+  });
 });
