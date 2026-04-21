@@ -119,6 +119,114 @@ class TestAgentInteractionStructuralPresence:
             assert cls in css, f"CSS class referenced in app.js but missing in main.css: {cls}"
 
 
+class TestAgentStatusInterpolation:
+    """The ``agents.status.working`` template uses ``{n}`` for the
+    running-task count. Every caller site must pass an ``n`` key in
+    the params object, otherwise the placeholder surfaces literally
+    on the page (observed: ``执行中 ({n})`` rendered instead of
+    ``执行中 (3)``).
+
+    Pin both sides of the contract: the template syntax AND the
+    caller's param key — a change to one without the other is a
+    silent regression. Extending this to ``agents.dispatches`` so a
+    future rename of the edge-badge key can't break the same way.
+    """
+
+    # Which placeholder name is expected in each template + the
+    # corresponding caller-side param name. Values are lowercase for
+    # case-insensitive matching.
+    INTERPOLATION_KEYS: list[tuple[str, str]] = [
+        ("agents.status.working", "n"),
+        ("agents.dispatches", "n"),
+        ("entry.meta.output", "n"),
+    ]
+
+    def test_template_placeholder_matches_caller_param(self) -> None:
+        body = APP_JS.read_text(encoding="utf-8")
+        for key, expected_param in self.INTERPOLATION_KEYS:
+            for value in _collect_template_values(body, key):
+                # Every placeholder in the template must exactly match
+                # ``expected_param``. A ``{count}`` in a template that
+                # expects ``n`` is what caused the original bug.
+                placeholders = re.findall(r"(?<!\{)\{(\w+)\}(?!\})", value)
+                assert placeholders, (
+                    f"template for {key} carries no {{x}} placeholder — "
+                    "did the translation drop the interpolation spot?"
+                )
+                for ph in placeholders:
+                    assert ph == expected_param, (
+                        f"template for {key} uses {{{ph}}} but the "
+                        f"caller in app.js passes {{ {expected_param} }} "
+                        "— placeholder names must match exactly"
+                    )
+            # Find every call site for this key in app.js and check
+            # that its params object has the expected_param key.
+            for params_src in _collect_t_call_params(body, key):
+                if params_src is None:
+                    continue  # no params on this call (e.g. parameterless usage)
+                assert re.search(rf"\b{expected_param}\s*:", params_src), (
+                    f't("{key}", ...) caller passes params without '
+                    f"{expected_param!r}: {params_src!r}. The template uses "
+                    f"{{{expected_param}}} so any other key leaks the "
+                    "placeholder through to the UI."
+                )
+
+    def test_agent_status_working_caller_binds_n(self) -> None:
+        """Tight regression for the specific bug — don't just rely on
+        the generic test above, which passes as long as SOME caller is
+        correct. This one pins the ``AgentStatusBadge`` call site."""
+        body = APP_JS.read_text(encoding="utf-8")
+        # Skip the function signature (which contains destructured
+        # ``{ agent }`` braces that confuse a naive depth counter) and
+        # land the brace counter on the function body's opening brace.
+        sig_match = re.search(r"function AgentStatusBadge\s*\([^)]*\)\s*\{", body)
+        assert sig_match, "AgentStatusBadge not found"
+        body_start = sig_match.end() - 1  # index of the body's opening '{'
+        depth = 0
+        i = body_start
+        while i < len(body):
+            if body[i] == "{":
+                depth += 1
+            elif body[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+            i += 1
+        fn_src = body[body_start : end + 1]
+        assert 't("agents.status.working"' in fn_src
+        assert "{ n:" in fn_src or "{ n :" in fn_src, (
+            "AgentStatusBadge must pass { n: agent.runningCount } — the template placeholder is {n}"
+        )
+        # Match `count:` as a key specifically, not inside other tokens
+        # like `runningCount`.
+        assert not re.search(r"[^\w]count\s*:", fn_src), (
+            "AgentStatusBadge used to pass { count: ... } which left {n} literal in the rendered UI"
+        )
+
+
+def _collect_template_values(body: str, key: str) -> list[str]:
+    """Return every string value a given translation key maps to in
+    the TRANSLATIONS table. There's typically one per language."""
+    values: list[str] = []
+    for m in re.finditer(rf'"{re.escape(key)}":\s*"([^"]*)"', body):
+        values.append(m.group(1))
+    return values
+
+
+def _collect_t_call_params(body: str, key: str) -> list[str | None]:
+    """Return the source of the params dict for each ``t("key", ...)``
+    call in ``body``. Returns ``None`` for calls that pass no params."""
+    pattern = re.compile(
+        rf't\(\s*"{re.escape(key)}"\s*(?:,\s*(\{{[^}}]*\}}))?\s*\)',
+        re.DOTALL,
+    )
+    results: list[str | None] = []
+    for m in pattern.finditer(body):
+        results.append(m.group(1))
+    return results
+
+
 class TestComputeAgentGraphSemantics:
     """Port of the ``computeAgentGraph`` behavior so we can verify the
     derivation rules without a JS runtime. Any change to the JS helper
