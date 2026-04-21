@@ -107,6 +107,22 @@ const TRANSLATIONS = {
     "stage.sprint_planning": "迭代规划",
     "stage.sprint_execution": "快速开发",
     "stage.sprint_review": "迭代评审",
+    "run.view.timeline": "阶段视图",
+    "run.view.agents": "Agent 交互",
+    "agents.section_title": "Agent 交互视图",
+    "agents.role.orchestrator": "编排",
+    "agents.role.worker": "执行",
+    "agents.status.idle": "空闲",
+    "agents.status.working": "执行中 ({n})",
+    "agents.status.done": "已完成",
+    "agents.stat.running": "进行中任务",
+    "agents.stat.completed": "已完成任务",
+    "agents.stat.failed": "失败任务",
+    "agents.tasks_heading": "任务列表",
+    "agents.no_tasks": "暂无任务",
+    "agents.no_participants": "本次执行尚无其他 Agent 参与。",
+    "agents.waiting": "等待首个任务派发...",
+    "agents.dispatches": "{n} 次派发",
   },
   en: {
     "run.back.project_fallback": "Project",
@@ -165,6 +181,22 @@ const TRANSLATIONS = {
     "stage.sprint_planning": "Sprint Planning",
     "stage.sprint_execution": "Sprint Execution",
     "stage.sprint_review": "Sprint Review",
+    "run.view.timeline": "Timeline",
+    "run.view.agents": "Agent Interactions",
+    "agents.section_title": "Agent Interactions",
+    "agents.role.orchestrator": "Orchestrator",
+    "agents.role.worker": "Worker",
+    "agents.status.idle": "Idle",
+    "agents.status.working": "Working ({n})",
+    "agents.status.done": "Done",
+    "agents.stat.running": "Running tasks",
+    "agents.stat.completed": "Completed tasks",
+    "agents.stat.failed": "Failed tasks",
+    "agents.tasks_heading": "Tasks",
+    "agents.no_tasks": "No tasks yet",
+    "agents.no_participants": "No other agents have joined this run yet.",
+    "agents.waiting": "Waiting for the first dispatch...",
+    "agents.dispatches": "{n} dispatches",
   },
 };
 
@@ -899,6 +931,7 @@ function setupRunReact() {
     const project = initial.project;
     const [run, setRun] = window.React.useState(initial.run);
     const [stageFilter, setStageFilter] = window.React.useState(null);
+    const [runView, setRunView] = window.React.useState("timeline");
     const runStatus = String(run.status || "pending");
     const isRunning = runStatus === "pending" || runStatus === "running";
     const taskLog = Array.isArray(run.task_log) ? run.task_log : [];
@@ -1042,7 +1075,30 @@ function setupRunReact() {
         h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, completed), h("span", { className: "run-stat-label" }, t("run.stat.completed"))),
         failed > 0 ? h("div", { className: "run-stat run-stat-error" }, h("span", { className: "run-stat-value" }, failed), h("span", { className: "run-stat-label" }, t("run.stat.failed"))) : null,
       ),
-      stages.length > 0 ? h("div", { className: "run-section" },
+      // View switcher: "timeline" = current stage-progress + A2A log;
+      // "agents" = the agent-interaction graph. Persists only for the
+      // life of the component (simple UI preference, not a deep link).
+      h("div", { className: "run-view-tabs", role: "tablist" },
+        ["timeline", "agents"].map((key) => h(
+          "button",
+          {
+            key: key,
+            type: "button",
+            role: "tab",
+            "aria-selected": runView === key ? "true" : "false",
+            className: "run-view-tab" + (runView === key ? " run-view-tab-active" : ""),
+            onClick: function () { setRunView(key); },
+          },
+          t("run.view." + key),
+        )),
+      ),
+      runView === "agents" ? h(AgentInteractionView, {
+        taskLog: taskLog,
+        orchestratorName: (project.info || {}).orchestrator_name || null,
+        taskResponseByTaskId: taskResponseByTaskId,
+        isRunning: isRunning,
+      }) : null,
+      runView === "timeline" && stages.length > 0 ? h("div", { className: "run-section" },
         h("div", { className: "run-section-title" }, t("run.section.stage_progress") + (stageFilter ? t("run.section.stage_progress_filter_hint") : "")),
         h("div", { className: "run-stages-flow" },
           stages.map((s, i) => {
@@ -1062,7 +1118,7 @@ function setupRunReact() {
           }),
         ),
       ) : null,
-      h("div", { className: "run-section" },
+      runView === "timeline" ? h("div", { className: "run-section" },
         h("div", { className: "run-section-title" }, t("run.section.log_title") + " (" + filteredLog.length + (stageFilter ? " / " + taskLog.length : "") + ")"),
         filteredLog.length === 0
           ? h("div", { className: "run-log-empty" }, isRunning ? t("run.log.waiting") : t("run.log.empty"))
@@ -1072,7 +1128,7 @@ function setupRunReact() {
               taskTodos: taskTodos,
               taskResponse: ev.taskId ? taskResponseByTaskId[ev.taskId] : null,
             }))),
-      ),
+      ) : null,
       // The delivery report (``run.result``) is produced by Phase 6 /
       // the ``delivery`` stage. It's noisy to show on every view of the
       // run detail page, so scope it: only render when the user has
@@ -1090,6 +1146,188 @@ function setupRunReact() {
         h("div", { className: "run-section-title" }, t("run.section.error")),
         h("pre", { className: "run-error-text" }, run.error),
       ) : null,
+    );
+  }
+
+  // ------------------------------------------------------------------
+  // Agent interaction view
+  // ------------------------------------------------------------------
+  //
+  // Parses the run's ``task_log`` into three structures:
+  //
+  //   agents     — one card per participating agent (orchestrator on
+  //                the top row, workers in a grid below). Each agent
+  //                carries its running-task count, completed / failed
+  //                totals, and its recent task list.
+  //   edges      — ``(from → to)`` pairs with a count of dispatches.
+  //                Rendered as SVG arrows laid over the grid with a
+  //                small count badge.
+  //   taskById   — ``taskId`` → {agent, label, status, goal, startedAt}
+  //                used to populate the task list under each worker.
+  //
+  // All computation is derived from ``task_request`` / ``task_response``
+  // events that the runtime already emits — no new backend data needed.
+  function computeAgentGraph(taskLog, orchestratorName, taskResponseByTaskId) {
+    var orchestrator = orchestratorName || "orchestrator";
+    var workerSet = new Set();
+    var edges = new Map(); // key "fromto" -> count
+    var tasksByAgent = new Map();
+    var allTasks = [];
+
+    function bumpEdge(from, to) {
+      var k = from + "" + to;
+      edges.set(k, (edges.get(k) || 0) + 1);
+    }
+
+    for (var i = 0; i < taskLog.length; i++) {
+      var ev = taskLog[i];
+      if (!ev) continue;
+      if (ev.type === "task_request" && ev.to) {
+        workerSet.add(ev.to);
+        bumpEdge(orchestrator, ev.to);
+        var payload = ev.payload || {};
+        var response = ev.taskId ? taskResponseByTaskId[ev.taskId] : null;
+        var respPayload = (response && response.payload) || {};
+        var goal = payload.step
+          || (payload.task ? String(payload.task).split("\n")[0].slice(0, 80) : "")
+          || t("entry.fallback_task_name");
+        var status = response ? (response.status || "completed") : "running";
+        var outputLen = response ? (respPayload.output_length || 0) : 0;
+        var task = {
+          taskId: ev.taskId || null,
+          agent: ev.to,
+          goal: goal,
+          phase: payload.phase || "",
+          status: status,
+          startedAt: ev.timestamp || "",
+          completedAt: response ? (response.timestamp || "") : "",
+          outputLen: outputLen,
+        };
+        if (!tasksByAgent.has(ev.to)) tasksByAgent.set(ev.to, []);
+        tasksByAgent.get(ev.to).push(task);
+        allTasks.push(task);
+      }
+    }
+
+    // Agents array: orchestrator first, then workers in declaration
+    // order (which matches dispatch order — a readable flow).
+    var workers = Array.from(workerSet);
+    var agents = [{ name: orchestrator, role: "orchestrator" }];
+    workers.forEach(function (n) { agents.push({ name: n, role: "worker" }); });
+
+    // Edges as a simple array.
+    var edgeArr = [];
+    edges.forEach(function (count, key) {
+      var parts = key.split("");
+      edgeArr.push({ from: parts[0], to: parts[1], count: count });
+    });
+
+    // Per-agent status summary.
+    agents.forEach(function (a) {
+      var tasks = tasksByAgent.get(a.name) || [];
+      a.tasks = tasks;
+      a.runningCount = tasks.filter(function (t) { return t.status === "running"; }).length;
+      a.completedCount = tasks.filter(function (t) { return t.status === "completed"; }).length;
+      a.failedCount = tasks.filter(function (t) { return t.status === "failed"; }).length;
+    });
+
+    return { agents: agents, edges: edgeArr, tasks: allTasks };
+  }
+
+  function AgentStatusBadge({ agent }) {
+    const h = window.React.createElement;
+    if (agent.runningCount > 0) {
+      return h("span", { className: "agent-card-status agent-card-status-working" },
+        h("span", { className: "monitor-task-pulse" }),
+        t("agents.status.working", { count: agent.runningCount }),
+      );
+    }
+    if (agent.completedCount + agent.failedCount === 0) {
+      return h("span", { className: "agent-card-status agent-card-status-idle" }, t("agents.status.idle"));
+    }
+    return h("span", { className: "agent-card-status agent-card-status-done" }, t("agents.status.done"));
+  }
+
+  function AgentCard({ agent }) {
+    const h = window.React.createElement;
+    // Cap the per-agent task list to the most recent 12 entries so a
+    // long-running project with dozens of dispatches per agent stays
+    // scannable. Older tasks can still be found via the timeline view.
+    var visibleTasks = agent.tasks.slice(-12).reverse();
+    return h("div", {
+      className: "agent-card agent-card-role-" + agent.role,
+      "data-agent-name": agent.name,
+    },
+      h("div", { className: "agent-card-header" },
+        h("span", { className: "agent-card-icon" }, agent.role === "orchestrator" ? "🎯" : "🤖"),
+        h("span", { className: "agent-card-name" }, agent.name),
+        h("span", { className: "agent-card-role-tag" }, t("agents.role." + agent.role)),
+      ),
+      h(AgentStatusBadge, { agent: agent }),
+      h("div", { className: "agent-card-stats" },
+        h("span", { title: t("agents.stat.running") }, "● " + agent.runningCount),
+        h("span", { title: t("agents.stat.completed") }, "✓ " + agent.completedCount),
+        agent.failedCount > 0
+          ? h("span", { className: "agent-card-stat-failed", title: t("agents.stat.failed") }, "✕ " + agent.failedCount)
+          : null,
+      ),
+      h("div", { className: "agent-card-tasks" },
+        h("div", { className: "agent-card-tasks-title" }, t("agents.tasks_heading")),
+        visibleTasks.length === 0
+          ? h("div", { className: "agent-card-tasks-empty" }, t("agents.no_tasks"))
+          : h("ul", { className: "agent-card-tasks-list" }, visibleTasks.map(function (task, idx) {
+              var statusClass = "agent-task-" + task.status;
+              return h("li", { className: "agent-card-task " + statusClass, key: task.taskId || idx },
+                h("span", { className: "agent-card-task-icon" },
+                  task.status === "running" ? "●" : task.status === "failed" ? "✕" : "✓",
+                ),
+                h("span", { className: "agent-card-task-goal", title: task.goal }, task.goal),
+              );
+            })),
+      ),
+    );
+  }
+
+  function AgentInteractionView({ taskLog, orchestratorName, taskResponseByTaskId, isRunning }) {
+    const h = window.React.createElement;
+    var graph = computeAgentGraph(taskLog, orchestratorName, taskResponseByTaskId);
+    var orchestrators = graph.agents.filter(function (a) { return a.role === "orchestrator"; });
+    var workers = graph.agents.filter(function (a) { return a.role === "worker"; });
+
+    if (workers.length === 0) {
+      return h("div", { className: "run-section agent-graph-empty" },
+        h("div", { className: "run-log-empty" }, isRunning ? t("agents.waiting") : t("agents.no_participants")),
+      );
+    }
+
+    // Edge lookup for each worker: orchestrator → worker count.
+    var dispatchToWorker = {};
+    graph.edges.forEach(function (e) {
+      dispatchToWorker[e.to] = (dispatchToWorker[e.to] || 0) + e.count;
+    });
+
+    return h("div", { className: "run-section agent-graph-section" },
+      h("div", { className: "run-section-title" }, t("agents.section_title")),
+      h("div", { className: "agent-graph" },
+        h("div", { className: "agent-graph-row agent-graph-row-top" },
+          orchestrators.map(function (a) { return h(AgentCard, { key: a.name, agent: a }); }),
+        ),
+        h("div", { className: "agent-graph-edges", role: "presentation" },
+          workers.map(function (w) {
+            var count = dispatchToWorker[w.name] || 0;
+            return h("div", { className: "agent-graph-edge", key: w.name },
+              h("span", { className: "agent-graph-edge-line" }),
+              h("span", { className: "agent-graph-edge-label" }, t("agents.dispatches", { count: count })),
+            );
+          }),
+        ),
+        h("div", {
+          className: "agent-graph-row agent-graph-row-workers",
+          style: { gridTemplateColumns: "repeat(" + workers.length + ", minmax(0, 1fr))" },
+        },
+          workers.map(function (a) { return h(AgentCard, { key: a.name, agent: a }); }),
+        ),
+      ),
     );
   }
 
