@@ -1249,7 +1249,7 @@ function setupRunReact() {
     if (agent.runningCount > 0) {
       return h("span", { className: "agent-card-status agent-card-status-working" },
         h("span", { className: "monitor-task-pulse" }),
-        t("agents.status.working", { count: agent.runningCount }),
+        t("agents.status.working", { n: agent.runningCount }),
       );
     }
     if (agent.completedCount + agent.failedCount === 0) {
@@ -1327,7 +1327,7 @@ function setupRunReact() {
             var count = dispatchToWorker[w.name] || 0;
             return h("div", { className: "agent-graph-edge", key: w.name },
               h("span", { className: "agent-graph-edge-line" }),
-              h("span", { className: "agent-graph-edge-label" }, t("agents.dispatches", { count: count })),
+              h("span", { className: "agent-graph-edge-label" }, t("agents.dispatches", { n: count })),
             );
           }),
         ),
