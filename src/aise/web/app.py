@@ -36,7 +36,16 @@ logger = get_logger(__name__)
 
 @dataclass
 class WorkflowRun:
-    """Represents one workflow execution for a requirement."""
+    """Represents one workflow execution for a requirement.
+
+    ``mode`` distinguishes the kind of run:
+    - ``"initial"`` — first requirement against a fresh project; the
+      orchestrator runs the full waterfall from a clean slate.
+    - ``"incremental"`` — a subsequent requirement against a project
+      that already has prior completed runs. The orchestrator reads
+      existing artifacts first and only adds / updates what the new
+      requirement demands, while still running the full test suite.
+    """
 
     run_id: str
     requirement_text: str
@@ -46,6 +55,7 @@ class WorkflowRun:
     error: str = ""
     result: str = ""
     task_log: list[dict[str, Any]] = field(default_factory=list)
+    mode: str = "initial"
 
 
 @dataclass
@@ -247,17 +257,29 @@ class WebProjectService:
     # -- Requirement execution via ProjectSession ----------------------------
 
     def run_requirement(self, project_id: str, requirement_text: str) -> str:
-        """Submit requirement and execute workflow via ProjectSession."""
+        """Submit requirement and execute workflow via ProjectSession.
+
+        Run mode (``initial`` vs ``incremental``) is decided here based
+        on whether the project already has at least one prior COMPLETED
+        run with a non-empty result. That guarantees the incremental
+        path only kicks in once there's a real baseline to build on —
+        a project whose first attempt failed stays in ``initial`` mode
+        so the next submission re-runs the full waterfall cleanly.
+        """
         with self._lock:
             project = self.project_manager.get_project(project_id)
             if project is None:
                 raise ValueError(f"Project {project_id} not found")
+            prior_runs = self._runs_by_project.get(project_id, [])
+            has_baseline = any(r.status == "completed" and (r.result or "").strip() for r in prior_runs)
+            mode = "incremental" if has_baseline else "initial"
             run_id = f"run_{uuid.uuid4().hex[:10]}"
             run = WorkflowRun(
                 run_id=run_id,
                 requirement_text=requirement_text,
                 started_at=datetime.now(timezone.utc),
                 status="running",
+                mode=mode,
             )
             self._runs_by_project.setdefault(project_id, []).append(run)
             self._requirements_by_project.setdefault(project_id, []).append(
@@ -273,12 +295,18 @@ class WebProjectService:
 
         Thread(
             target=self._execute_run,
-            args=(project_id, run_id, requirement_text),
+            args=(project_id, run_id, requirement_text, mode),
             daemon=True,
         ).start()
         return run_id
 
-    def _execute_run(self, project_id: str, run_id: str, requirement: str) -> None:
+    def _execute_run(
+        self,
+        project_id: str,
+        run_id: str,
+        requirement: str,
+        mode: str = "initial",
+    ) -> None:
         """Background thread: run requirement via ProjectSession."""
         from ..runtime.project_session import ProjectSession
 
@@ -301,6 +329,7 @@ class WebProjectService:
                 self._runtime_manager,
                 project_root=project_root,
                 on_event=on_event,
+                mode=mode,
             )
             result = session.run(requirement)
 
@@ -668,6 +697,9 @@ class WebProjectService:
                         if completed is None:
                             completed = datetime.now(timezone.utc)
                         reaped_any = True
+                    raw_mode = str(item.get("mode", "initial")).strip().lower()
+                    if raw_mode not in ("initial", "incremental"):
+                        raw_mode = "initial"
                     self._runs_by_project[project_id].append(
                         WorkflowRun(
                             run_id=str(item.get("run_id", "")),
@@ -678,6 +710,7 @@ class WebProjectService:
                             error=raw_error,
                             result=str(item.get("result", "")),
                             task_log=list(item.get("task_log", [])),
+                            mode=raw_mode,
                         )
                     )
 
@@ -763,6 +796,7 @@ class WebProjectService:
             "error": run.error,
             "result": run.result,
             "task_log": run.task_log,
+            "mode": run.mode,
         }
 
     @staticmethod
