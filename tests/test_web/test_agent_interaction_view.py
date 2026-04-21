@@ -92,14 +92,18 @@ class TestAgentInteractionStructuralPresence:
             ".run-view-tabs",
             ".run-view-tab",
             ".run-view-tab-active",
-            ".agent-graph",
+            ".agent-graph-container",
             ".agent-graph-row",
             ".agent-graph-row-top",
             ".agent-graph-row-workers",
-            ".agent-graph-edges",
-            ".agent-graph-edge",
-            ".agent-graph-edge-line",
-            ".agent-graph-edge-label",
+            ".agent-graph-connectors",
+            ".agent-graph-connector-line",
+            ".agent-graph-connector-label",
+            ".agent-graph-connector-dispatches",
+            ".agent-graph-connector-chip",
+            ".agent-graph-connector-chip-completed",
+            ".agent-graph-connector-chip-failed",
+            ".agent-graph-arrow-head",
             ".agent-card",
             ".agent-card-role-orchestrator",
             ".agent-card-header",
@@ -117,6 +121,110 @@ class TestAgentInteractionStructuralPresence:
         ]
         for cls in required_classes:
             assert cls in css, f"CSS class referenced in app.js but missing in main.css: {cls}"
+
+
+class TestOrchestratorToWorkerConnectors:
+    """The orchestrator must connect to EACH worker with its own line,
+    and the line must carry that specific pair's interaction info —
+    not a single shared edge with a single aggregate count.
+
+    Regression guard for the observed bug where the chip strip showed
+    one stacked column of labels instead of one line per worker (the
+    old CSS grid ``.agent-graph-edges`` defaulted to ``1fr`` so every
+    "edge" landed in the same column).
+
+    The redesign uses an SVG overlay — one ``<line>`` per worker,
+    sharing the orchestrator's center as ``(x1, y1)`` and anchored to
+    each worker's top-center for ``(x2, y2)``. Midpoint label carries
+    dispatches + completed + failed for THAT orchestrator-worker pair.
+    """
+
+    def test_svg_overlay_present(self) -> None:
+        body = APP_JS.read_text(encoding="utf-8")
+        # The rendered tree must contain an <svg> element with the
+        # connectors class. Anything less (plain <div>s, CSS-only
+        # lines) would repeat the original "stacked in one column" bug.
+        assert '"agent-graph-connectors"' in body, (
+            "agent-graph connector SVG missing — orchestrator→worker "
+            "edges would fall back to CSS grid and collapse into a "
+            "single column, which is the bug this rewrite addressed"
+        )
+        assert 'h("svg"' in body or "h('svg'" in body, (
+            "AgentInteractionView must render an SVG layer with one <line> per worker"
+        )
+
+    def test_measures_positions_via_refs(self) -> None:
+        """The component must use a ref + layout effect to measure
+        orchestrator + worker card positions at render time. Without
+        that, we can't anchor the lines correctly and have to fall
+        back to static CSS layout (the broken previous version)."""
+        body = APP_JS.read_text(encoding="utf-8")
+        assert "useRef" in body
+        assert "useLayoutEffect" in body
+        # The effect must consult the orchestrator card and each
+        # worker card.
+        assert ".agent-card-role-orchestrator" in body
+        assert ".agent-card-role-worker" in body
+
+    def test_one_line_per_worker(self) -> None:
+        """The ``edges.map`` call must emit one SVG group containing
+        a <line> per worker. A single shared line is exactly what the
+        user reported."""
+        body = APP_JS.read_text(encoding="utf-8")
+        assert "edges.map" in body
+        assert 'h("line"' in body
+        # Each line anchors at (fromX, fromY) = orchestrator bottom
+        # and (toX, toY) = worker top.
+        assert "x1: e.fromX" in body
+        assert "y1: e.fromY" in body
+        assert "x2: e.toX" in body
+        assert "y2: e.toY" in body
+
+    def test_label_carries_per_pair_interaction_info(self) -> None:
+        """The midpoint label must show dispatches + completed +
+        failed for THIS pair (not a flat "there is an edge" badge).
+        The dispatches label uses the already-existing
+        ``agents.dispatches`` i18n key."""
+        body = APP_JS.read_text(encoding="utf-8")
+        assert 't("agents.dispatches", { n: e.dispatches })' in body
+        # Completed / failed chips appear conditionally on
+        # non-zero counts so empty edges stay minimal.
+        assert "e.completed > 0" in body
+        assert "e.failed > 0" in body
+        # Chip text uses the common ✓ / ✕ glyphs.
+        assert '"✓ " + e.completed' in body
+        assert '"✕ " + e.failed' in body
+
+    def test_line_annotated_with_target_agent(self) -> None:
+        """Each line carries ``data-to=<worker name>`` so tooling /
+        tests can distinguish one connector from another."""
+        body = APP_JS.read_text(encoding="utf-8")
+        assert '"data-to": e.name' in body
+
+    def test_old_grid_edge_classes_removed(self) -> None:
+        """The old CSS grid classes from the broken layout
+        (``.agent-graph-edges``, ``.agent-graph-edge``,
+        ``.agent-graph-edge-line``, ``.agent-graph-edge-label``)
+        must be gone. Leaving them behind lets a future refactor
+        accidentally re-introduce the 1fr-column collapse bug."""
+        body = APP_JS.read_text(encoding="utf-8")
+        css = MAIN_CSS.read_text(encoding="utf-8")
+        for stale in (
+            '"agent-graph-edges"',
+            '"agent-graph-edge"',
+            '"agent-graph-edge-line"',
+            '"agent-graph-edge-label"',
+        ):
+            assert stale not in body, (
+                f"stale class {stale} still referenced in app.js — "
+                "remove it so the old grid edge layout can't sneak back"
+            )
+        for stale in (
+            ".agent-graph-edges",
+            ".agent-graph-edge-line",
+            ".agent-graph-edge-label",
+        ):
+            assert stale not in css, f"stale CSS class {stale} still defined in main.css"
 
 
 class TestAgentStatusInterpolation:

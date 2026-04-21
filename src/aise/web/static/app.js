@@ -108,8 +108,16 @@ const TRANSLATIONS = {
     "stage.implementation": "开发实现",
     "stage.testing": "测试验证",
     "stage.sprint_planning": "迭代规划",
+    "stage.sprint_design": "迭代设计",
     "stage.sprint_execution": "快速开发",
+    "stage.sprint_main_entry": "入口验证",
     "stage.sprint_review": "迭代评审",
+    "stage.sprint_retrospective": "迭代复盘",
+    "stage.delivery": "交付报告",
+    "stage.requirements": "需求分析",
+    "stage.architecture": "架构设计",
+    "stage.main_entry": "入口验证",
+    "stage.qa_testing": "集成测试",
     "run.view.timeline": "阶段视图",
     "run.view.agents": "Agent 交互",
     "agents.section_title": "Agent 交互视图",
@@ -185,8 +193,16 @@ const TRANSLATIONS = {
     "stage.implementation": "Implementation",
     "stage.testing": "Testing",
     "stage.sprint_planning": "Sprint Planning",
+    "stage.sprint_design": "Sprint Design",
     "stage.sprint_execution": "Sprint Execution",
+    "stage.sprint_main_entry": "Entry Point",
     "stage.sprint_review": "Sprint Review",
+    "stage.sprint_retrospective": "Retrospective",
+    "stage.delivery": "Delivery",
+    "stage.requirements": "Requirements",
+    "stage.architecture": "Architecture",
+    "stage.main_entry": "Entry Point",
+    "stage.qa_testing": "Integration Testing",
     "run.view.timeline": "Timeline",
     "run.view.agents": "Agent Interactions",
     "agents.section_title": "Agent Interactions",
@@ -262,6 +278,7 @@ function setupDashboardReact() {
     const [formData, setFormData] = window.React.useState({
       project_name: "",
       development_mode: config.development_mode || "local",
+      process_type: "waterfall",
       initial_requirement: "",
     });
     const [submitting, setSubmitting] = window.React.useState(false);
@@ -286,6 +303,8 @@ function setupDashboardReact() {
             project_name: prev.project_name,
             initial_requirement: prev.initial_requirement,
             development_mode: prev.development_mode || cfgData.development_mode || "local",
+            process_type: prev.process_type || "waterfall",
+            _showAgentModels: prev._showAgentModels,
           }));
         } catch {
           // keep current state
@@ -308,6 +327,7 @@ function setupDashboardReact() {
         const payload = {
           project_name: String(formData.project_name || ""),
           development_mode: String(formData.development_mode || "local"),
+          process_type: String(formData.process_type || "waterfall"),
           initial_requirement: String(formData.initial_requirement || ""),
           agent_models: agentModels,
         };
@@ -440,6 +460,20 @@ function setupDashboardReact() {
                 h("option", { value: "local" }, "Local"),
                 h("option", { value: "github" }, "GitHub")
               ),
+              h("label", null, "研发流程"),
+              h(
+                "select",
+                {
+                  value: formData.process_type || "waterfall",
+                  onChange: (e) => setFormData((prev) => ({ ...prev, process_type: e.target.value })),
+                },
+                h("option", { value: "waterfall" }, "Waterfall — 线性全生命周期"),
+                h("option", { value: "agile" }, "Agile Sprint — 迭代交付 MVP")
+              ),
+              h("p", { style: { margin: "4px 0 12px", color: "#888", fontSize: "12px" } },
+                formData.process_type === "agile"
+                  ? "迭代模式：sprint planning / sprint execution / sprint review / retrospective / delivery"
+                  : "瀑布模式：需求 / 架构 / 开发 / 入口验证 / 集成测试 / 交付报告"),
               h("label", null, "初始需求（可选）"),
               h("textarea", {
                 rows: 4,
@@ -530,6 +564,7 @@ function setupDashboardReact() {
                   "div",
                   { className: "project-card-meta" },
                   h("span", null, `模式: ${project.development_mode}`),
+                  h("span", null, `流程: ${project.process_type || "waterfall"}`),
                   h("span", null, `Agent: ${project.agent_count}`)
                 ),
                 h(
@@ -1074,6 +1109,18 @@ function setupRunReact() {
           className: "run-mode-badge run-mode-badge-incremental",
           title: t("run.mode.incremental_hint"),
         }, t("run.mode.incremental")) : null,
+        (run.process_type === "agile") ? h("span", {
+          className: "run-mode-badge run-mode-badge-agile",
+          title: currentLang() === "en"
+            ? "Agile Sprint process: Planning → Execution → Review → Retrospective → Delivery"
+            : "Agile Sprint 流程：规划 → 执行 → 评审 → 复盘 → 交付",
+        }, currentLang() === "en" ? "Agile Sprint" : "Agile 迭代") :
+        h("span", {
+          className: "run-mode-badge run-mode-badge-waterfall",
+          title: currentLang() === "en"
+            ? "Waterfall process: Requirements → Architecture → Implementation → Entry → QA → Delivery"
+            : "Waterfall 流程：需求 → 架构 → 实现 → 入口 → 测试 → 交付",
+        }, currentLang() === "en" ? "Waterfall" : "Waterfall 瀑布"),
       ),
       h("div", { className: "run-section" },
         h("div", { className: "run-section-title" }, t("run.section.requirement")),
@@ -1300,9 +1347,72 @@ function setupRunReact() {
 
   function AgentInteractionView({ taskLog, orchestratorName, taskResponseByTaskId, isRunning }) {
     const h = window.React.createElement;
+    const React = window.React;
     var graph = computeAgentGraph(taskLog, orchestratorName, taskResponseByTaskId);
     var orchestrators = graph.agents.filter(function (a) { return a.role === "orchestrator"; });
     var workers = graph.agents.filter(function (a) { return a.role === "worker"; });
+
+    // Per-worker interaction summary: dispatches + completed + failed
+    // counts, keyed by agent name. These numbers land verbatim on the
+    // connector label so the orchestrator → worker edge carries the
+    // per-pair interaction info, not a single aggregate.
+    var interactionByWorker = {};
+    workers.forEach(function (w) {
+      var tasks = w.tasks || [];
+      interactionByWorker[w.name] = {
+        dispatches: tasks.length,
+        completed: w.completedCount || 0,
+        failed: w.failedCount || 0,
+      };
+    });
+
+    // SVG connector geometry is measured from the DOM after render —
+    // one line per worker, anchored at the orchestrator card's
+    // bottom-center and terminating at the worker card's top-center.
+    // Re-measures when the task log grows, when a new worker joins,
+    // and on viewport resize.
+    const containerRef = React.useRef(null);
+    const [edges, setEdges] = React.useState([]);
+    React.useLayoutEffect(function () {
+      function measure() {
+        var container = containerRef.current;
+        if (!container) return;
+        var orchEl = container.querySelector(".agent-card-role-orchestrator");
+        var workerEls = Array.prototype.slice.call(
+          container.querySelectorAll(".agent-card-role-worker")
+        );
+        if (!orchEl || workerEls.length === 0) {
+          setEdges([]);
+          return;
+        }
+        var cRect = container.getBoundingClientRect();
+        var oRect = orchEl.getBoundingClientRect();
+        var fromX = oRect.left + oRect.width / 2 - cRect.left;
+        var fromY = oRect.bottom - cRect.top;
+        var next = workerEls.map(function (el) {
+          var r = el.getBoundingClientRect();
+          var name = el.getAttribute("data-agent-name") || "";
+          var info = interactionByWorker[name] || { dispatches: 0, completed: 0, failed: 0 };
+          return {
+            name: name,
+            fromX: fromX,
+            fromY: fromY,
+            toX: r.left + r.width / 2 - cRect.left,
+            toY: r.top - cRect.top,
+            dispatches: info.dispatches,
+            completed: info.completed,
+            failed: info.failed,
+          };
+        });
+        setEdges(next);
+      }
+      measure();
+      window.addEventListener("resize", measure);
+      return function () { window.removeEventListener("resize", measure); };
+      // Depend on both length fields so new dispatches + new workers
+      // trigger a re-measure.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [taskLog.length, workers.length]);
 
     if (workers.length === 0) {
       return h("div", { className: "run-section agent-graph-empty" },
@@ -1310,26 +1420,72 @@ function setupRunReact() {
       );
     }
 
-    // Edge lookup for each worker: orchestrator → worker count.
-    var dispatchToWorker = {};
-    graph.edges.forEach(function (e) {
-      dispatchToWorker[e.to] = (dispatchToWorker[e.to] || 0) + e.count;
-    });
-
     return h("div", { className: "run-section agent-graph-section" },
       h("div", { className: "run-section-title" }, t("agents.section_title")),
-      h("div", { className: "agent-graph" },
-        h("div", { className: "agent-graph-row agent-graph-row-top" },
-          orchestrators.map(function (a) { return h(AgentCard, { key: a.name, agent: a }); }),
-        ),
-        h("div", { className: "agent-graph-edges", role: "presentation" },
-          workers.map(function (w) {
-            var count = dispatchToWorker[w.name] || 0;
-            return h("div", { className: "agent-graph-edge", key: w.name },
-              h("span", { className: "agent-graph-edge-line" }),
-              h("span", { className: "agent-graph-edge-label" }, t("agents.dispatches", { n: count })),
+      h("div", { className: "agent-graph-container", ref: containerRef },
+        // SVG connector overlay: one ``<line>`` per worker + an
+        // HTML label block carried in a ``foreignObject`` at the
+        // midpoint. Sits behind the cards (z-index 0) and has
+        // pointer-events: none so the cards stay clickable. The
+        // ``aria-hidden`` reminds screen readers that the same
+        // numbers are already present on each agent card.
+        h("svg", {
+          className: "agent-graph-connectors",
+          "aria-hidden": "true",
+          xmlns: "http://www.w3.org/2000/svg",
+          preserveAspectRatio: "none",
+        },
+          h("defs", null,
+            h("marker", {
+              id: "agent-graph-arrow",
+              viewBox: "0 0 10 10",
+              refX: "9",
+              refY: "5",
+              markerWidth: "8",
+              markerHeight: "8",
+              orient: "auto-start-reverse",
+            },
+              h("path", { d: "M 0 0 L 10 5 L 0 10 Z", className: "agent-graph-arrow-head" }),
+            ),
+          ),
+          edges.map(function (e) {
+            var midX = (e.fromX + e.toX) / 2;
+            var midY = (e.fromY + e.toY) / 2;
+            return h("g", { key: e.name, className: "agent-graph-connector-group" },
+              h("line", {
+                x1: e.fromX,
+                y1: e.fromY,
+                x2: e.toX,
+                y2: e.toY,
+                className: "agent-graph-connector-line",
+                "marker-end": "url(#agent-graph-arrow)",
+                "data-from": "orchestrator",
+                "data-to": e.name,
+              }),
+              h("foreignObject", {
+                x: midX - 80,
+                y: midY - 14,
+                width: 160,
+                height: 30,
+                className: "agent-graph-connector-fo",
+              },
+                h("div", { className: "agent-graph-connector-label", "data-to": e.name },
+                  h("span", { className: "agent-graph-connector-dispatches" }, t("agents.dispatches", { n: e.dispatches })),
+                  e.completed > 0 ? h("span", {
+                    className: "agent-graph-connector-chip agent-graph-connector-chip-completed",
+                    title: t("agents.stat.completed"),
+                  }, "✓ " + e.completed) : null,
+                  e.failed > 0 ? h("span", {
+                    className: "agent-graph-connector-chip agent-graph-connector-chip-failed",
+                    title: t("agents.stat.failed"),
+                  }, "✕ " + e.failed) : null,
+                ),
+              ),
             );
           }),
+        ),
+        h("div", { className: "agent-graph-row agent-graph-row-top" },
+          orchestrators.map(function (a) { return h(AgentCard, { key: a.name, agent: a }); }),
         ),
         h("div", {
           className: "agent-graph-row agent-graph-row-workers",
