@@ -1670,8 +1670,8 @@ function setupModelsConfigPage() {
       <input class="provider-name" placeholder="provider" value="${escapeHtml((provider && provider.provider) || "")}">
       <input class="provider-key" placeholder="api key" value="${escapeHtml((provider && provider.api_key) || "")}">
       <input class="provider-uri" placeholder="base url" value="${escapeHtml((provider && provider.base_url) || "")}">
-      <label><input type="checkbox" class="provider-enabled" ${(provider && provider.enabled) !== false ? "checked" : ""}>启用</label>
-      <button type="button" class="btn secondary provider-remove">删除</button>
+      <label><input type="checkbox" class="provider-enabled" ${(provider && provider.enabled) !== false ? "checked" : ""}>${escapeHtml(t("cfg.models.provider_enabled"))}</label>
+      <button type="button" class="btn secondary provider-remove">${escapeHtml(t("cfg.models.provider_remove"))}</button>
     `;
         row.querySelector(".provider-name")?.addEventListener("input", syncModelProviderSelectors);
         row.querySelector(".provider-enabled")?.addEventListener("change", syncModelProviderSelectors);
@@ -1699,21 +1699,21 @@ function setupModelsConfigPage() {
         const isLocal = !!modelValue.is_local;
         card.innerHTML = `
       <div class="stack">
-        <label>模型ID</label>
-        <input class="model-id" placeholder="例如 gpt-4o" value="${escapeHtml(modelValue.id || "")}">
-        <label>API 模型名（OpenAI model 字段）</label>
-        <input class="model-api-model" placeholder="例如 gpt-4o" value="${escapeHtml(modelValue.api_model || modelValue.id || "")}">
-        <label class="inline-radio"><input type="radio" name="model-default-flag" class="model-default" ${modelValue.default ? "checked" : ""}> 设为默认模型</label>
-        <label><input type="checkbox" class="model-is-local" ${isLocal ? "checked" : ""}> 本地模型（无需 providers）</label>
-        <label>默认 Provider</label>
+        <label>${escapeHtml(t("cfg.models.model_id"))}</label>
+        <input class="model-id" placeholder="${escapeHtml(t("cfg.models.model_id_placeholder"))}" value="${escapeHtml(modelValue.id || "")}">
+        <label>${escapeHtml(t("cfg.models.api_model_label"))}</label>
+        <input class="model-api-model" placeholder="${escapeHtml(t("cfg.models.model_id_placeholder"))}" value="${escapeHtml(modelValue.api_model || modelValue.id || "")}">
+        <label class="inline-radio"><input type="radio" name="model-default-flag" class="model-default" ${modelValue.default ? "checked" : ""}> ${escapeHtml(t("cfg.models.set_default"))}</label>
+        <label><input type="checkbox" class="model-is-local" ${isLocal ? "checked" : ""}> ${escapeHtml(t("cfg.models.is_local"))}</label>
+        <label>${escapeHtml(t("cfg.models.default_provider"))}</label>
         <select class="model-default-provider"></select>
-        <label>扩展参数（JSON）</label>
+        <label>${escapeHtml(t("cfg.models.extra_params"))}</label>
         <textarea class="model-extra" rows="3" placeholder='{"supports_tools": true}'>${escapeHtml(JSON.stringify(modelValue.extra || {}, null, 2))}</textarea>
       </div>
-      <h4>绑定 Providers</h4>
+      <h4>${escapeHtml(t("cfg.models.bound_providers"))}</h4>
       <div class="model-provider-selectors"></div>
       <div class="auth-grid">
-        <button type="button" class="btn secondary model-remove">删除模型</button>
+        <button type="button" class="btn secondary model-remove">${escapeHtml(t("cfg.models.remove_model"))}</button>
       </div>
     `;
 

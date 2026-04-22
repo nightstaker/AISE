@@ -345,6 +345,73 @@
     "delete_confirm": "确认删除用户 {{username}}？",
     "password_failed": "密码设置失败"
   },
+  "cfg": {
+    "hub_title": "配置中心",
+    "page_title": "全局配置 - {{section}}",
+    "save_failed": "保存失败: {{error}}",
+    "nav": {
+      "models": "模型",
+      "agents": "Agents",
+      "workspace": "工作空间",
+      "workflow": "工作流",
+      "logging": "日志系统",
+      "json": "原始 JSON"
+    },
+    "models": {
+      "default_dev_mode": "默认开发模式",
+      "providers_heading": "Providers 配置",
+      "providers_intro": "先配置 Provider（KEY/URI），再在模型中选择可用 Providers。",
+      "add_provider": "新增 Provider",
+      "models_heading": "Models 配置",
+      "add_model": "新增模型",
+      "save": "保存 Models 配置",
+      "provider_enabled": "启用",
+      "provider_remove": "删除",
+      "model_id": "模型 ID",
+      "model_id_placeholder": "例如 gpt-4o",
+      "api_model_label": "API 模型名（OpenAI model 字段）",
+      "set_default": "设为默认模型",
+      "is_local": "本地模型（无需 providers）",
+      "default_provider": "默认 Provider",
+      "extra_params": "扩展参数（JSON）",
+      "bound_providers": "绑定 Providers",
+      "remove_model": "删除模型"
+    },
+    "agents": {
+      "col_key": "Agent Key",
+      "col_name": "显示名称",
+      "col_enabled": "启用",
+      "col_model": "模型",
+      "save": "保存 Agents 配置"
+    },
+    "workspace": {
+      "ui_language_label": "界面语言 / UI Language",
+      "ui_language_zh": "中文 (Simplified Chinese)",
+      "ui_language_en": "English",
+      "projects_root": "Projects Root",
+      "artifacts_root": "Artifacts Root",
+      "auto_create_dirs": "自动创建目录",
+      "save": "保存工作空间配置"
+    },
+    "workflow": {
+      "review_min_rounds": "最少 Review 轮次（全局）",
+      "review_max_rounds": "最多 Review 轮次（全局）",
+      "developer_sr_task_retry_attempts": "开发阶段 SR 任务重试总尝试次数（全局）",
+      "max_review_iterations": "工作流最大评审迭代（兼容旧配置）",
+      "fail_on_review_rejection": "评审拒绝时立即失败",
+      "save": "保存工作流配置"
+    },
+    "logging": {
+      "level": "日志等级",
+      "log_dir": "日志目录",
+      "json_format": "JSON 格式日志",
+      "rotate_daily": "按日切分",
+      "save": "保存日志配置"
+    },
+    "json": {
+      "save": "保存 JSON"
+    }
+  },
   "logs": {
     "title": "系统日志",
     "scanned": "扫描行数 {{n}}",

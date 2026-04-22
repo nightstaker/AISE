@@ -25,6 +25,7 @@ from ..config import ProjectConfig
 from ..core.project import Project, ProjectStatus
 from ..core.project_manager import ProjectManager
 from ..utils.logging import configure_logging, configure_module_file_logger, get_logger
+from .i18n import make_translator
 from .log_service import LogService
 from .user_store import (
     PERM_ANALYZE_LOGS,
@@ -957,6 +958,12 @@ def create_app() -> FastAPI:
     # ``window.__AISE_LANG`` without every route having to plumb it
     # through the context dict.
     templates.env.globals["get_ui_language"] = service.get_ui_language
+    # Server-side ``t(key, default=None, **params)`` backed by the same
+    # locale JSON the client-side i18next uses. Registered as a Jinja
+    # global so ``layout.html`` / ``global_config.html`` / any other
+    # server-rendered template can localize strings without a page
+    # reload dance.
+    templates.env.globals["t"] = make_translator(service.get_ui_language)
     oauth = _build_oauth()
     dev_login_enabled = os.environ.get("AISE_WEB_ENABLE_DEV_LOGIN", "").lower() in {"1", "true", "yes"}
     local_admin_username = os.environ.get("AISE_ADMIN_USERNAME", "admin")

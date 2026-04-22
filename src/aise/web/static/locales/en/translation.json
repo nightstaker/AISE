@@ -345,6 +345,73 @@
     "delete_confirm": "Delete user {{username}}?",
     "password_failed": "Password change failed"
   },
+  "cfg": {
+    "hub_title": "Configuration",
+    "page_title": "Global config — {{section}}",
+    "save_failed": "Save failed: {{error}}",
+    "nav": {
+      "models": "Models",
+      "agents": "Agents",
+      "workspace": "Workspace",
+      "workflow": "Workflow",
+      "logging": "Logging",
+      "json": "Raw JSON"
+    },
+    "models": {
+      "default_dev_mode": "Default development mode",
+      "providers_heading": "Provider configuration",
+      "providers_intro": "Configure providers (key/URI) first, then select available providers for each model.",
+      "add_provider": "Add provider",
+      "models_heading": "Models",
+      "add_model": "Add model",
+      "save": "Save models config",
+      "provider_enabled": "Enabled",
+      "provider_remove": "Remove",
+      "model_id": "Model ID",
+      "model_id_placeholder": "e.g. gpt-4o",
+      "api_model_label": "API model name (OpenAI model field)",
+      "set_default": "Default model",
+      "is_local": "Local model (no provider required)",
+      "default_provider": "Default provider",
+      "extra_params": "Extra params (JSON)",
+      "bound_providers": "Bound providers",
+      "remove_model": "Remove model"
+    },
+    "agents": {
+      "col_key": "Agent key",
+      "col_name": "Display name",
+      "col_enabled": "Enabled",
+      "col_model": "Model",
+      "save": "Save agents config"
+    },
+    "workspace": {
+      "ui_language_label": "UI language",
+      "ui_language_zh": "Chinese (Simplified)",
+      "ui_language_en": "English",
+      "projects_root": "Projects root",
+      "artifacts_root": "Artifacts root",
+      "auto_create_dirs": "Auto-create directories",
+      "save": "Save workspace config"
+    },
+    "workflow": {
+      "review_min_rounds": "Min review rounds (global)",
+      "review_max_rounds": "Max review rounds (global)",
+      "developer_sr_task_retry_attempts": "Developer SR task total retry attempts (global)",
+      "max_review_iterations": "Workflow max review iterations (legacy)",
+      "fail_on_review_rejection": "Fail immediately on review rejection",
+      "save": "Save workflow config"
+    },
+    "logging": {
+      "level": "Log level",
+      "log_dir": "Log directory",
+      "json_format": "JSON-formatted logs",
+      "rotate_daily": "Rotate daily",
+      "save": "Save logging config"
+    },
+    "json": {
+      "save": "Save JSON"
+    }
+  },
   "logs": {
     "title": "System logs",
     "scanned": "Scanned {{n}}",
