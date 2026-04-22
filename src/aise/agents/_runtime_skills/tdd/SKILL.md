@@ -78,6 +78,54 @@ For each module, always write `tests/test_<name>.py` BEFORE `src/<name>.py`.
 - **Runner scripts**: NEVER create `run_pytest.py`, `test_runner.py`, etc. The orchestrator runs tests.
 - **Stubs/TODOs**: Every file must be complete, working code. No `pass` or `# TODO` placeholders.
 
+## Tests That Touch the Filesystem
+
+When a test needs a temporary directory or file on disk (config stores,
+cache files, SQLite databases, downloaded fixtures, etc.), use pytest's
+built-in `tmp_path` / `tmp_path_factory` fixtures — NEVER create a
+directory next to the test file.
+
+**Forbidden** (leaks junk into `tests/` on every run and has no
+cleanup):
+
+```python
+# WRONG — leaves tests/temp_settings/, tests/temp_settings2/, … on disk
+def _create_manager(self):
+    temp_dir = os.path.join(os.path.dirname(__file__), "temp_settings")
+    os.makedirs(temp_dir, exist_ok=True)
+    return SettingsManager(storage_path=os.path.join(temp_dir, "settings.json"))
+```
+
+**Correct**:
+
+```python
+# RIGHT — pytest auto-cleans tmp_path after the test
+def test_defaults(tmp_path):
+    mgr = SettingsManager(storage_path=str(tmp_path / "settings.json"))
+    assert mgr.get_setting("audio_master") == 0.8
+```
+
+For class-based tests, accept `tmp_path` as a normal test-method
+parameter (pytest injects it) or share one via `tmp_path_factory` on a
+fixture:
+
+```python
+@pytest.fixture
+def settings_dir(tmp_path_factory):
+    return tmp_path_factory.mktemp("settings")
+```
+
+If `tmp_path` is genuinely unavailable for some reason, fall back to
+`tempfile.TemporaryDirectory()` used as a context manager so the dir
+is removed on exit. NEVER write to
+`os.path.dirname(__file__) + "/<anything>"` — that's the test file's
+own directory and anything you create there is permanent state.
+
+**No numeric suffixes to avoid collisions.** If you find yourself
+reaching for `temp_settings2`, `temp_settings3`, `temp_settings_v2`,
+etc., stop: you're working around a bug. Use `tmp_path` instead and
+each test automatically gets its own isolated directory.
+
 ## Example Session
 
 Task: "Implement entities.py, collision.py, and game_engine.py"
