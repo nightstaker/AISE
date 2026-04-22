@@ -2901,6 +2901,194 @@ function setupLogsReact() {
     root.render(h(LogsApp));
 }
 
+function setupAnalyticsReact() {
+    // Safety-net telemetry dashboard. Aggregates events emitted by
+    // ``aise.runtime.safety_net`` across every project and surfaces
+    // counts / top failing step-ids / recent events so operators can
+    // spot LLM-capability drift without tailing a JSONL by hand.
+    const rootNode = document.getElementById("analytics-react-root");
+    if (!rootNode || !window.React || !window.ReactDOM) return;
+    const h = window.React.createElement;
+
+    function AnalyticsApp() {
+        const [summary, setSummary] = window.React.useState(null);
+        const [knownProjects, setKnownProjects] = window.React.useState([]);
+        const [loading, setLoading] = window.React.useState(false);
+        const [error, setError] = window.React.useState("");
+        const [filters, setFilters] = window.React.useState({
+            project_id: "",
+            since: "",
+            until: "",
+            limit: 50,
+        });
+
+        async function refresh() {
+            setLoading(true);
+            setError("");
+            try {
+                const params = new URLSearchParams();
+                if (filters.project_id) params.set("project_id", filters.project_id);
+                if (filters.since) params.set("since", filters.since);
+                if (filters.until) params.set("until", filters.until);
+                params.set("limit", String(filters.limit || 50));
+                const resp = await fetch(`/api/analytics/safety-net?${params.toString()}`, { credentials: "same-origin" });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                setSummary(data.summary || null);
+                setKnownProjects(Array.isArray(data.known_project_ids) ? data.known_project_ids : []);
+            } catch (err) {
+                setError(String(err && err.message ? err.message : err));
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        window.React.useEffect(() => { refresh(); }, []);  // initial load
+
+        // Compact count-pill card. Colored accent via status-badge style so
+        // success / failed / skipped read at a glance.
+        const pill = (label, value, cls) => h(
+            "div",
+            { className: "analytics-pill " + (cls || "") },
+            h("div", { className: "analytics-pill-value" }, String(value ?? 0)),
+            h("div", { className: "analytics-pill-label" }, label),
+        );
+
+        const topList = (title, rows, emptyKey) => h(
+            "div",
+            { className: "analytics-section" },
+            h("h3", null, title),
+            !rows || rows.length === 0
+                ? h("p", { className: "analytics-empty" }, t(emptyKey))
+                : h("ol", { className: "analytics-top-list" },
+                    rows.map((r, i) => h("li", { key: i },
+                        h("span", { className: "analytics-top-key" }, r.key),
+                        h("span", { className: "analytics-top-count" }, String(r.count)),
+                    ))
+                ),
+        );
+
+        const recentTable = (events) => {
+            if (!events || events.length === 0) {
+                return h("p", { className: "analytics-empty" }, t("analytics.recent_empty"));
+            }
+            return h(
+                "div",
+                { className: "analytics-recent" },
+                h("table", { className: "analytics-recent-table" },
+                    h("thead", null, h("tr", null,
+                        h("th", null, t("analytics.col_ts")),
+                        h("th", null, t("analytics.col_project")),
+                        h("th", null, t("analytics.col_step")),
+                        h("th", null, t("analytics.col_layer")),
+                        h("th", null, t("analytics.col_expected")),
+                        h("th", null, t("analytics.col_action")),
+                        h("th", null, t("analytics.col_status")),
+                    )),
+                    h("tbody", null,
+                        events.map((ev, i) => {
+                            const cls =
+                                ev.repair_status === "success" ? "status-success" :
+                                ev.repair_status === "failed" ? "status-failed" :
+                                "status-pending";
+                            return h("tr", { key: i },
+                                h("td", { className: "analytics-ts" }, String(ev.ts || "")),
+                                h("td", null, String(ev.project_id || "")),
+                                h("td", null, String(ev.step_id || "")),
+                                h("td", null, String(ev.layer || "")),
+                                h("td", { title: String(ev.detail || "") }, String(ev.expected || "")),
+                                h("td", null, String(ev.repair_action || "")),
+                                h("td", null, h("span", { className: "status-badge " + cls }, String(ev.repair_status || ""))),
+                            );
+                        })
+                    ),
+                )
+            );
+        };
+
+        const s = summary || {
+            total: 0, by_status: {}, by_layer: {},
+            top_step_ids: [], top_repair_actions: [], top_expected: [], recent: []
+        };
+        const success = s.by_status.success || 0;
+        const failed = s.by_status.failed || 0;
+        const skipped = s.by_status.skipped || 0;
+        const layerB = s.by_layer.B || 0;
+        const layerA = s.by_layer.A || 0;
+
+        return h(
+            "div",
+            { className: "page analytics-page" },
+            h("div", { className: "page-header" },
+                h("h1", null, t("analytics.title")),
+                h("p", { className: "page-subtitle" }, t("analytics.subtitle")),
+            ),
+            h("div", { className: "analytics-filters" },
+                h("label", null, t("analytics.filter_project"),
+                    h("select", {
+                        value: filters.project_id,
+                        onChange: (e) => setFilters({ ...filters, project_id: e.target.value }),
+                    },
+                        h("option", { value: "" }, t("analytics.filter_all_projects")),
+                        knownProjects.map((pid) => h("option", { key: pid, value: pid }, pid)),
+                    ),
+                ),
+                h("label", null, t("analytics.filter_since"),
+                    h("input", {
+                        type: "text",
+                        placeholder: "YYYY-MM-DDTHH:MM:SS",
+                        value: filters.since,
+                        onChange: (e) => setFilters({ ...filters, since: e.target.value }),
+                    }),
+                ),
+                h("label", null, t("analytics.filter_until"),
+                    h("input", {
+                        type: "text",
+                        placeholder: "YYYY-MM-DDTHH:MM:SS",
+                        value: filters.until,
+                        onChange: (e) => setFilters({ ...filters, until: e.target.value }),
+                    }),
+                ),
+                h("label", null, t("analytics.filter_limit"),
+                    h("input", {
+                        type: "number",
+                        min: 1, max: 1000,
+                        value: filters.limit,
+                        onChange: (e) => setFilters({ ...filters, limit: Number(e.target.value || 50) }),
+                    }),
+                ),
+                h("button", { onClick: refresh, disabled: loading }, loading ? t("common.loading") : t("analytics.refresh")),
+            ),
+            error
+                ? h("div", { className: "analytics-error" }, t("analytics.error_prefix"), " ", error)
+                : null,
+            h("div", { className: "analytics-pill-row" },
+                pill(t("analytics.pill_total"), s.total),
+                pill(t("analytics.pill_success"), success, "analytics-pill-success"),
+                pill(t("analytics.pill_failed"), failed, "analytics-pill-failed"),
+                pill(t("analytics.pill_skipped"), skipped, "analytics-pill-skipped"),
+                pill(t("analytics.pill_layer_b"), layerB),
+                pill(t("analytics.pill_layer_a"), layerA),
+            ),
+            s.total === 0 && !loading
+                ? h("p", { className: "analytics-empty-hero" }, t("analytics.empty_hero"))
+                : null,
+            h("div", { className: "analytics-grid" },
+                topList(t("analytics.top_step_ids"), s.top_step_ids, "analytics.no_data"),
+                topList(t("analytics.top_repair_actions"), s.top_repair_actions, "analytics.no_data"),
+                topList(t("analytics.top_expected"), s.top_expected, "analytics.no_data"),
+            ),
+            h("div", { className: "analytics-section" },
+                h("h3", null, t("analytics.recent_heading")),
+                recentTable(s.recent),
+            ),
+        );
+    }
+
+    const root = window.ReactDOM.createRoot(rootNode);
+    root.render(h(AnalyticsApp));
+}
+
 // Bootstrap order matters: i18next.init() is async because its HTTP
 // backend fetches ``/static/locales/<lng>/translation.json``. Mounting
 // React before that resolves means every ``t("run.xxx")`` call returns
@@ -2917,6 +3105,7 @@ document.addEventListener("DOMContentLoaded", () => {
         setupMonitorReact();
         setupUsersReact();
         setupLogsReact();
+        setupAnalyticsReact();
     };
     Promise.resolve(initI18n()).then(mountAll, mountAll);
 });

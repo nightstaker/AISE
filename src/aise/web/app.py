@@ -33,6 +33,7 @@ from .user_store import (
     PERM_MANAGE_SYSTEM,
     PERM_MANAGE_USERS,
     PERM_RUN_PROJECTS,
+    PERM_VIEW_ANALYTICS,
     PERM_VIEW_LOGS,
     UserStore,
     has_permission,
@@ -1950,5 +1951,43 @@ def create_app() -> FastAPI:
         except Exception as exc:
             logger.error("Log analyze failed: %s", exc)
             raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
+
+    # -- Safety-net analytics ----------------------------------------------
+
+    @app.get("/analytics/safety-net", response_class=HTMLResponse)
+    async def analytics_page(request: Request) -> HTMLResponse:
+        user = require_login(request)
+        if not has_permission(user, PERM_VIEW_ANALYTICS):
+            raise HTTPException(status_code=403, detail="Permission denied")
+        return templates.TemplateResponse(request, "analytics.html", {"user": user})
+
+    @app.get("/api/analytics/safety-net")
+    async def api_safety_net_analytics(
+        request: Request,
+        project_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Aggregated safety-net event summary.
+
+        Filters follow the ``SafetyNetEventsService.summarize``
+        contract. An absent / empty events file is a clean empty
+        state — 200 with zero counts, not 404.
+        """
+        require_permission(request, PERM_VIEW_ANALYTICS)
+        from .safety_net_events_service import SafetyNetEventsService
+
+        events_service = SafetyNetEventsService(service.project_manager._projects_root)
+        summary = events_service.summarize(
+            project_id=project_id,
+            since=since,
+            until=until,
+            limit=limit,
+        )
+        return {
+            "summary": summary.to_dict(),
+            "known_project_ids": events_service.list_project_ids(),
+        }
 
     return app

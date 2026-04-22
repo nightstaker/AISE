@@ -44,6 +44,10 @@ PERM_ANALYZE_LOGS = "analyze_logs"
 PERM_MANAGE_PROJECTS = "manage_projects"  # create / delete projects
 PERM_RUN_PROJECTS = "run_projects"  # submit requirements, restart runs
 PERM_VIEW_PROJECTS = "view_projects"
+# Read the safety-net telemetry dashboard. Separate from view_logs
+# because the dashboard exposes aggregated LLM-capability signals —
+# useful for ops / research roles that don't need raw-log access.
+PERM_VIEW_ANALYTICS = "view_analytics"
 
 ALL_PERMISSIONS: tuple[str, ...] = (
     PERM_MANAGE_USERS,
@@ -53,6 +57,7 @@ ALL_PERMISSIONS: tuple[str, ...] = (
     PERM_MANAGE_PROJECTS,
     PERM_RUN_PROJECTS,
     PERM_VIEW_PROJECTS,
+    PERM_VIEW_ANALYTICS,
 )
 
 # Built-in roles. Users can be assigned one of these. Intentionally
@@ -81,6 +86,7 @@ ROLE_DEFINITIONS: dict[str, dict[str, Any]] = {
             PERM_MANAGE_PROJECTS,
             PERM_RUN_PROJECTS,
             PERM_VIEW_PROJECTS,
+            PERM_VIEW_ANALYTICS,
         ],
     },
     "developer": {
@@ -93,6 +99,7 @@ ROLE_DEFINITIONS: dict[str, dict[str, Any]] = {
             PERM_MANAGE_PROJECTS,
             PERM_RUN_PROJECTS,
             PERM_VIEW_PROJECTS,
+            PERM_VIEW_ANALYTICS,
         ],
     },
     "viewer": {

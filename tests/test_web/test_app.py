@@ -996,3 +996,251 @@ class TestGitSkillWiring:
             "``execute_shell`` calls (``git init``, ``git commit``, "
             "``git tag``, ``git log``, ``git diff``) don't get rejected"
         )
+
+
+class TestSafetyNetAnalyticsEndpoint:
+    """Integration tests for ``/api/analytics/safety-net`` + the
+    ``/analytics/safety-net`` page (issue #122). The aggregator
+    itself is unit-tested separately; here we only verify wiring,
+    auth, and the end-to-end happy path.
+    """
+
+    def _seed(self, service, project_id: str, events: list[dict]) -> None:
+        import json as _json
+
+        events_path = service.project_manager._projects_root / project_id / "trace" / "safety_net_events.jsonl"
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        with events_path.open("w", encoding="utf-8") as fp:
+            for ev in events:
+                fp.write(_json.dumps(ev, ensure_ascii=False))
+                fp.write("\n")
+
+    def test_api_requires_auth(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/api/analytics/safety-net")
+        assert resp.status_code == 401
+
+    def test_page_requires_auth(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.chdir(tmp_path)
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/analytics/safety-net", follow_redirects=False)
+        # Unauthenticated access redirects to /login (303) or returns 401.
+        assert resp.status_code in (303, 401)
+
+    def test_api_empty_state_returns_zero_counts(self, monkeypatch, tmp_path) -> None:
+        """Fresh deployment: no projects, no events. API must return
+        a valid shape with zero totals — that's the empty-hero case
+        the dashboard renders."""
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+        app = create_app()
+        client = TestClient(app)
+        _login_dev(client)
+
+        resp = client.get("/api/analytics/safety-net")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "summary" in body and "known_project_ids" in body
+        summary = body["summary"]
+        assert summary["total"] == 0
+        assert summary["recent"] == []
+        assert summary["by_status"] == {}
+
+    def test_api_aggregates_seeded_events_across_projects(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+        app = create_app()
+        service = app.state.web_service
+
+        self._seed(
+            service,
+            "project_0-a",
+            [
+                {
+                    "event_type": "llm_fallback_triggered",
+                    "step_id": "scaffold",
+                    "layer": "B",
+                    "expected": "git_repo",
+                    "actual": "repaired",
+                    "repair_action": "missing_git_repo",
+                    "repair_status": "success",
+                    "detail": "",
+                    "ts": "2026-04-22T10:00:00+00:00",
+                },
+                {
+                    "event_type": "llm_fallback_triggered",
+                    "step_id": "scaffold",
+                    "layer": "B",
+                    "expected": "file:.gitignore",
+                    "actual": "repaired",
+                    "repair_action": "missing_gitignore",
+                    "repair_status": "success",
+                    "detail": "",
+                    "ts": "2026-04-22T10:00:01+00:00",
+                },
+            ],
+        )
+        self._seed(
+            service,
+            "project_1-b",
+            [
+                {
+                    "event_type": "llm_fallback_triggered",
+                    "step_id": "scaffold",
+                    "layer": "A",
+                    "expected": "missing_standard_subdirs",
+                    "actual": "missing",
+                    "repair_action": "missing_standard_subdirs",
+                    "repair_status": "failed",
+                    "detail": "mkdir failed",
+                    "ts": "2026-04-22T11:00:00+00:00",
+                },
+            ],
+        )
+
+        client = TestClient(app)
+        _login_dev(client)
+
+        resp = client.get("/api/analytics/safety-net")
+        assert resp.status_code == 200
+        summary = resp.json()["summary"]
+        assert summary["total"] == 3
+        assert summary["by_status"] == {"success": 2, "failed": 1}
+        assert summary["by_layer"] == {"B": 2, "A": 1}
+        # Recent is newest-first — project_1-b's event should top.
+        assert summary["recent"][0]["project_id"] == "project_1-b"
+
+    def test_api_project_filter_scopes_to_one(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+        app = create_app()
+        service = app.state.web_service
+        self._seed(
+            service,
+            "project_0-a",
+            [
+                {
+                    "event_type": "llm_fallback_triggered",
+                    "step_id": "scaffold",
+                    "layer": "B",
+                    "expected": "git_repo",
+                    "actual": "repaired",
+                    "repair_action": "missing_git_repo",
+                    "repair_status": "success",
+                    "detail": "",
+                    "ts": "2026-04-22T10:00:00+00:00",
+                }
+            ],
+        )
+        self._seed(
+            service,
+            "project_1-b",
+            [
+                {
+                    "event_type": "llm_fallback_triggered",
+                    "step_id": "phase_1",
+                    "layer": "B",
+                    "expected": "clean_tree",
+                    "actual": "repaired",
+                    "repair_action": "uncommitted_changes",
+                    "repair_status": "success",
+                    "detail": "",
+                    "ts": "2026-04-22T11:00:00+00:00",
+                }
+            ],
+        )
+        client = TestClient(app)
+        _login_dev(client)
+
+        resp = client.get("/api/analytics/safety-net?project_id=project_1-b")
+        body = resp.json()
+        assert body["summary"]["total"] == 1
+        assert body["summary"]["recent"][0]["step_id"] == "phase_1"
+
+    def test_page_renders_with_permission(self, monkeypatch, tmp_path) -> None:
+        """The dashboard HTML loads (status 200) when the logged-in
+        user carries ``view_analytics``. ``AISE_WEB_ENABLE_DEV_LOGIN``
+        gives the dev account super_admin privileges, which includes
+        the new permission."""
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+        app = create_app()
+        client = TestClient(app)
+        _login_dev(client)
+        resp = client.get("/analytics/safety-net")
+        assert resp.status_code == 200
+        # React root must be present so ``setupAnalyticsReact`` can
+        # find it on client-side bootstrap.
+        assert 'id="analytics-react-root"' in resp.text
+
+
+class TestAnalyticsI18n:
+    """The dashboard relies on a dedicated ``analytics.*`` i18n
+    namespace. If keys go missing or zh/en drift apart, the UI
+    regresses to raw keys. Pinning here lets a contributor editing
+    locales catch the mismatch before a user hits it."""
+
+    REQUIRED_KEYS = (
+        "analytics.title",
+        "analytics.subtitle",
+        "analytics.filter_project",
+        "analytics.filter_all_projects",
+        "analytics.filter_since",
+        "analytics.filter_until",
+        "analytics.filter_limit",
+        "analytics.refresh",
+        "analytics.pill_total",
+        "analytics.pill_success",
+        "analytics.pill_failed",
+        "analytics.pill_skipped",
+        "analytics.pill_layer_b",
+        "analytics.pill_layer_a",
+        "analytics.top_step_ids",
+        "analytics.top_repair_actions",
+        "analytics.top_expected",
+        "analytics.recent_heading",
+        "analytics.recent_empty",
+        "analytics.empty_hero",
+        "analytics.no_data",
+        "analytics.error_prefix",
+        "analytics.col_ts",
+        "analytics.col_project",
+        "analytics.col_step",
+        "analytics.col_layer",
+        "analytics.col_expected",
+        "analytics.col_action",
+        "analytics.col_status",
+        "nav.analytics",
+    )
+
+    @pytest.mark.parametrize("lang", ["zh", "en"])
+    def test_required_keys_present(self, lang: str) -> None:
+        import json as _json
+
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "aise"
+            / "web"
+            / "static"
+            / "locales"
+            / lang
+            / "translation.json"
+        )
+        data = _json.loads(path.read_text(encoding="utf-8"))
+
+        def _get(dotted: str) -> object:
+            node: object = data
+            for part in dotted.split("."):
+                if not isinstance(node, dict) or part not in node:
+                    return None
+                node = node[part]
+            return node
+
+        for key in self.REQUIRED_KEYS:
+            value = _get(key)
+            assert isinstance(value, str) and value.strip(), f"missing/empty {lang}/{key}"
