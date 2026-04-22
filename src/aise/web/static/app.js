@@ -132,9 +132,9 @@ function setupDashboardReact() {
         if (isNaN(d.getTime())) return String(ts);
         const now = Date.now();
         const diff = now - d.getTime();
-        if (diff < 60000) return "刚刚";
-        if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
-        if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
+        if (diff < 60000) return t("common.just_now");
+        if (diff < 3600000) return t("common.minutes_ago", { n: Math.floor(diff / 60000) });
+        if (diff < 86400000) return t("common.hours_ago", { n: Math.floor(diff / 3600000) });
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     }
 
@@ -213,7 +213,7 @@ function setupDashboardReact() {
                 }
                 window.location.href = `/projects/${encodeURIComponent(created.project_id)}`;
             } catch (err) {
-                setError(err instanceof Error ? err.message : "创建失败");
+                setError(err instanceof Error ? err.message : t("common.create_failed"));
                 setSubmitting(false);
             }
         }
@@ -223,9 +223,10 @@ function setupDashboardReact() {
             e.stopPropagation();
             const projectId = String(project.project_id || "");
             if (!projectId) return;
-            const first = window.confirm(`确认删除项目「${project.project_name || projectId}」？`);
+            const name = project.project_name || projectId;
+            const first = window.confirm(t("dashboard.delete_confirm_1", { name }));
             if (!first) return;
-            const second = window.confirm(`再次确认：删除后将同步清理目录，且不可恢复。\n项目ID: ${projectId}`);
+            const second = window.confirm(t("dashboard.delete_confirm_2", { id: projectId }));
             if (!second) return;
             setDeletingProjectId(projectId);
             setError("");
@@ -233,7 +234,7 @@ function setupDashboardReact() {
                 await fetchJson(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
                 setProjects((prev) => prev.filter((p) => String(p.project_id) !== projectId));
             } catch (err) {
-                setError(err instanceof Error ? err.message : "删除失败");
+                setError(err instanceof Error ? err.message : t("common.delete_failed"));
             } finally {
                 setDeletingProjectId("");
             }
@@ -244,7 +245,8 @@ function setupDashboardReact() {
             e.stopPropagation();
             const projectId = String(project.project_id || "");
             if (!projectId) return;
-            if (!window.confirm(`确认重新开始项目「${project.project_name || projectId}」？\n将清除所有执行记录，重新提交原始需求。`)) return;
+            const name = project.project_name || projectId;
+            if (!window.confirm(t("dashboard.restart_confirm", { name }))) return;
             setError("");
             try {
                 const result = await fetchJson(`/api/projects/${encodeURIComponent(projectId)}/restart`, { method: "POST" });
@@ -252,7 +254,7 @@ function setupDashboardReact() {
                     window.location.href = `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(result.run_id)}`;
                 }
             } catch (err) {
-                setError(err instanceof Error ? err.message : "重启失败");
+                setError(err instanceof Error ? err.message : t("common.restart_failed"));
             }
         }
 
@@ -278,16 +280,16 @@ function setupDashboardReact() {
         // every project — rendering that as "in progress" made every card look busy.
         function projectBadge(project) {
             if (project && project.has_active_run) {
-                return h("span", { className: "status-badge status-running" }, "◉ 运行中");
+                return h("span", { className: "status-badge status-running" }, t("dashboard.card.badge_running"));
             }
             const latest = project ? project.latest_run_status : null;
-            if (latest === "completed" || latest === "success") return h("span", { className: "status-badge status-success" }, "✓ 成功");
-            if (latest === "failed" || latest === "error") return h("span", { className: "status-badge status-failed" }, "✕ 失败");
+            if (latest === "completed" || latest === "success") return h("span", { className: "status-badge status-success" }, t("dashboard.card.badge_success"));
+            if (latest === "failed" || latest === "error") return h("span", { className: "status-badge status-failed" }, t("dashboard.card.badge_failed"));
             const lifecycle = project ? project.status : null;
-            if (lifecycle === "paused") return h("span", { className: "status-badge status-pending" }, "⏸ 暂停");
-            if (lifecycle === "archived") return h("span", { className: "status-badge status-pending" }, "▣ 归档");
-            if (lifecycle === "completed") return h("span", { className: "status-badge status-success" }, "✓ 已完成");
-            return h("span", { className: "status-badge status-pending" }, "○ 就绪");
+            if (lifecycle === "paused") return h("span", { className: "status-badge status-pending" }, t("dashboard.card.badge_paused"));
+            if (lifecycle === "archived") return h("span", { className: "status-badge status-pending" }, t("dashboard.card.badge_archived"));
+            if (lifecycle === "completed") return h("span", { className: "status-badge status-success" }, t("dashboard.card.badge_completed"));
+            return h("span", { className: "status-badge status-pending" }, t("dashboard.card.badge_ready"));
         }
 
         const runningCount = projects.filter((p) => p.has_active_run).length;
@@ -307,47 +309,47 @@ function setupDashboardReact() {
                     h(
                         "div",
                         { className: "modal-header" },
-                        h("h2", null, "新建项目"),
+                        h("h2", null, t("dashboard.modal.title")),
                         h("button", { className: "modal-close", onClick: () => setShowModal(false) }, "×")
                     ),
                     h(
                         "form",
                         { className: "modal-form", onSubmit: submitProject },
-                        h("label", null, "项目名称"),
+                        h("label", null, t("dashboard.modal.field_name")),
                         h("input", {
                             required: true,
                             value: formData.project_name,
-                            placeholder: "例如: UserAPI",
+                            placeholder: t("dashboard.modal.field_name_placeholder"),
                             onChange: (e) => setFormData((prev) => ({ ...prev, project_name: e.target.value })),
                         }),
-                        h("label", null, "开发模式"),
+                        h("label", null, t("dashboard.modal.field_development_mode")),
                         h(
                             "select",
                             {
                                 value: formData.development_mode,
                                 onChange: (e) => setFormData((prev) => ({ ...prev, development_mode: e.target.value })),
                             },
-                            h("option", { value: "local" }, "Local"),
-                            h("option", { value: "github" }, "GitHub")
+                            h("option", { value: "local" }, t("dashboard.modal.development_mode_local")),
+                            h("option", { value: "github" }, t("dashboard.modal.development_mode_github"))
                         ),
-                        h("label", null, "研发流程"),
+                        h("label", null, t("dashboard.modal.field_process_type")),
                         h(
                             "select",
                             {
                                 value: formData.process_type || "waterfall",
                                 onChange: (e) => setFormData((prev) => ({ ...prev, process_type: e.target.value })),
                             },
-                            h("option", { value: "waterfall" }, "Waterfall — 线性全生命周期"),
-                            h("option", { value: "agile" }, "Agile Sprint — 迭代交付 MVP")
+                            h("option", { value: "waterfall" }, t("dashboard.modal.process_type_waterfall")),
+                            h("option", { value: "agile" }, t("dashboard.modal.process_type_agile"))
                         ),
                         h("p", { style: { margin: "4px 0 12px", color: "#888", fontSize: "12px" } },
                             formData.process_type === "agile"
-                                ? "迭代模式：sprint planning / sprint execution / sprint review / retrospective / delivery"
-                                : "瀑布模式：需求 / 架构 / 开发 / 入口验证 / 集成测试 / 交付报告"),
-                        h("label", null, "初始需求（可选）"),
+                                ? t("dashboard.modal.process_type_agile_hint")
+                                : t("dashboard.modal.process_type_waterfall_hint")),
+                        h("label", null, t("dashboard.modal.field_initial_requirement")),
                         h("textarea", {
                             rows: 4,
-                            placeholder: "例如：构建一个用户管理 API",
+                            placeholder: t("dashboard.modal.field_initial_requirement_placeholder"),
                             value: formData.initial_requirement,
                             onChange: (e) => setFormData((prev) => ({ ...prev, initial_requirement: e.target.value })),
                         }),
@@ -356,7 +358,7 @@ function setupDashboardReact() {
                                 type: "button",
                                 className: "btn secondary btn-sm",
                                 onClick: () => setFormData((prev) => ({ ...prev, _showAgentModels: !prev._showAgentModels })),
-                            }, formData._showAgentModels ? "\u25BC \u6536\u8D77 Agent \u6A21\u578B\u914D\u7F6E" : "\u25B6 \u81EA\u5B9A\u4E49 Agent \u6A21\u578B"),
+                            }, formData._showAgentModels ? t("dashboard.modal.agent_models_hide") : t("dashboard.modal.agent_models_show")),
                         ),
                         formData._showAgentModels ? h(
                             "div",
@@ -382,8 +384,8 @@ function setupDashboardReact() {
                         h(
                             "div",
                             { className: "modal-actions" },
-                            h("button", { type: "button", className: "btn secondary", onClick: () => setShowModal(false) }, "取消"),
-                            h("button", { className: "btn", type: "submit", disabled: submitting }, submitting ? "创建中..." : "创建项目")
+                            h("button", { type: "button", className: "btn secondary", onClick: () => setShowModal(false) }, t("common.cancel")),
+                            h("button", { className: "btn", type: "submit", disabled: submitting }, submitting ? t("dashboard.modal.creating") : t("dashboard.modal.submit"))
                         )
                     )
                 )
@@ -399,17 +401,17 @@ function setupDashboardReact() {
                 h(
                     "div",
                     { className: "dashboard-topbar-left" },
-                    h("h1", { className: "dashboard-title" }, "项目"),
+                    h("h1", { className: "dashboard-title" }, t("dashboard.title")),
                     h(
                         "div",
                         { className: "dashboard-stats" },
-                        h("span", { className: "stat-chip" }, `共 ${projects.length} 个`),
-                        runningCount > 0 ? h("span", { className: "stat-chip stat-running" }, `${runningCount} 运行中`) : null,
-                        successCount > 0 ? h("span", { className: "stat-chip stat-success" }, `${successCount} 成功`) : null,
-                        failedCount > 0 ? h("span", { className: "stat-chip stat-failed" }, `${failedCount} 失败`) : null
+                        h("span", { className: "stat-chip" }, t("dashboard.stat_total", { n: projects.length })),
+                        runningCount > 0 ? h("span", { className: "stat-chip stat-running" }, t("dashboard.stat_running", { n: runningCount })) : null,
+                        successCount > 0 ? h("span", { className: "stat-chip stat-success" }, t("dashboard.stat_success", { n: successCount })) : null,
+                        failedCount > 0 ? h("span", { className: "stat-chip stat-failed" }, t("dashboard.stat_failed", { n: failedCount })) : null
                     )
                 ),
-                h("button", { className: "btn create-project-btn", onClick: () => setShowModal(true) }, "＋ 新建项目")
+                h("button", { className: "btn create-project-btn", onClick: () => setShowModal(true) }, t("dashboard.new_project"))
             ),
             error ? h("div", { className: "dashboard-error" }, error) : null,
             h(
@@ -433,9 +435,9 @@ function setupDashboardReact() {
                             h(
                                 "div",
                                 { className: "project-card-meta" },
-                                h("span", null, `模式: ${project.development_mode}`),
-                                h("span", null, `流程: ${project.process_type || "waterfall"}`),
-                                h("span", null, `Agent: ${project.agent_count}`)
+                                h("span", null, t("dashboard.card.development_mode", { mode: project.development_mode })),
+                                h("span", null, t("dashboard.card.process_type", { process: project.process_type || "waterfall" })),
+                                h("span", null, t("dashboard.card.agent_count", { n: project.agent_count }))
                             ),
                             h(
                                 "div",
@@ -465,8 +467,8 @@ function setupDashboardReact() {
                         "div",
                         { className: "empty-state" },
                         h("div", { className: "empty-icon" }, "📂"),
-                        h("p", null, "暂无项目"),
-                        h("p", null, "点击上方按钮创建你的第一个项目")
+                        h("p", null, t("dashboard.empty_title")),
+                        h("p", null, t("dashboard.empty_hint"))
                     )
             ),
             modal
@@ -510,7 +512,7 @@ function setupProjectReact() {
                     const message = err instanceof Error ? err.message : "";
                     if (String(message).includes("404")) {
                         setProjectMissing(true);
-                        setError("项目不存在或已被删除。");
+                        setError(t("project.missing_warning"));
                         if (timer) window.clearInterval(timer);
                     }
                 }
@@ -537,15 +539,16 @@ function setupProjectReact() {
                 });
                 window.location.href = `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(created.run_id)}`;
             } catch (err) {
-                setError(err instanceof Error ? err.message : "提交失败");
+                setError(err instanceof Error ? err.message : t("common.submit_failed"));
                 setSubmitting(false);
             }
         }
 
         async function deleteCurrentProject() {
-            const first = window.confirm(`确认删除项目「${project.info.project_name || projectId}」？`);
+            const name = project.info.project_name || projectId;
+            const first = window.confirm(t("dashboard.delete_confirm_1", { name }));
             if (!first) return;
-            const second = window.confirm(`再次确认：删除后将同步清理目录，且不可恢复。\n项目ID: ${projectId}`);
+            const second = window.confirm(t("dashboard.delete_confirm_2", { id: projectId }));
             if (!second) return;
             setDeleting(true);
             setError("");
@@ -553,13 +556,14 @@ function setupProjectReact() {
                 await fetchJson(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
                 window.location.href = "/";
             } catch (err) {
-                setError(err instanceof Error ? err.message : "删除失败");
+                setError(err instanceof Error ? err.message : t("common.delete_failed"));
                 setDeleting(false);
             }
         }
 
         async function restartCurrentProject() {
-            if (!window.confirm(`确认重新开始项目「${project.info.project_name || projectId}」？\n将清除所有执行记录，重新提交原始需求。`)) return;
+            const name = project.info.project_name || projectId;
+            if (!window.confirm(t("dashboard.restart_confirm", { name }))) return;
             setError("");
             try {
                 const result = await fetchJson(`/api/projects/${encodeURIComponent(projectId)}/restart`, { method: "POST" });
@@ -567,7 +571,7 @@ function setupProjectReact() {
                     window.location.href = `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(result.run_id)}`;
                 }
             } catch (err) {
-                setError(err instanceof Error ? err.message : "重启失败");
+                setError(err instanceof Error ? err.message : t("common.restart_failed"));
             }
         }
 
@@ -596,7 +600,7 @@ function setupProjectReact() {
                 "section",
                 { className: "card card-glow project-header-card" },
                 h("h1", null, project.info.project_name),
-                h("p", { className: "muted" }, `ID: ${project.info.project_id} | 状态: ${project.info.status} | 模式: ${project.info.development_mode}`),
+                h("p", { className: "muted" }, t("project.header_meta", { id: project.info.project_id, status: project.info.status, mode: project.info.development_mode })),
                 h("div", { style: { display: "flex", gap: "8px", marginTop: "8px" } },
                     h(
                         "button",
@@ -606,7 +610,7 @@ function setupProjectReact() {
                             disabled: projectMissing,
                             onClick: restartCurrentProject,
                         },
-                        "\u21BB \u91CD\u65B0\u5F00\u59CB"
+                        t("project.restart")
                     ),
                     h(
                         "button",
@@ -616,7 +620,7 @@ function setupProjectReact() {
                             disabled: deleting || projectMissing,
                             onClick: deleteCurrentProject,
                         },
-                        deleting ? "\u5220\u9664\u4E2D..." : "\u5220\u9664\u9879\u76EE"
+                        deleting ? t("project.deleting") : t("project.delete")
                     ),
                 )
             ),
@@ -624,8 +628,8 @@ function setupProjectReact() {
                 ? h(
                     "section",
                     { className: "card" },
-                    h("p", { className: "warning" }, "当前项目已不存在，已停止轮询。"),
-                    h("a", { className: "btn secondary", href: "/" }, "返回项目列表")
+                    h("p", { className: "warning" }, t("project.missing_warning")),
+                    h("a", { className: "btn secondary", href: "/" }, t("project.back_to_list"))
                 )
                 : null,
             view === "default" ? (function () {
@@ -645,10 +649,10 @@ function setupProjectReact() {
                             disabled: projectMissing,
                             onClick: () => setView("new-requirement"),
                             title: hasIncrementalBaseline
-                                ? "基于已有基线追加需求（增量模式）"
-                                : "下发首个需求（初始模式）",
+                                ? t("project.action_new_requirement_incremental_hint")
+                                : t("project.action_new_requirement_initial_hint"),
                         },
-                        hasIncrementalBaseline ? "＋ 新增增量需求" : "＋ 下发需求"
+                        hasIncrementalBaseline ? t("project.action_new_requirement_incremental") : t("project.action_new_requirement_initial")
                     ),
                     h(
                         "button",
@@ -658,7 +662,7 @@ function setupProjectReact() {
                             style: { fontSize: "1.1rem", padding: "12px 32px" },
                             onClick: () => setView("history"),
                         },
-                        "📋 查看历史需求"
+                        t("project.action_view_history")
                     ),
                     latestRun && latestRun.run_id ? h(
                         "a",
@@ -667,7 +671,7 @@ function setupProjectReact() {
                             style: { fontSize: "1.1rem", padding: "12px 32px" },
                             href: `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(latestRun.run_id)}`,
                         },
-                        "🕒 查看最新执行"
+                        t("project.action_view_latest_run")
                     ) : null,
                 );
             })() : null,
@@ -675,17 +679,17 @@ function setupProjectReact() {
                 "section",
                 { className: "card" },
                 h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" } },
-                    h("h2", null, "下发新需求"),
-                    h("button", { type: "button", className: "btn secondary", onClick: () => setView("default") }, "← 返回")
+                    h("h2", null, t("project.new_requirement_title")),
+                    h("button", { type: "button", className: "btn secondary", onClick: () => setView("default") }, "← " + t("common.back"))
                 ),
                 h(
                     "form",
                     { className: "stack", onSubmit: submitRequirement },
-                    h("label", null, "需求内容"),
+                    h("label", null, t("project.new_requirement_label")),
                     h("textarea", {
                         required: true,
                         rows: 6,
-                        placeholder: "输入新需求",
+                        placeholder: t("project.new_requirement_placeholder"),
                         value: text,
                         disabled: projectMissing,
                         onChange: (e) => setText(e.target.value),
@@ -694,7 +698,7 @@ function setupProjectReact() {
                     h(
                         "button",
                         { className: "btn", type: "submit", disabled: submitting || projectMissing },
-                        submitting ? "提交中..." : "提交并运行工作流"
+                        submitting ? t("common.submitting") : t("project.submit_run")
                     )
                 )
             ) : null,
@@ -705,18 +709,18 @@ function setupProjectReact() {
                     "section",
                     { className: "card" },
                     h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" } },
-                        h("h2", null, "历史需求与执行记录"),
+                        h("h2", null, t("project.history_title")),
                         h("button", { type: "button", className: "btn secondary", onClick: () => setView("default") }, "← 返回")
                     ),
-                    h("h3", null, "需求列表"),
+                    h("h3", null, t("project.history_requirements_heading")),
                     h(
                         "ul",
                         { className: "history-list" },
                         ...(requirements.length
                             ? requirements.map((req, idx) => h("li", { key: `${req.created_at}-${idx}` }, `${formatLocalTime(req.created_at)} - ${req.text}`))
-                            : [h("li", { key: "empty", className: "muted" }, "暂无需求历史。")])
+                            : [h("li", { key: "empty", className: "muted" }, t("project.history_empty"))])
                     ),
-                    h("h3", { style: { marginTop: "24px" } }, "工作流执行记录"),
+                    h("h3", { style: { marginTop: "24px" } }, t("project.history_runs_heading")),
                     h(
                         "div",
                         { className: "table-scroll" },
@@ -729,11 +733,11 @@ function setupProjectReact() {
                                 h(
                                     "tr",
                                     null,
-                                    h("th", null, "执行ID"),
-                                    h("th", null, "时间"),
-                                    h("th", null, "状态"),
-                                    h("th", null, "需求摘要"),
-                                    h("th", null, "查看")
+                                    h("th", null, t("project.col_run_id")),
+                                    h("th", null, t("project.col_time")),
+                                    h("th", null, t("project.col_status")),
+                                    h("th", null, t("project.col_requirement_summary")),
+                                    h("th", null, t("project.col_view"))
                                 )
                             ),
                             h(
@@ -756,12 +760,12 @@ function setupProjectReact() {
                                                     {
                                                         href: `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(run.run_id)}`,
                                                     },
-                                                    "详情"
+                                                    t("project.view_detail")
                                                 )
                                             )
                                         )
                                     )
-                                    : [h("tr", { key: "empty" }, h("td", { colSpan: 5, className: "muted" }, "暂无执行记录。"))])
+                                    : [h("tr", { key: "empty" }, h("td", { colSpan: 5, className: "muted" }, t("project.no_runs")))])
                             )
                         )
                     )
@@ -994,7 +998,7 @@ function setupRunReact() {
             if (Array.isArray(taskTodos[tid])) continue;
             const term = taskTerminalStatus[tid];
             const payload = taskRequestPayload[tid] || {};
-            const label = payload.step || (payload.task ? String(payload.task).split("\n")[0].slice(0, 60) : "任务");
+            const label = payload.step || (payload.task ? String(payload.task).split("\n")[0].slice(0, 60) : t("entry.fallback_task_name"));
             let status = "in_progress";
             if (term === "completed") status = "completed";
             else if (term === "failed") status = "pending";
@@ -1060,16 +1064,12 @@ function setupRunReact() {
                 }, t("run.mode.incremental")) : null,
                 (run.process_type === "agile") ? h("span", {
                     className: "run-mode-badge run-mode-badge-agile",
-                    title: currentLang() === "en"
-                        ? "Agile Sprint process: Planning → Execution → Review → Retrospective → Delivery"
-                        : "Agile Sprint 流程：规划 → 执行 → 评审 → 复盘 → 交付",
-                }, currentLang() === "en" ? "Agile Sprint" : "Agile 迭代") :
+                    title: t("run.process.agile_hint"),
+                }, t("run.process.agile")) :
                     h("span", {
                         className: "run-mode-badge run-mode-badge-waterfall",
-                        title: currentLang() === "en"
-                            ? "Waterfall process: Requirements → Architecture → Implementation → Entry → QA → Delivery"
-                            : "Waterfall 流程：需求 → 架构 → 实现 → 入口 → 测试 → 交付",
-                    }, currentLang() === "en" ? "Waterfall" : "Waterfall 瀑布"),
+                        title: t("run.process.waterfall_hint"),
+                    }, t("run.process.waterfall")),
             ),
             h("div", { className: "run-section" },
                 h("div", { className: "run-section-title" }, t("run.section.requirement")),
@@ -1606,29 +1606,29 @@ function setupLoginReact() {
         return h(
             "section",
             { className: "card narrow card-glow login-card" },
-            h("h1", null, "⚡ 登录 AISE Web"),
-            h("p", { className: "muted" }, "支持内置管理员账号、Google 或 Microsoft 登录。"),
+            h("h1", null, "⚡ " + t("login.title")),
+            h("p", { className: "muted" }, t("login.subtitle")),
             h(
                 "form",
                 { method: "post", action: "/auth/local-login", className: "stack" },
-                h("label", null, "用户名"),
+                h("label", null, t("login.username")),
                 h("input", { name: "username", required: true, defaultValue: initial.local_admin_username || "admin" }),
-                h("label", null, "密码"),
-                h("input", { name: "password", type: "password", required: true, placeholder: "请输入密码" }),
-                h("button", { className: "btn", type: "submit" }, "管理员登录")
+                h("label", null, t("login.password")),
+                h("input", { name: "password", type: "password", required: true, placeholder: t("login.password_placeholder") }),
+                h("button", { className: "btn", type: "submit" }, t("login.admin_login"))
             ),
             initial.error ? h("p", { className: "warning" }, initial.error) : null,
-            h("p", { className: "muted" }, ["默认内置账号: ", h("code", { key: "u" }, "admin"), " / ", h("code", { key: "p" }, "123456")]),
+            h("p", { className: "muted" }, [t("login.default_prefix"), h("code", { key: "u" }, "admin"), " / ", h("code", { key: "p" }, "123456")]),
             h(
                 "div",
                 { className: "auth-grid" },
-                h("a", { className: "btn", href: "/auth/google" }, "使用 Google 登录"),
-                h("a", { className: "btn", href: "/auth/microsoft" }, "使用 Microsoft 登录"),
-                configured.dev_login_enabled ? h("a", { className: "btn secondary", href: "/auth/dev-login" }, "开发环境快速登录") : null
+                h("a", { className: "btn", href: "/auth/google" }, t("login.google_login")),
+                h("a", { className: "btn", href: "/auth/microsoft" }, t("login.microsoft_login")),
+                configured.dev_login_enabled ? h("a", { className: "btn secondary", href: "/auth/dev-login" }, t("login.dev_login")) : null
             ),
-            !configured.oauth_enabled ? h("p", { className: "warning" }, "未安装 OAuth 依赖，请安装 web 依赖后重试。") : null,
-            !configured.google ? h("p", { className: "warning" }, "GOOGLE_CLIENT_ID 未配置。") : null,
-            !configured.microsoft ? h("p", { className: "warning" }, "MICROSOFT_CLIENT_ID 未配置。") : null
+            !configured.oauth_enabled ? h("p", { className: "warning" }, t("login.no_oauth_warning")) : null,
+            !configured.google ? h("p", { className: "warning" }, "GOOGLE_CLIENT_ID not configured.") : null,
+            !configured.microsoft ? h("p", { className: "warning" }, "MICROSOFT_CLIENT_ID not configured.") : null
         );
     }
 
@@ -1670,8 +1670,8 @@ function setupModelsConfigPage() {
       <input class="provider-name" placeholder="provider" value="${escapeHtml((provider && provider.provider) || "")}">
       <input class="provider-key" placeholder="api key" value="${escapeHtml((provider && provider.api_key) || "")}">
       <input class="provider-uri" placeholder="base url" value="${escapeHtml((provider && provider.base_url) || "")}">
-      <label><input type="checkbox" class="provider-enabled" ${(provider && provider.enabled) !== false ? "checked" : ""}>启用</label>
-      <button type="button" class="btn secondary provider-remove">删除</button>
+      <label><input type="checkbox" class="provider-enabled" ${(provider && provider.enabled) !== false ? "checked" : ""}>${escapeHtml(t("cfg.models.provider_enabled"))}</label>
+      <button type="button" class="btn secondary provider-remove">${escapeHtml(t("cfg.models.provider_remove"))}</button>
     `;
         row.querySelector(".provider-name")?.addEventListener("input", syncModelProviderSelectors);
         row.querySelector(".provider-enabled")?.addEventListener("change", syncModelProviderSelectors);
@@ -1699,21 +1699,21 @@ function setupModelsConfigPage() {
         const isLocal = !!modelValue.is_local;
         card.innerHTML = `
       <div class="stack">
-        <label>模型ID</label>
-        <input class="model-id" placeholder="例如 gpt-4o" value="${escapeHtml(modelValue.id || "")}">
-        <label>API 模型名（OpenAI model 字段）</label>
-        <input class="model-api-model" placeholder="例如 gpt-4o" value="${escapeHtml(modelValue.api_model || modelValue.id || "")}">
-        <label class="inline-radio"><input type="radio" name="model-default-flag" class="model-default" ${modelValue.default ? "checked" : ""}> 设为默认模型</label>
-        <label><input type="checkbox" class="model-is-local" ${isLocal ? "checked" : ""}> 本地模型（无需 providers）</label>
-        <label>默认 Provider</label>
+        <label>${escapeHtml(t("cfg.models.model_id"))}</label>
+        <input class="model-id" placeholder="${escapeHtml(t("cfg.models.model_id_placeholder"))}" value="${escapeHtml(modelValue.id || "")}">
+        <label>${escapeHtml(t("cfg.models.api_model_label"))}</label>
+        <input class="model-api-model" placeholder="${escapeHtml(t("cfg.models.model_id_placeholder"))}" value="${escapeHtml(modelValue.api_model || modelValue.id || "")}">
+        <label class="inline-radio"><input type="radio" name="model-default-flag" class="model-default" ${modelValue.default ? "checked" : ""}> ${escapeHtml(t("cfg.models.set_default"))}</label>
+        <label><input type="checkbox" class="model-is-local" ${isLocal ? "checked" : ""}> ${escapeHtml(t("cfg.models.is_local"))}</label>
+        <label>${escapeHtml(t("cfg.models.default_provider"))}</label>
         <select class="model-default-provider"></select>
-        <label>扩展参数（JSON）</label>
+        <label>${escapeHtml(t("cfg.models.extra_params"))}</label>
         <textarea class="model-extra" rows="3" placeholder='{"supports_tools": true}'>${escapeHtml(JSON.stringify(modelValue.extra || {}, null, 2))}</textarea>
       </div>
-      <h4>绑定 Providers</h4>
+      <h4>${escapeHtml(t("cfg.models.bound_providers"))}</h4>
       <div class="model-provider-selectors"></div>
       <div class="auth-grid">
-        <button type="button" class="btn secondary model-remove">删除模型</button>
+        <button type="button" class="btn secondary model-remove">${escapeHtml(t("cfg.models.remove_model"))}</button>
       </div>
     `;
 
@@ -1854,10 +1854,17 @@ function setupMonitorReact() {
     };
 
     const STATUS_META = {
-        working: { label: "\u6267\u884C\u4E2D", cls: "monitor-status-working" },
-        idle: { label: "\u7A7A\u95F2", cls: "monitor-status-idle" },
-        standby: { label: "\u5F85\u547D", cls: "monitor-status-standby" },
+        working: { cls: "monitor-status-working" },
+        idle: { cls: "monitor-status-idle" },
+        standby: { cls: "monitor-status-standby" },
     };
+
+    function statusLabel(status) {
+        if (status === "working") return t("monitor.stat_working");
+        if (status === "idle") return t("agents.status.idle");
+        if (status === "standby") return t("monitor.stat_standby");
+        return status || "";
+    }
 
     function MonitorApp() {
         const h = window.React.createElement;
@@ -1887,25 +1894,25 @@ function setupMonitorReact() {
         return h("div", { className: "monitor-container" },
             // Header
             h("div", { className: "monitor-header" },
-                h("h1", { className: "monitor-title" }, "Agent Monitor"),
-                h("p", { className: "monitor-subtitle" }, "\u5B9E\u65F6\u67E5\u770B Agent \u72B6\u6001\u4E0E\u4EFB\u52A1"),
+                h("h1", { className: "monitor-title" }, t("monitor.title")),
+                h("p", { className: "monitor-subtitle" }, t("monitor.subtitle")),
             ),
 
             // Summary cards (clickable filter)
             h("div", { className: "monitor-summary" },
-                h(SummaryCard, { label: "Agent \u603B\u6570", value: agents.length, cls: "summary-total", active: filter === null, onClick: () => setFilter(null) }),
-                h(SummaryCard, { label: "\u6267\u884C\u4E2D", value: workingCount, cls: "summary-working", active: filter === "working", onClick: () => toggle("working") }),
-                h(SummaryCard, { label: "\u7A7A\u95F2", value: idleCount, cls: "summary-idle", active: filter === "idle", onClick: () => toggle("idle") }),
-                h(SummaryCard, { label: "\u5F85\u547D", value: standbyCount, cls: "summary-standby", active: filter === "standby", onClick: () => toggle("standby") }),
-                h(SummaryCard, { label: "\u6D3B\u8DC3\u8FD0\u884C", value: data.active_runs || 0, cls: "summary-runs summary-info" }),
+                h(SummaryCard, { label: t("monitor.stat_total"), value: agents.length, cls: "summary-total", active: filter === null, onClick: () => setFilter(null) }),
+                h(SummaryCard, { label: t("monitor.stat_working"), value: workingCount, cls: "summary-working", active: filter === "working", onClick: () => toggle("working") }),
+                h(SummaryCard, { label: t("agents.status.idle"), value: idleCount, cls: "summary-idle", active: filter === "idle", onClick: () => toggle("idle") }),
+                h(SummaryCard, { label: t("monitor.stat_standby"), value: standbyCount, cls: "summary-standby", active: filter === "standby", onClick: () => toggle("standby") }),
+                h(SummaryCard, { label: t("agents.stat.running"), value: data.active_runs || 0, cls: "summary-runs summary-info" }),
             ),
 
             // Agent grid (filtered)
             filtered.length === 0
                 ? h("div", { className: "monitor-empty" },
                     filter
-                        ? "\u6CA1\u6709\u5904\u4E8E\u201C" + (STATUS_META[filter] || {}).label + "\u201D\u72B6\u6001\u7684 Agent"
-                        : "\u6682\u65E0\u6D3B\u8DC3 Agent\u3002\u8BF7\u5148\u521B\u5EFA\u9879\u76EE\u5E76\u63D0\u4EA4\u9700\u6C42\u3002",
+                        ? statusLabel(filter)
+                        : t("monitor.empty_hint"),
                 )
                 : h("div", { className: "monitor-grid" },
                     filtered.map((agent) => h(AgentCard, { key: agent.agent_id, agent: agent, onSelect: setSelected })),
@@ -1928,9 +1935,10 @@ function setupMonitorReact() {
     function AgentCard({ agent, onSelect }) {
         const h = window.React.createElement;
         const statusMeta = STATUS_META[agent.status] || STATUS_META.standby;
+        const statusText = statusLabel(agent.status);
         const roleLabel = agent.role_display || ROLE_LABELS[agent.role] || agent.role;
         const roleIcon = ROLE_ICONS[agent.role] || "\uD83E\uDD16";
-        const modelStr = agent.model && agent.model.model ? agent.model.model : "\u672A\u914D\u7F6E";
+        const modelStr = agent.model && agent.model.model ? agent.model.model : "-";
         const task = agent.current_task;
         const isRuntime = agent.source === "runtime";
 
@@ -1948,7 +1956,7 @@ function setupMonitorReact() {
                     ),
                     h("div", { className: "monitor-agent-role" }, roleLabel),
                 ),
-                h("span", { className: "monitor-agent-status-badge" }, statusMeta.label),
+                h("span", { className: "monitor-agent-status-badge" }, statusText),
             ),
 
             // Card body
@@ -1956,7 +1964,7 @@ function setupMonitorReact() {
                 // Project (only for project-bound agents)
                 agent.project_id
                     ? h("div", { className: "monitor-agent-field" },
-                        h("span", { className: "monitor-field-label" }, "\u9879\u76EE"),
+                        h("span", { className: "monitor-field-label" }, t("run.back.project_fallback")),
                         h("span", { className: "monitor-field-value" },
                             h("a", { href: "/projects/" + agent.project_id }, agent.project_name),
                         ),
@@ -1964,16 +1972,16 @@ function setupMonitorReact() {
                     : null,
                 // Model
                 h("div", { className: "monitor-agent-field" },
-                    h("span", { className: "monitor-field-label" }, "\u6A21\u578B"),
+                    h("span", { className: "monitor-field-label" }, t("monitor.card.model")),
                     h("span", { className: "monitor-field-value monitor-model-tag" }, modelStr),
                 ),
                 // Skills
                 h("div", { className: "monitor-agent-field" },
-                    h("span", { className: "monitor-field-label" }, "\u6280\u80FD"),
+                    h("span", { className: "monitor-field-label" }, t("monitor.card.skills")),
                     h("div", { className: "monitor-skills-list" },
                         (agent.skills || []).length > 0
                             ? agent.skills.map((s) => h("span", { key: s, className: "monitor-skill-tag" }, s))
-                            : h("span", { className: "monitor-field-muted" }, "\u65E0"),
+                            : h("span", { className: "monitor-field-muted" }, "-"),
                     ),
                 ),
             ),
@@ -1983,11 +1991,11 @@ function setupMonitorReact() {
                 ? h("div", { className: "monitor-agent-task" },
                     h("div", { className: "monitor-task-header" },
                         h("span", { className: "monitor-task-pulse" }),
-                        h("span", null, "\u5F53\u524D\u4EFB\u52A1"),
+                        h("span", null, t("monitor.card.current_task")),
                     ),
                     h("div", { className: "monitor-task-name" }, task.display_name || task.task_key),
                     task.phase
-                        ? h("div", { className: "monitor-task-phase" }, "\u9636\u6BB5: " + task.phase)
+                        ? h("div", { className: "monitor-task-phase" }, t("entry.meta.phase") + task.phase)
                         : null,
                 )
                 : null,
@@ -2024,28 +2032,28 @@ function setupMonitorReact() {
                     // Description
                     card.description
                         ? h("div", { className: "monitor-modal-section" },
-                            h("div", { className: "monitor-modal-section-title" }, "Description"),
+                            h("div", { className: "monitor-modal-section-title" }, t("monitor.modal.description_title")),
                             h("p", { className: "monitor-modal-text" }, card.description),
                         )
                         : null,
 
                     // Model info
                     h("div", { className: "monitor-modal-section" },
-                        h("div", { className: "monitor-modal-section-title" }, "Model"),
+                        h("div", { className: "monitor-modal-section-title" }, t("monitor.modal.model_title")),
                         h("div", { className: "monitor-modal-kv-grid" },
-                            h("span", { className: "monitor-modal-kv-label" }, "Provider"),
+                            h("span", { className: "monitor-modal-kv-label" }, t("monitor.modal.provider")),
                             h("span", { className: "monitor-modal-kv-value" }, modelInfo.provider || "-"),
-                            h("span", { className: "monitor-modal-kv-label" }, "Model"),
+                            h("span", { className: "monitor-modal-kv-label" }, t("monitor.modal.model_field")),
                             h("code", { className: "monitor-modal-kv-value monitor-model-tag" }, modelInfo.model || "-"),
                             modelInfo.temperature != null
                                 ? [
-                                    h("span", { key: "t-l", className: "monitor-modal-kv-label" }, "Temperature"),
+                                    h("span", { key: "t-l", className: "monitor-modal-kv-label" }, t("monitor.modal.temperature")),
                                     h("span", { key: "t-v", className: "monitor-modal-kv-value" }, modelInfo.temperature),
                                 ]
                                 : null,
                             modelInfo.maxTokens != null
                                 ? [
-                                    h("span", { key: "m-l", className: "monitor-modal-kv-label" }, "Max Tokens"),
+                                    h("span", { key: "m-l", className: "monitor-modal-kv-label" }, t("monitor.modal.max_tokens")),
                                     h("span", { key: "m-v", className: "monitor-modal-kv-value" }, modelInfo.maxTokens),
                                 ]
                                 : null,
@@ -2054,7 +2062,7 @@ function setupMonitorReact() {
 
                     // Capabilities
                     h("div", { className: "monitor-modal-section" },
-                        h("div", { className: "monitor-modal-section-title" }, "Capabilities"),
+                        h("div", { className: "monitor-modal-section-title" }, t("monitor.modal.capabilities_title")),
                         h("div", { className: "monitor-modal-caps" },
                             Object.entries(caps).map(([k, v]) =>
                                 h("span", { key: k, className: "monitor-modal-cap-tag " + (v ? "cap-on" : "cap-off") },
@@ -2067,34 +2075,34 @@ function setupMonitorReact() {
                     // Provider
                     provider.organization
                         ? h("div", { className: "monitor-modal-section" },
-                            h("div", { className: "monitor-modal-section-title" }, "Provider"),
+                            h("div", { className: "monitor-modal-section-title" }, t("monitor.modal.provider")),
                             h("div", { className: "monitor-modal-text" }, provider.organization + (provider.url ? " \u00B7 " + provider.url : "")),
                         )
                         : null,
 
                     // Protocol info
                     h("div", { className: "monitor-modal-section" },
-                        h("div", { className: "monitor-modal-section-title" }, "Protocol"),
+                        h("div", { className: "monitor-modal-section-title" }, t("monitor.modal.metadata_title")),
                         h("div", { className: "monitor-modal-kv-grid" },
-                            h("span", { className: "monitor-modal-kv-label" }, "Version"),
+                            h("span", { className: "monitor-modal-kv-label" }, t("monitor.modal.version")),
                             h("span", { className: "monitor-modal-kv-value" }, card.version || "1.0.0"),
-                            h("span", { className: "monitor-modal-kv-label" }, "Input Modes"),
+                            h("span", { className: "monitor-modal-kv-label" }, t("monitor.modal.input_modes")),
                             h("span", { className: "monitor-modal-kv-value" }, (card.defaultInputModes || ["text"]).join(", ")),
-                            h("span", { className: "monitor-modal-kv-label" }, "Output Modes"),
+                            h("span", { className: "monitor-modal-kv-label" }, t("monitor.modal.output_modes")),
                             h("span", { className: "monitor-modal-kv-value" }, (card.defaultOutputModes || ["text"]).join(", ")),
                         ),
                     ),
 
                     // Skills detail table
                     h("div", { className: "monitor-modal-section" },
-                        h("div", { className: "monitor-modal-section-title" }, "Skills (" + skills.length + ")"),
+                        h("div", { className: "monitor-modal-section-title" }, t("monitor.modal.skills_title", { n: skills.length })),
                         skills.length > 0
                             ? h("table", { className: "monitor-modal-skills-table" },
                                 h("thead", null,
                                     h("tr", null,
-                                        h("th", null, "ID"),
-                                        h("th", null, "Name"),
-                                        h("th", null, "Description"),
+                                        h("th", null, t("monitor.modal.skills_id")),
+                                        h("th", null, t("monitor.modal.skills_name")),
+                                        h("th", null, t("monitor.modal.skills_description")),
                                     ),
                                 ),
                                 h("tbody", null,
@@ -2107,7 +2115,7 @@ function setupMonitorReact() {
                                     ),
                                 ),
                             )
-                            : h("div", { className: "monitor-field-muted" }, "\u65E0\u6280\u80FD"),
+                            : h("div", { className: "monitor-field-muted" }, t("monitor.modal.no_skills")),
                     ),
                 ),
             ),
@@ -2146,7 +2154,7 @@ function setupUsersReact() {
                 setRoles(Array.isArray(u.roles) ? u.roles : []);
                 setMe(m.user || null);
             } catch (err) {
-                setError(err instanceof Error ? err.message : "加载失败");
+                setError(err instanceof Error ? err.message : t("common.load_failed"));
             } finally {
                 setLoading(false);
             }
@@ -2170,7 +2178,7 @@ function setupUsersReact() {
                 await fetchJson("/api/users/" + encodeURIComponent(user.id), { method: "DELETE" });
                 await refresh();
             } catch (err) {
-                setError(err instanceof Error ? err.message : "删除失败");
+                setError(err instanceof Error ? err.message : t("common.delete_failed"));
             }
         }
 
@@ -2183,7 +2191,7 @@ function setupUsersReact() {
                 });
                 await refresh();
             } catch (err) {
-                setError(err instanceof Error ? err.message : "更新失败");
+                setError(err instanceof Error ? err.message : t("common.update_failed"));
             }
         }
 
@@ -2202,7 +2210,7 @@ function setupUsersReact() {
                     setShowCreate(false);
                     await refresh();
                 } catch (err) {
-                    setError(err instanceof Error ? err.message : "创建失败");
+                    setError(err instanceof Error ? err.message : t("common.create_failed"));
                 }
             },
             withPassword: true,
@@ -2231,7 +2239,7 @@ function setupUsersReact() {
                     setEditingUser(null);
                     await refresh();
                 } catch (err) {
-                    setError(err instanceof Error ? err.message : "更新失败");
+                    setError(err instanceof Error ? err.message : t("common.update_failed"));
                 }
             },
             withPassword: false,
@@ -2250,7 +2258,7 @@ function setupUsersReact() {
                     });
                     setPasswordUser(null);
                 } catch (err) {
-                    setError(err instanceof Error ? err.message : "密码设置失败");
+                    setError(err instanceof Error ? err.message : t("users.password_failed"));
                 }
             },
         }) : null;
@@ -2515,7 +2523,7 @@ function setupLogsReact() {
                     setFilename(data.files[0].name);
                 }
             } catch (err) {
-                setError(err instanceof Error ? err.message : "加载失败");
+                setError(err instanceof Error ? err.message : t("common.load_failed"));
             }
         }
 
@@ -2535,7 +2543,7 @@ function setupLogsReact() {
                 setTotalScanned(Number(data.total_scanned || 0));
                 setSelected(new Set());
             } catch (err) {
-                setError(err instanceof Error ? err.message : "加载失败");
+                setError(err instanceof Error ? err.message : t("common.load_failed"));
             } finally {
                 setLoading(false);
             }
@@ -2584,7 +2592,7 @@ function setupLogsReact() {
                 });
                 setAnalysis(String(data.analysis || ""));
             } catch (err) {
-                setError(err instanceof Error ? err.message : "分析失败");
+                setError(err instanceof Error ? err.message : t("logs.analysis_failed"));
             } finally {
                 setAnalyzing(false);
             }
