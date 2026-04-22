@@ -831,11 +831,18 @@ class TestAIFirstScaffolding:
         assert (root / ".git").exists()
         assert (root / ".gitignore").exists()
 
-    def test_scaffold_thread_marks_failed_on_invariant_miss(self, monkeypatch, tmp_path):
-        """If the PM agent's scaffold dispatch returns but the invariants
-        (``.git`` / ``.gitignore``) aren't on disk, the post-dispatch
-        check flips the project to SCAFFOLDING_FAILED so a downstream
-        safety-net can repair or surface the failure to the user."""
+    def test_scaffold_recovered_by_safety_net_when_agent_does_nothing(self, monkeypatch, tmp_path):
+        """PR-c layer: if the PM agent's scaffold dispatch returns
+        without writing anything (silent failure — classic LLM
+        regression), the safety net's mechanical repairs kick in and
+        the project still lands in ACTIVE. The only visible trace is
+        the structured event log.
+        """
+        import shutil
+
+        if not shutil.which("git"):
+            pytest.skip("git binary not on PATH")
+
         monkeypatch.chdir(tmp_path)
         service = WebProjectService()
         # "Agent" claims success but writes nothing.
@@ -843,10 +850,51 @@ class TestAIFirstScaffolding:
 
         project_id = service.create_project("Liar", "local")
         status = _wait_for_scaffolding(service, project_id)
+        assert status == "active", "safety net must repair silent-failure scaffolds"
+        project = service.project_manager.get_project(project_id)
+        root = Path(project.project_root)
+        # Safety net should have produced a real repo + .gitignore +
+        # the standard layout.
+        assert (root / ".git").exists()
+        assert (root / ".gitignore").is_file()
+        for name in ("docs", "src", "tests", "scripts", "config", "artifacts", "trace"):
+            assert (root / name).is_dir()
+
+        # And a per-project event log with one entry per distinct
+        # repair action fired.
+        events_path = root / "trace" / "safety_net_events.jsonl"
+        assert events_path.is_file()
+        import json as _json
+
+        events = [_json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        actions = {e["repair_action"] for e in events}
+        assert {"missing_git_repo", "missing_gitignore", "missing_standard_subdirs"} <= actions
+
+    def test_scaffold_fails_when_safety_net_repair_itself_fails(self, monkeypatch, tmp_path):
+        """If the PM agent does nothing AND the safety net's
+        mechanical repair also fails, the project lands in
+        SCAFFOLDING_FAILED with an error blurb — this is the only
+        code path that reaches that state now.
+        """
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        service._dispatch_scaffolding_to_pm = lambda project, prompt: None  # type: ignore[method-assign]
+
+        # Force every repair attempt to blow up.
+        from aise.runtime import safety_net as _sn
+
+        def _boom(project_root, ctx):  # noqa: ARG001
+            raise RuntimeError("simulated repair failure")
+
+        for key in list(_sn.REPAIR_ACTIONS):
+            monkeypatch.setitem(_sn.REPAIR_ACTIONS, key, _boom)
+
+        project_id = service.create_project("Broken", "local")
+        status = _wait_for_scaffolding(service, project_id)
         assert status == "scaffolding_failed"
         project = service.project_manager.get_project(project_id)
-        assert project is not None
-        assert project.scaffolding_error and ".git" in project.scaffolding_error
+        assert project.scaffolding_error
+        assert "simulated repair failure" in project.scaffolding_error
 
     def test_run_requirement_rejected_while_scaffolding(self, monkeypatch, tmp_path):
         """A stale client (or a direct API call) hitting the requirements
@@ -862,13 +910,19 @@ class TestAIFirstScaffolding:
             service.run_requirement(project_id, "premature submission")
 
     def test_run_requirement_rejected_after_scaffolding_failed(self, monkeypatch, tmp_path):
-        """SCAFFOLDING_FAILED is also a hard block — the user must wait
-        for recovery (safety-net in PR-c) or explicitly retry; submitting
-        a requirement to a broken project is a guaranteed cascade failure.
+        """SCAFFOLDING_FAILED is also a hard block. Force it by breaking
+        every repair in the safety net.
         """
         monkeypatch.chdir(tmp_path)
         service = WebProjectService()
         service._dispatch_scaffolding_to_pm = lambda project, prompt: None  # type: ignore[method-assign]
+        from aise.runtime import safety_net as _sn
+
+        def _boom(project_root, ctx):  # noqa: ARG001
+            raise RuntimeError("simulated repair failure")
+
+        for key in list(_sn.REPAIR_ACTIONS):
+            monkeypatch.setitem(_sn.REPAIR_ACTIONS, key, _boom)
 
         project_id = service.create_project("Broken", "local")
         _wait_for_scaffolding(service, project_id)
