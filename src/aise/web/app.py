@@ -498,6 +498,38 @@ class WebProjectService:
             )
             result = session.run(requirement)
 
+            # Silent-failure guard. ``ProjectSession._invoke_pm`` swallows
+            # LLM backend exceptions and returns "" so the phase loop can
+            # still iterate — that makes the session resilient but also
+            # lets a whole run end without producing anything when the
+            # backend dies mid-flight. Treat an empty / whitespace-only
+            # result as a failure instead of a "completed" run with no
+            # output, so the retry / restart controls surface correctly.
+            # ``workflow_state.final_report`` is the authoritative signal
+            # that ``mark_complete`` was called; if it's set we trust the
+            # session. Otherwise require a non-trivial result string.
+            completed_ok = bool(session.workflow_state.is_complete) or bool((result or "").strip())
+            if not completed_ok:
+                # Surface phase context so the retry picks up where it died.
+                with self._lock:
+                    run = self._find_run(project_id, run_id)
+                    if run is not None:
+                        run.status = "failed"
+                        run.completed_at = datetime.now(timezone.utc)
+                        run.error = (
+                            "Workflow ended without producing a delivery report. "
+                            "The LLM backend likely dropped mid-run; check Logs for the "
+                            "underlying task_response errors."
+                        )
+                    self._active_workflow_runs.discard((project_id, run_id))
+                    self._save_state()
+                logger.warning(
+                    "Run marked failed (silent): project=%s run=%s (no mark_complete, empty result)",
+                    project_id,
+                    run_id,
+                )
+                return
+
             with self._lock:
                 run = self._find_run(project_id, run_id)
                 if run is not None:
@@ -863,6 +895,27 @@ class WebProjectService:
                         )
                         if completed is None:
                             completed = datetime.now(timezone.utc)
+                        reaped_any = True
+                    # Silent-failure migration: older runs recorded
+                    # ``completed`` whenever ``session.run()`` returned
+                    # without raising, even if the result was empty and
+                    # the orchestrator never hit ``mark_complete``. The
+                    # forward fix lives in ``_execute_run``; here we
+                    # reclassify persisted records so the retry / restart
+                    # UI becomes available on historical silent failures.
+                    raw_result = str(item.get("result", ""))
+                    if raw_status == "completed" and not raw_result.strip():
+                        logger.info(
+                            "Reclassifying silent-failure run as failed: project=%s run=%s (empty result)",
+                            project_id,
+                            str(item.get("run_id", "")),
+                        )
+                        raw_status = "failed"
+                        raw_error = raw_error or (
+                            "silent failure: the workflow ended without producing a "
+                            "delivery report. Earlier code treated this as completed; "
+                            "it has been reclassified so retry / restart are available."
+                        )
                         reaped_any = True
                     raw_mode = str(item.get("mode", "initial")).strip().lower()
                     if raw_mode not in ("initial", "incremental"):
