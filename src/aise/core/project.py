@@ -74,6 +74,12 @@ class Project:
         # Fallback to checking GitHub config
         return "github" if self.config.github.is_configured else "local"
 
+    @property
+    def process_type(self) -> str:
+        """Get the development process (waterfall or agile)."""
+        value = getattr(self.config, "process_type", "waterfall")
+        return value if value in ("waterfall", "agile") else "waterfall"
+
     def pause(self) -> None:
         """Pause the project (stop accepting new work)."""
         self.status = ProjectStatus.PAUSED
@@ -106,6 +112,7 @@ class Project:
             "project_name": self.project_name,
             "status": self.status.value,
             "development_mode": self.development_mode,
+            "process_type": self.process_type,
             "agent_count": self.agent_count,
             "project_root": self.project_root,
             "created_at": self.created_at.isoformat(),

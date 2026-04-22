@@ -53,6 +53,7 @@ class ProjectSession:
         on_event: Any | None = None,
         runtime_config: RuntimeConfig | None = None,
         mode: str = "initial",
+        process_type: str = "waterfall",
     ) -> None:
         """Initialize a project session.
 
@@ -70,6 +71,11 @@ class ProjectSession:
                 the phase prompts to instruct agents to READ existing
                 artifacts first and only add / update what the new
                 requirement demands.
+            process_type: ``"waterfall"`` (default) or ``"agile"``.
+                Selects the phase-prompt set that drives the orchestrator.
+                Agile swaps the waterfall linear lifecycle for an MVP-
+                centered sprint sequence (planning → execution → review
+                → retrospective → delivery).
         """
         self._manager = manager
         self._session_id = uuid.uuid4().hex[:12]
@@ -78,6 +84,8 @@ class ProjectSession:
         self._workflow_state = WorkflowState()
         raw_mode = str(mode or "initial").strip().lower()
         self._mode = raw_mode if raw_mode in ("initial", "incremental") else "initial"
+        raw_process = str(process_type or "waterfall").strip().lower()
+        self._process_type = raw_process if raw_process in ("waterfall", "agile") else "waterfall"
 
         if self._project_root:
             self._scaffold_project_dirs(self._project_root)
@@ -429,6 +437,10 @@ class ProjectSession:
         requirement demands. The QA phase stays full (runs the whole
         test suite, not just new tests) regardless of mode.
         """
+        if self._process_type == "agile":
+            if self._mode == "incremental":
+                return self._build_agile_incremental_phase_prompts(requirement)
+            return self._build_agile_initial_phase_prompts(requirement)
         if self._mode == "incremental":
             return self._build_incremental_phase_prompts(requirement)
         return self._build_initial_phase_prompts(requirement)
@@ -611,6 +623,313 @@ class ProjectSession:
                 "   Include: project name, 'incremental', pass rate, number\n"
                 "   of new modules + edited modules, and whether the entry\n"
                 "   point verified successfully in Phase 4.",
+            ),
+        ]
+
+    def _build_agile_initial_phase_prompts(self, requirement: str) -> list[tuple[str, str]]:
+        """Agile phase prompts for a clean-slate project.
+
+        Follows ``src/aise/processes/agile.process.md`` — a sprint-centric
+        lifecycle: Sprint Planning → Sprint Execution (light design +
+        rapid TDD + working main) → Sprint Review → Retrospective →
+        Delivery. The structure is explicitly different from waterfall:
+        design is LIGHTWEIGHT, implementation is MVP-scoped, and a
+        retrospective phase captures process feedback.
+        """
+        return [
+            (
+                "sprint_planning",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 1 — Sprint Planning (AGILE):\n"
+                "1. Call list_processes, then get_process('agile.process.md').\n"
+                "2. Call list_agents to discover agents.\n"
+                "3. dispatch_task to product_manager. Require the PM to:\n"
+                "   - Break the raw requirement into user stories using the\n"
+                "     'As a <role>, I want <goal>, so that <value>' pattern.\n"
+                "   - For each story write Acceptance Criteria (Given/When/Then)\n"
+                "     and a Definition of Done (DoD).\n"
+                "   - Mark which stories are IN SCOPE for the first sprint's\n"
+                "     MVP vs deferred. Favor shipping something end-to-end\n"
+                "     over completeness.\n"
+                "   - Write everything to docs/product_backlog.md. Every\n"
+                "     story MUST carry its own Mermaid use case diagram\n"
+                "     (flowchart LR with actor/use-case nodes — see\n"
+                "     product_manager.md).\n"
+                "   - Validate every ```mermaid block via the mermaid skill\n"
+                "     and fix any syntax error before responding.\n"
+                "   Pass expected_artifacts=['docs/product_backlog.md'].\n"
+                "4. STOP. Do NOT call mark_complete.",
+            ),
+            (
+                "sprint_design",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 2a — Lightweight Sprint Design (AGILE):\n"
+                "dispatch_task to architect. Require the architect to:\n"
+                "- Read docs/product_backlog.md.\n"
+                "- Produce docs/sprint_design.md with a LIGHTWEIGHT design\n"
+                "  scoped to the MVP stories only. Include: module\n"
+                "  decomposition (tables of modules with 1-line responsibility\n"
+                "  and public interface), data flow, and just ONE C4Container\n"
+                "  diagram (skip deep C4Component unless strictly necessary —\n"
+                "  this is a sprint, not a waterfall design phase).\n"
+                "- Keep deferred stories out of the design; they will drive\n"
+                "  a future sprint.\n"
+                "- Validate every ```mermaid block via the mermaid skill and\n"
+                "  fix any syntax error before responding.\n"
+                "Pass expected_artifacts=['docs/sprint_design.md'].\n"
+                "After it completes, STOP.\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "sprint_execution",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 2b — Sprint Execution (AGILE, rapid TDD):\n"
+                "1. Read docs/sprint_design.md to identify the MVP modules.\n"
+                "2. For EACH MVP module, dispatch developer via\n"
+                "   dispatch_tasks_parallel. Each task description must:\n"
+                "   - Include the module's spec from sprint_design.md.\n"
+                "   - Instruct strict TDD: write tests/test_<module>.py,\n"
+                "     then src/<module>.py, then run ONLY that module's test\n"
+                "     file (python -m pytest tests/test_<module>.py -q\n"
+                "     --tb=short). Up to 3 fix attempts.\n"
+                "   - Keep each module small enough to ship within the sprint.\n"
+                "     If a design element is large, reduce scope rather than\n"
+                "     stretching the sprint.\n"
+                "   - Set expected_artifacts=['src/<module>.py',\n"
+                "     'tests/test_<module>.py'].\n"
+                "3. When all dispatches return, STOP.\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "sprint_main_entry",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 2c — Working Entry Point (AGILE):\n"
+                "1. dispatch_task to developer: 'Write the project's main\n"
+                "   entry-point file that wires all MVP modules together so\n"
+                "   the sprint output can be demoed at review. Use the\n"
+                "   language convention (src/main.py for Python, src/index.js\n"
+                "   for Node, cmd/<app>/main.go for Go, etc.). The file MUST\n"
+                "   boot directly (python src/main.py, node src/index.js,\n"
+                "   go run …). End your response with ONE line:\n"
+                "       RUN: <command to launch>'\n"
+                "2. Run the RUN command with execute_shell(timeout=5).\n"
+                "   - timeout after 5s → SUCCESS (entered main loop).\n"
+                "   - exit_code 0 with normal output → SUCCESS.\n"
+                "   - exit_code != 0 with ImportError / SyntaxError /\n"
+                "     ModuleNotFoundError / NameError / AttributeError or\n"
+                "     missing-module startup failures → FAILURE.\n"
+                "3. If FAILURE, dispatch developer again with the failure\n"
+                "   text. Up to 3 attempts total.\n"
+                "4. STOP. Do NOT call mark_complete.",
+            ),
+            (
+                "sprint_review",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 3 — Sprint Review & Demo (AGILE):\n"
+                "dispatch_task to qa_engineer. Require the QA agent to:\n"
+                "- Read docs/product_backlog.md AND docs/sprint_design.md.\n"
+                "- Write tests/test_integration.py (ONLY integration tests —\n"
+                "  developers already wrote per-module unit tests). Cover\n"
+                "  every MVP user story's acceptance criteria end-to-end.\n"
+                '- RUN the FULL suite: execute(command="python -m pytest\n'
+                '  tests/ -q --tb=short") and iterate up to 3 times until\n'
+                "  tests pass.\n"
+                "- Write docs/sprint_review.md with a per-user-story\n"
+                "  PASS/FAIL table so the product owner can verify delivery\n"
+                "  during review. Include pytest final summary.\n"
+                "Pass expected_artifacts=['tests/test_integration.py',\n"
+                "'docs/sprint_review.md'].\n"
+                "After it completes, STOP.\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "sprint_retrospective",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 4 — Sprint Retrospective (AGILE):\n"
+                "dispatch_task to project_manager. Require the PM to write\n"
+                "docs/sprint_retrospective.md covering:\n"
+                "- What went well (which agents finished cleanly, which\n"
+                "  tests passed first try).\n"
+                "- What did not go well (failed dispatches, retries burned,\n"
+                "  modules that stretched).\n"
+                "- Action items for the next sprint (process changes,\n"
+                "  scope adjustments, additional tests to write).\n"
+                "The retrospective should ground itself in observable\n"
+                "metrics — have the PM look at docs/, src/, tests/ and\n"
+                "describe real outcomes, not speculation.\n"
+                "Pass expected_artifacts=['docs/sprint_retrospective.md'].\n"
+                "After it completes, STOP.\n"
+                "Do NOT call mark_complete.",
+            ),
+            (
+                "delivery",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 5 — Sprint Delivery Report (AGILE):\n\n"
+                "Collect real metrics then have product_manager write the\n"
+                "report. Do NOT guess numbers.\n\n"
+                "1. Collect metrics via execute_shell:\n"
+                "   a) Source file count:\n"
+                "      execute_shell('find src -type f -name \"*.py\" | wc -l')\n"
+                "   b) Source LOC (top files + total):\n"
+                "      execute_shell('find src -type f -name \"*.py\" -exec wc -l {} + | sort -rn | head -30')\n"
+                "   c) Test files + collected cases:\n"
+                "      execute_shell('find tests -type f -name \"test_*.py\" 2>/dev/null | wc -l')\n"
+                "      execute_shell('python -m pytest tests/ --collect-only -q 2>&1 | tail -5')\n"
+                "   d) Final pytest summary:\n"
+                "      execute_shell('python -m pytest tests/ -q --tb=line 2>&1 | tail -20')\n\n"
+                "2. Dispatch product_manager to write docs/delivery_report.md.\n"
+                "   Pass expected_artifacts=['docs/delivery_report.md'].\n"
+                "   Require the report to cover:\n"
+                "   1. MVP Summary — one paragraph on what shipped this sprint\n"
+                "      and whether it meets the DoD of the in-scope stories.\n"
+                "   2. User Stories Shipped vs Deferred — table with story ID,\n"
+                "      title, status (shipped / deferred / blocked).\n"
+                "   3. Design — bullets from docs/sprint_design.md.\n"
+                "   4. Implementation Metrics — source file count, LOC, entry\n"
+                "      point RUN command.\n"
+                "   5. Test Metrics — FULL-suite pass/fail/skipped from step d,\n"
+                "      pass rate percentage.\n"
+                "   6. Retrospective Highlights — 3-5 bullets from\n"
+                "      docs/sprint_retrospective.md.\n"
+                "   7. Next-Sprint Candidates — deferred stories + retro\n"
+                "      action items.\n"
+                "   EMBED the raw tool outputs verbatim so the PM cites real\n"
+                "   numbers.\n\n"
+                "3. After product_manager returns, call mark_complete with a\n"
+                "   short paragraph referencing docs/delivery_report.md.\n"
+                "   Include: project name, 'agile sprint', pass rate, shipped\n"
+                "   user stories count, deferred stories count, entry point\n"
+                "   verification outcome.",
+            ),
+        ]
+
+    def _build_agile_incremental_phase_prompts(self, requirement: str) -> list[tuple[str, str]]:
+        """Agile phase prompts for a follow-up sprint.
+
+        Each incremental requirement on an agile project is treated as a
+        NEW sprint: append stories to the backlog, design only what the
+        new stories touch, implement, review, retro, deliver. The full
+        test suite still runs in review — an agile sprint delivering a
+        broken baseline is not a sprint review.
+        """
+        return [
+            (
+                "sprint_planning",
+                f"New requirement for the next sprint: {requirement}\n\n"
+                "Execute Phase 1 — Sprint Planning (AGILE, INCREMENTAL):\n"
+                "dispatch_task to product_manager. Require the PM to:\n"
+                "- Read docs/product_backlog.md if present.\n"
+                "- APPEND a new '## Sprint <N> (ISO date)' section with\n"
+                "  stories derived from the new requirement. Mark MVP scope.\n"
+                "- Keep earlier stories untouched.\n"
+                "- Every new story keeps its own Mermaid use case diagram.\n"
+                "- Validate every ```mermaid block via the mermaid skill.\n"
+                "Pass expected_artifacts=['docs/product_backlog.md'].\n"
+                "STOP. Do NOT call mark_complete.",
+            ),
+            (
+                "sprint_design",
+                f"New requirement for the next sprint: {requirement}\n\n"
+                "Execute Phase 2a — Lightweight Sprint Design (AGILE,\n"
+                "INCREMENTAL):\n"
+                "dispatch_task to architect. Require the architect to:\n"
+                "- Read docs/sprint_design.md + docs/product_backlog.md.\n"
+                "- APPEND / UPDATE only the sections the new stories touch.\n"
+                "  Existing design stays. Keep C4 for architecture views.\n"
+                "- Validate every ```mermaid block via the mermaid skill.\n"
+                "Pass expected_artifacts=['docs/sprint_design.md'].\n"
+                "STOP. Do NOT call mark_complete.",
+            ),
+            (
+                "sprint_execution",
+                f"New requirement for the next sprint: {requirement}\n\n"
+                "Execute Phase 2b — Sprint Execution (AGILE, INCREMENTAL):\n"
+                "1. Read docs/sprint_design.md. Identify NEW/CHANGED MVP\n"
+                "   modules for this sprint only.\n"
+                "2. dispatch_tasks_parallel to developer for each module:\n"
+                "   - NEW modules: strict TDD. Write tests then source then\n"
+                "     run per-module tests. Up to 3 fix attempts.\n"
+                "   - CHANGED modules: task MUST say the file exists and\n"
+                "     developer must EDIT in place (edit_file) — never\n"
+                "     rewrite. Existing tests must keep passing.\n"
+                "   - expected_artifacts=['src/<module>.py',\n"
+                "     'tests/test_<module>.py'].\n"
+                "3. STOP. Do NOT call mark_complete.",
+            ),
+            (
+                "sprint_main_entry",
+                f"New requirement for the next sprint: {requirement}\n\n"
+                "Execute Phase 2c — Working Entry Point (AGILE,\n"
+                "INCREMENTAL, verify-only):\n"
+                "1. Check whether an entry file exists (src/main.py,\n"
+                "   src/index.js, cmd/<app>/main.go, src/main.rs). If yes,\n"
+                "   jump to step 3 with its RUN command; if no, dispatch\n"
+                "   developer to create one with a RUN: line.\n"
+                "2. Run RUN command via execute_shell(timeout=5). Same\n"
+                "   interpretation as initial mode (timeout/exit-0 success;\n"
+                "   startup-failure exit codes fail).\n"
+                "3. On FAILURE dispatch developer to fix. Up to 3 attempts.\n"
+                "4. STOP. Do NOT call mark_complete.",
+            ),
+            (
+                "sprint_review",
+                f"New requirement for the next sprint: {requirement}\n\n"
+                "Execute Phase 3 — Sprint Review & Demo (AGILE,\n"
+                "INCREMENTAL):\n"
+                "dispatch_task to qa_engineer:\n"
+                "- Read docs/product_backlog.md + docs/sprint_design.md\n"
+                "  (including the new sections).\n"
+                "- EDIT tests/test_integration.py in place (do NOT rewrite)\n"
+                "  to add scenarios for the new MVP stories.\n"
+                '- RUN the FULL suite: execute(command="python -m pytest\n'
+                '  tests/ -q --tb=short") and iterate up to 3 times until\n'
+                "  tests pass.\n"
+                "- EDIT docs/sprint_review.md — append a new section for\n"
+                "  this sprint with per-user-story PASS/FAIL.\n"
+                "Pass expected_artifacts=['tests/test_integration.py',\n"
+                "'docs/sprint_review.md'].\n"
+                "STOP. Do NOT call mark_complete.",
+            ),
+            (
+                "sprint_retrospective",
+                f"New requirement for the next sprint: {requirement}\n\n"
+                "Execute Phase 4 — Sprint Retrospective (AGILE,\n"
+                "INCREMENTAL):\n"
+                "dispatch_task to project_manager. APPEND a new sprint\n"
+                "section to docs/sprint_retrospective.md. Keep earlier\n"
+                "retros untouched. Cover went-well, did-not-go-well, and\n"
+                "action items — scoped to THIS sprint.\n"
+                "Pass expected_artifacts=['docs/sprint_retrospective.md'].\n"
+                "STOP. Do NOT call mark_complete.",
+            ),
+            (
+                "delivery",
+                f"New requirement for the next sprint: {requirement}\n\n"
+                "Execute Phase 5 — Sprint Delivery Report (AGILE,\n"
+                "INCREMENTAL):\n\n"
+                "Collect delta + full metrics:\n"
+                "   a) New or modified files since baseline:\n"
+                "      execute_shell('git status --short 2>/dev/null || true')\n"
+                "      execute_shell('git diff --name-only HEAD~1 2>/dev/null || true')\n"
+                "   b) Full file / LOC count:\n"
+                "      execute_shell('find src -type f -name \"*.py\" | wc -l')\n"
+                "      execute_shell('find src -type f -name \"*.py\" -exec wc -l {} + | sort -rn | head -30')\n"
+                "   c) Test suite:\n"
+                "      execute_shell('find tests -type f -name \"test_*.py\" 2>/dev/null | wc -l')\n"
+                "      execute_shell('python -m pytest tests/ --collect-only -q 2>&1 | tail -5')\n"
+                "      execute_shell('python -m pytest tests/ -q --tb=line 2>&1 | tail -20')\n\n"
+                "Dispatch product_manager to EDIT docs/delivery_report.md\n"
+                "(append a new sprint section — do NOT recreate). Cover:\n"
+                "  1. Sprint Delta Summary — new requirement + shipped /\n"
+                "     deferred stories.\n"
+                "  2. Modules added vs modules edited (from step a).\n"
+                "  3. Updated implementation metrics (step b).\n"
+                "  4. FULL-suite test metrics (step c).\n"
+                "  5. Retrospective bullets for this sprint.\n"
+                "Pass expected_artifacts=['docs/delivery_report.md'].\n"
+                "After it returns, call mark_complete with: project name,\n"
+                "'agile sprint <incremental>', pass rate, shipped stories\n"
+                "count, entry verification outcome.",
             ),
         ]
 

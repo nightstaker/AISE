@@ -151,6 +151,12 @@ class ProjectConfig:
 
     project_name: str = "Untitled Project"
     development_mode: str = "local"  # "local" or "github"
+    # Development process chosen at project creation time. ``waterfall``
+    # (default) runs the sequential lifecycle from the existing
+    # waterfall.process.md; ``agile`` runs the sprint-oriented
+    # agile.process.md. The ProjectSession uses this to pick the phase
+    # prompt set.
+    process_type: str = "waterfall"
     # UI language for the web console. ``zh`` (Simplified Chinese) or
     # ``en`` (English). The web app reads this at render time and emits
     # it as ``window.__AISE_LANG`` so the frontend ``t()`` helper can
@@ -463,6 +469,7 @@ class ProjectConfig:
         return {
             "project_name": self.project_name,
             "development_mode": self.development_mode,
+            "process_type": self.process_type,
             "ui_language": self.ui_language,
             "default_model": {
                 "provider": self.default_model.provider,
@@ -553,6 +560,9 @@ class ProjectConfig:
             config.project_name = str(data["project_name"])
         if "development_mode" in data:
             config.development_mode = str(data["development_mode"])
+        if "process_type" in data:
+            raw_process = str(data["process_type"]).strip().lower()
+            config.process_type = raw_process if raw_process in ("waterfall", "agile") else config.process_type
         if "ui_language" in data:
             raw_lang = str(data["ui_language"]).strip().lower()
             # Clamp to the two supported values; fall back to the default
