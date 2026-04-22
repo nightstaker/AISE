@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +15,111 @@ if TYPE_CHECKING:
     pass
 
 logger = get_logger(__name__)
+
+
+# Baseline ignores for a freshly scaffolded project. Keeps runtime
+# noise (trace files, .pyc caches, coverage DBs) out of git while
+# keeping the real artifacts — source, tests, docs, the delivery
+# report — under version control. The orchestrator's post-dispatch
+# commits (see :func:`tool_primitives.make_dispatch_tools`) only
+# capture what isn't ignored, so this list is the hinge between
+# "useful diff history" and "commit log clogged with trace JSON".
+_PROJECT_GITIGNORE = """\
+# AISE runtime artefacts
+runs/trace/
+runs/plans/
+analytics_events.jsonl
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Node / JS
+node_modules/
+dist/
+build/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+"""
+
+
+def _run_git(cwd: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+    """Run a ``git`` command under ``cwd`` and capture output.
+
+    Wrapper kept separate from the ProjectManager class so the same
+    helper is usable from both scaffolding (here) and the per-dispatch
+    commit hook in :mod:`aise.runtime.tool_primitives`.
+    """
+    return subprocess.run(  # noqa: S603 — args are literal strings from our own code
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+
+def _init_project_git_repo(project_root: Path) -> None:
+    """Initialize ``project_root`` as a standalone git repo.
+
+    Idempotent — a re-invocation on an already-initialized project is
+    a no-op (``git init`` exits 0 without clobbering state). We also
+    seed a ``.gitignore`` (if absent) and create the root commit so
+    later diffs against ``HEAD~1`` have something to compare against.
+
+    Note: ``projects_root`` frequently sits INSIDE a larger host repo
+    (e.g. ``AISE/projects/project_5-snake/`` lives inside the AISE
+    repo). ``git init`` in a subdirectory creates a nested repo, which
+    is exactly what we want — ``git`` commands inside the project root
+    from this point on operate on the project's own history, not the
+    host repo's.
+    """
+    try:
+        gitdir = project_root / ".git"
+        if not gitdir.exists():
+            result = _run_git(project_root, "init", "--quiet")
+            if result.returncode != 0:
+                logger.warning(
+                    "git init failed for project: root=%s stderr=%s",
+                    project_root,
+                    (result.stderr or "")[:200],
+                )
+                return
+        # Local repo identity — avoids surprises on hosts where the
+        # global git config has never been set.
+        _run_git(project_root, "config", "user.name", "AISE Orchestrator")
+        _run_git(project_root, "config", "user.email", "orchestrator@aise.local")
+        # Seed ``.gitignore`` only when absent — never overwrite an
+        # existing one (the project team may have tuned it).
+        gi_path = project_root / ".gitignore"
+        if not gi_path.exists():
+            gi_path.write_text(_PROJECT_GITIGNORE, encoding="utf-8")
+        # Initial commit (only if nothing has been committed yet).
+        head_check = _run_git(project_root, "rev-parse", "--verify", "HEAD")
+        if head_check.returncode != 0:
+            _run_git(project_root, "add", "-A")
+            _run_git(
+                project_root,
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "project scaffold",
+            )
+    except Exception as exc:  # pragma: no cover — never block creation on git errors
+        logger.warning("git repo init skipped for project=%s err=%s", project_root, exc)
+
 
 _SDLC_PHASES = ["requirements", "design", "implementation", "testing"]
 _PRIMARY_SKILL_BY_PHASE: dict[str, str] = {
@@ -139,6 +245,7 @@ class ProjectManager:
         project_root.mkdir(parents=True, exist_ok=True)
         for subdir in ("docs", "src", "tests", "scripts", "config", "artifacts", "trace"):
             (project_root / subdir).mkdir(parents=True, exist_ok=True)
+        _init_project_git_repo(project_root)
         return project_root
 
     def get_project(self, project_id: str) -> Project | None:

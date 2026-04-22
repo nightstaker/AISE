@@ -90,6 +90,12 @@ DEFAULT_SHELL_ALLOWLIST: tuple[str, ...] = (
     "grep",
     "wc",
     "find",
+    # Version control. The runtime auto-initializes each project as
+    # its own git repo and commits after every successful dispatch
+    # (see the ``git`` skill). Agents may read repo state (status,
+    # log, diff) via execute_shell but should leave commits to the
+    # runtime.
+    "git",
 )
 
 DEFAULT_SHELL_TIMEOUT_SECONDS = 120

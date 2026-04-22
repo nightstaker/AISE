@@ -141,5 +141,6 @@ responsibility in Phase 5.
 
 - tdd: Test-Driven Development workflow with 1:1 source-to-test file mapping [tdd, testing, implementation]
 - code_inspection: Run a language-appropriate static analyzer on every source file written and fix every finding [lint, static-analysis, quality]
+- git: Local version control convention — runtime auto-commits per dispatch; use git for read-only history queries [git, vcs, history]
 - code_generation: Generate module scaffolding from architecture design
 - bug_fix: Fix bugs with root cause analysis

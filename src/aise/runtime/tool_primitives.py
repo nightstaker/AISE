@@ -118,6 +118,95 @@ def _artifact_shortfalls(
     return shortfalls
 
 
+def _autocommit_dispatch_changes(
+    project_root: Path | None,
+    *,
+    agent_name: str,
+    step_id: str,
+    phase: str,
+    summary: str,
+) -> dict[str, str]:
+    """Stage + commit whatever a dispatch wrote, as one commit per task.
+
+    The project root is initialized as its own git repo by
+    :func:`aise.core.project_manager._init_project_git_repo` at
+    creation time. This helper runs immediately after a successful
+    dispatch and produces a commit with the shape::
+
+        <agent>(<step_id or phase>): <truncated first line of response>
+
+    Returns a small status dict so the event log / UI can surface it:
+
+    - ``{"status": "no-project"}`` — session has no ``project_root``.
+    - ``{"status": "not-a-repo"}`` — project root isn't a git repo
+      (e.g. an older project scaffolded before this feature existed).
+      Silent; we don't try to init one on the fly.
+    - ``{"status": "nothing-to-commit"}`` — dispatch was read-only
+      (the agent only called read_file / execute, no writes).
+    - ``{"status": "committed", "sha": "<7-char sha>", "message": "..."}``
+      — the happy path.
+    - ``{"status": "error", "error": "..."}`` — git command failed;
+      commit skipped, the run continues regardless.
+
+    Never raises — a broken git setup must not block a run.
+    """
+    if project_root is None:
+        return {"status": "no-project"}
+    if not (project_root / ".git").exists():
+        return {"status": "not-a-repo"}
+    try:
+        status = subprocess.run(  # noqa: S603 — args are literal strings from our own code
+            ["git", "status", "--porcelain"],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if status.returncode != 0:
+            return {"status": "error", "error": (status.stderr or "")[:200]}
+        if not (status.stdout or "").strip():
+            return {"status": "nothing-to-commit"}
+        subprocess.run(  # noqa: S603
+            ["git", "add", "-A"],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # Compose a commit message. Format:
+        #   <agent>(<step_id or phase or "dispatch">): <first line>
+        # Keeping the first line ≤72 chars is the git convention.
+        scope = (step_id or phase or "dispatch").strip() or "dispatch"
+        first_line = (summary or "").strip().splitlines()[0] if (summary or "").strip() else ""
+        # Truncate the composed subject to 72 chars total (leaving room
+        # for "<agent>(<scope>): " prefix).
+        prefix = f"{agent_name}({scope}): "
+        remaining = max(0, 72 - len(prefix))
+        subject = prefix + (first_line[:remaining] if first_line else "no-op")
+        commit = subprocess.run(  # noqa: S603
+            ["git", "commit", "--quiet", "-m", subject],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if commit.returncode != 0:
+            return {"status": "error", "error": (commit.stderr or "")[:200]}
+        sha_proc = subprocess.run(  # noqa: S603
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        sha = (sha_proc.stdout or "").strip()
+        return {"status": "committed", "sha": sha, "message": subject}
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": "git command timed out"}
+    except Exception as exc:  # pragma: no cover — defensive
+        return {"status": "error", "error": str(exc)[:200]}
+
+
 def _build_retry_prompt(original_task: str, previous_response: str) -> str:
     """Compose the context-augmented retry prompt for a dispatch."""
     prev = previous_response.strip()
@@ -463,6 +552,18 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
 
             output_len = len(result)
             preview = result[:500] + "..." if output_len > 500 else result
+            # Auto-commit any filesystem changes the dispatch produced
+            # to the project's local git repo. Deterministic: doesn't
+            # rely on the agent remembering to commit. One commit per
+            # successful dispatch, tagged with agent + step_id so the
+            # log reads as a phase-by-phase timeline.
+            commit_info = _autocommit_dispatch_changes(
+                ctx.project_root,
+                agent_name=agent_name,
+                step_id=step_id,
+                phase=phase,
+                summary=preview,
+            )
             response_msg = {
                 "taskId": task_id,
                 "from": agent_name,
@@ -474,15 +575,17 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
                     "output_preview": preview,
                     "output_length": output_len,
                     "retries": retries_used,
+                    "commit": commit_info,
                 },
             }
             ctx.emit(response_msg)
             logger.info(
-                "Task completed: task=%s from=%s output=%d chars retries=%d",
+                "Task completed: task=%s from=%s output=%d chars retries=%d commit=%s",
                 task_id,
                 agent_name,
                 output_len,
                 retries_used,
+                (commit_info or {}).get("sha") or (commit_info or {}).get("status", "skipped"),
             )
             return json.dumps(response_msg, ensure_ascii=False)
         except Exception as exc:

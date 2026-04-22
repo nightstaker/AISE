@@ -104,6 +104,7 @@ value.
 - product_review: Validate PRD against requirements
 - document_generation: Generate system-design.md and system-requirements.md
 - mermaid: Validate every Mermaid code fence in the document after writing and fix any syntax errors [mermaid, diagram, validation]
+- git: Local version control convention — runtime auto-commits per dispatch; use git for read-only history queries [git, vcs, history]
 - pr_submission: Submit requirement documents as a PR
 - pr_review: Review requirement document PR
 - pr_merge: Merge requirement document PR

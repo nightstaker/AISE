@@ -78,4 +78,5 @@ unit tests (and already run pytest to verify those unit tests pass).
 - test_case_design: Design integration, E2E, and regression test cases
 - test_automation: Generate pytest scripts from test cases
 - test_review: Validate coverage and quality
+- git: Local version control convention — runtime auto-commits per dispatch; use git for read-only history queries [git, vcs, history]
 - pr_review: Review pull requests
