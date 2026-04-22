@@ -1129,6 +1129,81 @@ function setupRunReact() {
                 : runStatus === "running" ? "run-status-running" : "run-status-pending";
         const toggleStage = (s) => setStageFilter((prev) => prev === s ? null : s);
 
+        // Retry / restart handlers. The UI only exposes these when the
+        // run is in a terminal failed state. Both actions spawn a new
+        // run and navigate there so the user sees the resumed progress
+        // immediately. ``retry`` starts at the phase that broke (server
+        // decides based on failed_phase_idx); ``restart`` starts at 0.
+        const [recoveryBusy, setRecoveryBusy] = window.React.useState("");
+        const [recoveryError, setRecoveryError] = window.React.useState("");
+        async function recoverRun(action) {
+            setRecoveryBusy(action);
+            setRecoveryError("");
+            const url = "/api/projects/" + encodeURIComponent(project.info.project_id)
+                + "/runs/" + encodeURIComponent(run.run_id)
+                + "/" + action;
+            try {
+                const d = await fetchJson(url, { method: "POST" });
+                if (d && d.run_id) {
+                    window.location.href = "/projects/" + encodeURIComponent(project.info.project_id)
+                        + "/runs/" + encodeURIComponent(d.run_id);
+                    return;
+                }
+            } catch (err) {
+                setRecoveryBusy("");
+                setRecoveryError(err instanceof Error ? err.message : "failed");
+            }
+        }
+
+        const failedPhaseIdx = (typeof run.failed_phase_idx === "number") ? run.failed_phase_idx : -1;
+        const failedPhaseName = run.failed_phase_name || "";
+        const phaseTotal = (typeof run.phase_total === "number" && run.phase_total > 0) ? run.phase_total : 0;
+        const retryHint = failedPhaseIdx >= 0
+            ? t("run.recovery.retry_from_phase", {
+                name: resolveStageLabel(failedPhaseName) || failedPhaseName || String(failedPhaseIdx + 1),
+                idx: failedPhaseIdx + 1,
+                total: phaseTotal || "?",
+            })
+            : t("run.recovery.retry_hint");
+        const canRecover = runStatus === "failed";
+        const recoverySection = canRecover ? h(
+            "div",
+            { className: "run-recovery-bar" },
+            h("div", { className: "run-recovery-hint" }, retryHint),
+            h(
+                "button",
+                {
+                    type: "button",
+                    className: "btn",
+                    disabled: recoveryBusy !== "",
+                    onClick: () => recoverRun("retry"),
+                    title: t("run.recovery.retry_tooltip"),
+                },
+                recoveryBusy === "retry" ? t("common.submitting") : t("run.recovery.retry_btn")
+            ),
+            h(
+                "button",
+                {
+                    type: "button",
+                    className: "btn secondary",
+                    disabled: recoveryBusy !== "",
+                    onClick: () => recoverRun("restart"),
+                    title: t("run.recovery.restart_tooltip"),
+                },
+                recoveryBusy === "restart" ? t("common.submitting") : t("run.recovery.restart_btn")
+            ),
+            recoveryError ? h("span", { className: "warning" }, recoveryError) : null,
+        ) : null;
+
+        // Retry-chain hint: if this run was derived from another one
+        // we flag it so the user can jump back to the parent.
+        const resumedFromRunId = run.resumed_from_run_id || "";
+        const resumedBadge = resumedFromRunId ? h("a", {
+            className: "run-mode-badge run-mode-badge-resumed",
+            href: "/projects/" + encodeURIComponent(project.info.project_id) + "/runs/" + encodeURIComponent(resumedFromRunId),
+            title: t("run.recovery.resumed_from_tooltip", { run_id: resumedFromRunId }),
+        }, t("run.recovery.resumed_from_badge")) : null;
+
         return h("div", { className: "run-container" },
             h("div", { className: "run-header" },
                 h("div", { className: "run-header-left" },
@@ -1155,7 +1230,9 @@ function setupRunReact() {
                         className: "run-mode-badge run-mode-badge-waterfall",
                         title: t("run.process.waterfall_hint"),
                     }, t("run.process.waterfall")),
+                resumedBadge,
             ),
+            recoverySection,
             h("div", { className: "run-section" },
                 h("div", { className: "run-section-title" }, t("run.section.requirement")),
                 h("div", { className: "run-requirement-text" }, run.requirement_text || ""),

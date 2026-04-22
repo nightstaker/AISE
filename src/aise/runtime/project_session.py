@@ -54,6 +54,7 @@ class ProjectSession:
         runtime_config: RuntimeConfig | None = None,
         mode: str = "initial",
         process_type: str = "waterfall",
+        start_phase_idx: int = 0,
     ) -> None:
         """Initialize a project session.
 
@@ -76,6 +77,11 @@ class ProjectSession:
                 Agile swaps the waterfall linear lifecycle for an MVP-
                 centered sprint sequence (planning → execution → review
                 → retrospective → delivery).
+            start_phase_idx: Zero-based phase index to begin at. Defaults
+                to 0 (run every phase). Retry-from-failure wraps this
+                so a resumed session skips phases that already finished
+                — the artifacts on disk from the prior attempt stay in
+                place, and downstream agents re-read them as usual.
         """
         self._manager = manager
         self._session_id = uuid.uuid4().hex[:12]
@@ -86,6 +92,11 @@ class ProjectSession:
         self._mode = raw_mode if raw_mode in ("initial", "incremental") else "initial"
         raw_process = str(process_type or "waterfall").strip().lower()
         self._process_type = raw_process if raw_process in ("waterfall", "agile") else "waterfall"
+        try:
+            start_idx = int(start_phase_idx)
+        except (TypeError, ValueError):
+            start_idx = 0
+        self._start_phase_idx = max(0, start_idx)
 
         if self._project_root:
             self._scaffold_project_dirs(self._project_root)
@@ -139,9 +150,45 @@ class ProjectSession:
             # agent-level tactics within each phase.
             phases = self._build_phase_prompts(requirement)
             response = ""
+            total_phases = len(phases)
+            # Broadcast the planned phase layout so the UI can pre-render
+            # the stepper even before the first agent dispatch. Emitting
+            # once at the top keeps downstream event processing simple.
+            self._ctx.emit(
+                {
+                    "type": "phase_plan",
+                    "phases": [name for name, _prompt in phases],
+                    "total": total_phases,
+                    "start_phase_idx": self._start_phase_idx,
+                    "timestamp": _now(),
+                }
+            )
+            if self._start_phase_idx and self._start_phase_idx < total_phases:
+                logger.info(
+                    "Resuming session=%s at phase %d/%d",
+                    self._session_id,
+                    self._start_phase_idx + 1,
+                    total_phases,
+                )
+                self._ctx.emit(
+                    {
+                        "type": "phase_resume",
+                        "phase_idx": self._start_phase_idx,
+                        "phase_name": phases[self._start_phase_idx][0],
+                        "total": total_phases,
+                        "timestamp": _now(),
+                    }
+                )
 
             for phase_idx, (phase_name, phase_prompt) in enumerate(phases):
-                is_last_phase = phase_idx == len(phases) - 1
+                if phase_idx < self._start_phase_idx:
+                    # Resumed session skipping an earlier, already-completed
+                    # phase. Don't emit phase_start / phase_complete for
+                    # skipped phases — the UI uses missing events as the
+                    # signal that the phase was not re-run this session.
+                    continue
+
+                is_last_phase = phase_idx == total_phases - 1
 
                 # Only honor mark_complete in the LAST phase. PM often
                 # calls it prematurely (e.g. after implementation, skipping
@@ -150,7 +197,7 @@ class ProjectSession:
                     logger.info(
                         "Ignoring premature mark_complete at phase %d/%d [%s]",
                         phase_idx + 1,
-                        len(phases),
+                        total_phases,
                         phase_name,
                     )
                     self._workflow_state.is_complete = False
@@ -166,15 +213,42 @@ class ProjectSession:
                 logger.info(
                     "Phase %d/%d [%s]: session=%s dispatches=%d",
                     phase_idx + 1,
-                    len(phases),
+                    total_phases,
                     phase_name,
                     self._session_id,
                     self._ctx.dispatch_count(),
+                )
+                # Bracket each phase with start/complete events so the
+                # retry-from-failure path has a deterministic record of
+                # which phase was the last to BEGIN (but never complete).
+                self._ctx.emit(
+                    {
+                        "type": "phase_start",
+                        "phase_idx": phase_idx,
+                        "phase_name": phase_name,
+                        "total": total_phases,
+                        "timestamp": _now(),
+                    }
                 )
 
                 # Fresh PM runtime per phase — no context accumulation
                 self._pm_runtime = self._build_pm_runtime()
                 response = self._invoke_pm(phase_prompt)
+
+                self._ctx.emit(
+                    {
+                        "type": "phase_complete",
+                        "phase_idx": phase_idx,
+                        "phase_name": phase_name,
+                        "total": total_phases,
+                        "timestamp": _now(),
+                    }
+                )
+
+                # Post-phase hooks (pure-Python, LLM-free). Run after
+                # every phase so incremental runs can still refresh the
+                # project-root config if the dominant language changed.
+                self._run_post_phase_hooks(phase_idx, phase_name)
 
             if self._workflow_state.is_complete and self._workflow_state.final_report:
                 return self._workflow_state.final_report
@@ -316,6 +390,102 @@ class ProjectSession:
             self._session_id,
         )
         return rt
+
+    # Phases after which the language-config generator should run. Kept
+    # as a small set so adding a new process_type with different phase
+    # names (e.g. a hypothetical ``kanban``) just means extending this
+    # tuple. Running after ``main_entry`` / ``sprint_main_entry``
+    # guarantees the entry command is known; running after QA adds a
+    # safety net for processes that skip the main-entry phase entirely.
+    _POST_PHASE_LANG_CONFIG = frozenset(
+        {
+            "main_entry",
+            "sprint_main_entry",
+            "qa_testing",
+            "sprint_review",
+        }
+    )
+
+    def _run_post_phase_hooks(self, phase_idx: int, phase_name: str) -> None:
+        """Pure-Python hooks that run after each successful phase.
+
+        The only hook today is the language-idiomatic root config
+        generator (pyproject.toml / package.json / go.mod / Cargo.toml
+        / pom.xml). It's gated by phase so it doesn't run before the
+        developer has produced any source. Any failure here is logged
+        and swallowed — a broken post-phase hook must never mark the
+        whole run as failed.
+        """
+        if phase_name not in self._POST_PHASE_LANG_CONFIG:
+            return
+        if self._project_root is None:
+            return
+        from .lang_config import generate_root_config
+
+        try:
+            project_name = self._project_root.name or ""
+            # Strip the leading "project_N-" prefix so the package name
+            # is the human-friendly slug, not the internal id.
+            if "-" in project_name:
+                _prefix, _sep, remainder = project_name.partition("-")
+                if _prefix.startswith("project_"):
+                    project_name = remainder or project_name
+            run_command = self._extract_last_run_command()
+            result = generate_root_config(
+                self._project_root,
+                project_name=project_name,
+                run_command=run_command,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Language config generation failed (post-phase %s): %s",
+                phase_name,
+                exc,
+            )
+            return
+        self._ctx.emit(
+            {
+                "type": "language_config",
+                "phase_idx": phase_idx,
+                "phase_name": phase_name,
+                "language": result.get("language"),
+                "path": result.get("path"),
+                "created": bool(result.get("created")),
+                "skipped": bool(result.get("skipped")),
+                "reason": result.get("reason", ""),
+                "timestamp": _now(),
+            }
+        )
+        if result.get("created"):
+            logger.info(
+                "Generated %s (%s) after phase %s",
+                result.get("path"),
+                result.get("language"),
+                phase_name,
+            )
+
+    def _extract_last_run_command(self) -> str:
+        """Pull the most recent ``RUN: <cmd>`` line out of the task log.
+
+        The main-entry phase instructs the developer to end its response
+        with exactly one line of the form ``RUN: <command>``. That
+        command is echoed back through the orchestrator's
+        ``task_response`` event as ``output_preview``. The language-
+        config generator uses it to fill in per-language entry-point
+        metadata (e.g. the ``[project.scripts]`` table for Python).
+        """
+        log = self.task_log
+        for event in reversed(log):
+            if event.get("type") != "task_response":
+                continue
+            preview = str(event.get("output_preview", "") or event.get("output", ""))
+            if not preview:
+                continue
+            for line in preview.splitlines():
+                stripped = line.strip()
+                if stripped.upper().startswith("RUN:"):
+                    return stripped.split(":", 1)[1].strip()
+        return ""
 
     def _scaffold_project_dirs(self, root: Path) -> None:
         """Pre-create the directories declared by every loaded agent's output_layout.

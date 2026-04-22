@@ -3187,6 +3187,32 @@ button.flow-composite-card:hover,
   border: 1px solid rgba(100, 116, 139, 0.25);
 }
 
+.run-mode-badge-resumed {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.10);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  text-decoration: none;
+}
+.run-mode-badge-resumed:hover { text-decoration: underline; }
+
+.run-recovery-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin: 12px 0;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.20);
+  border-radius: var(--radius);
+}
+.run-recovery-hint {
+  color: var(--text);
+  font-size: 13px;
+  flex: 1;
+  min-width: 220px;
+}
+
 /* ------------------------------------------------------------------ */
 /* Users management page                                                */
 /* ------------------------------------------------------------------ */

@@ -471,6 +471,54 @@ class TestPhase6DeliveryReport:
         assert "self-review" in body.lower() or "manual" in body.lower()
 
 
+class TestProjectSessionPhaseEvents:
+    def test_phase_plan_emitted_once(self, session):
+        """The session emits a single ``phase_plan`` before any phase runs."""
+        session._pm_runtime.handle_message.return_value = ""
+        session.run("Build something")
+        plans = [e for e in session.task_log if e.get("type") == "phase_plan"]
+        assert len(plans) == 1
+        plan = plans[0]
+        assert plan["total"] > 0
+        assert isinstance(plan["phases"], list)
+        assert len(plan["phases"]) == plan["total"]
+        assert plan["start_phase_idx"] == 0
+
+    def test_phase_start_complete_pair_per_phase(self, session):
+        """Every phase that runs emits both a start and a complete event."""
+        session._pm_runtime.handle_message.return_value = ""
+        session.run("Build something")
+        starts = [e for e in session.task_log if e.get("type") == "phase_start"]
+        completes = [e for e in session.task_log if e.get("type") == "phase_complete"]
+        assert len(starts) == len(completes)
+        # idx sequence is monotonic.
+        assert [e["phase_idx"] for e in starts] == sorted(e["phase_idx"] for e in starts)
+
+    def test_start_phase_idx_skips_earlier_phases(self, started_manager):
+        """Resuming at phase N skips phases 0..N-1 entirely."""
+        with patch.object(ProjectSession, "_build_pm_runtime") as mock_build:
+            pm_rt = MagicMock()
+            pm_rt.handle_message.return_value = ""
+            mock_build.return_value = pm_rt
+            sess = ProjectSession(started_manager, start_phase_idx=2)
+            sess.run("Resume me")
+        starts = [e for e in sess.task_log if e.get("type") == "phase_start"]
+        # All emitted phase_start events should have idx >= 2.
+        assert starts, "expected at least one phase_start after resume"
+        assert all(e["phase_idx"] >= 2 for e in starts)
+        # A phase_resume event should also be emitted.
+        resumes = [e for e in sess.task_log if e.get("type") == "phase_resume"]
+        assert len(resumes) == 1
+        assert resumes[0]["phase_idx"] == 2
+
+    def test_start_phase_idx_zero_emits_no_resume(self, session):
+        """Normal runs don't emit phase_resume — only retries do."""
+        session._pm_runtime.handle_message.return_value = ""
+        session.run("Fresh run")
+        resumes = [e for e in session.task_log if e.get("type") == "phase_resume"]
+        assert resumes == []
+
+
 class TestProjectSessionRun:
     def test_run_calls_pm_runtime(self, session):
         # Simulate a phased workflow. mark_complete is only honored in the

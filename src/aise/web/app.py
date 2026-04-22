@@ -70,6 +70,19 @@ class WorkflowRun:
     task_log: list[dict[str, Any]] = field(default_factory=list)
     mode: str = "initial"
     process_type: str = "waterfall"
+    # Phase-level metadata populated by the session's phase_start /
+    # phase_complete events and surfaced to the UI so a failed run
+    # can be retried from the phase that broke. ``failed_phase_idx``
+    # is -1 when the run never reached a phase (e.g. crashed during
+    # session setup) or completed cleanly.
+    failed_phase_idx: int = -1
+    failed_phase_name: str = ""
+    phase_total: int = 0
+    # Link to the run this one was retried / restarted from. ``""`` for
+    # original submissions. Lets the UI show a "retry of run_xxx" hint
+    # and lets the user walk the retry chain backwards.
+    resumed_from_run_id: str = ""
+    start_phase_idx: int = 0
 
 
 @dataclass
@@ -286,6 +299,94 @@ class WebProjectService:
         # Re-submit the original requirement
         return self.run_requirement(project_id, original_text)
 
+    # -- Failed-run recovery -------------------------------------------------
+
+    def retry_run(self, project_id: str, run_id: str) -> str:
+        """Resume a failed run from the phase that broke.
+
+        Creates a NEW run (with its own run_id and fresh task_log) that
+        shares the project root, requirement text, mode, and
+        process_type of the failed run. The new session starts at the
+        failed run's ``failed_phase_idx``; earlier phases are skipped
+        entirely. Artifacts written by earlier phases (docs/, src/,
+        tests/) stay on disk so the resumed session can read them.
+        """
+        return self._spawn_derived_run(project_id, run_id, reset_to_zero=False)
+
+    def restart_run(self, project_id: str, run_id: str) -> str:
+        """Re-run the SAME requirement from phase 0.
+
+        Unlike :meth:`restart_project` which also wipes history and
+        filesystem state, this keeps all prior runs visible and only
+        re-submits THIS run's requirement from the beginning. New
+        agents will see the existing docs/ / src/ / tests/ from
+        earlier attempts and either overwrite or extend them.
+        """
+        return self._spawn_derived_run(project_id, run_id, reset_to_zero=True)
+
+    def _spawn_derived_run(self, project_id: str, run_id: str, *, reset_to_zero: bool) -> str:
+        """Shared retry / restart implementation.
+
+        ``reset_to_zero=True`` forces start_phase_idx=0 (restart);
+        ``False`` uses the failed phase index so the retry picks up
+        where the failure happened.
+        """
+        with self._lock:
+            project = self.project_manager.get_project(project_id)
+            if project is None:
+                raise ValueError(f"Project {project_id} not found")
+            source = self._find_run(project_id, run_id)
+            if source is None:
+                raise ValueError(f"Run {run_id} not found")
+            if source.status in ("pending", "running"):
+                raise ValueError(f"Run {run_id} is still {source.status}; wait for it to finish before retrying.")
+            start_phase_idx = 0
+            if not reset_to_zero:
+                if source.failed_phase_idx >= 0:
+                    start_phase_idx = int(source.failed_phase_idx)
+                else:
+                    # Retry requested on a run that never emitted a
+                    # phase_start (pre-phase crash) — fall back to 0
+                    # so the user gets a clean re-run rather than a
+                    # confusing no-op.
+                    start_phase_idx = 0
+            new_run_id = f"run_{uuid.uuid4().hex[:10]}"
+            new_run = WorkflowRun(
+                run_id=new_run_id,
+                requirement_text=source.requirement_text,
+                started_at=datetime.now(timezone.utc),
+                status="running",
+                mode=source.mode,
+                process_type=source.process_type,
+                phase_total=source.phase_total,
+                resumed_from_run_id=source.run_id,
+                start_phase_idx=start_phase_idx,
+            )
+            self._runs_by_project.setdefault(project_id, []).append(new_run)
+            self._active_workflow_runs.add((project_id, new_run_id))
+            self._save_state()
+
+        Thread(
+            target=self._execute_run,
+            args=(
+                project_id,
+                new_run_id,
+                source.requirement_text,
+                source.mode,
+                source.process_type,
+                start_phase_idx,
+            ),
+            daemon=True,
+        ).start()
+        logger.info(
+            "Derived run dispatched: parent=%s new=%s start_phase_idx=%d (%s)",
+            run_id,
+            new_run_id,
+            start_phase_idx,
+            "restart" if reset_to_zero else "retry",
+        )
+        return new_run_id
+
     # -- Requirement execution via ProjectSession ----------------------------
 
     def run_requirement(self, project_id: str, requirement_text: str) -> str:
@@ -331,7 +432,7 @@ class WebProjectService:
 
         Thread(
             target=self._execute_run,
-            args=(project_id, run_id, requirement_text, mode, process_type),
+            args=(project_id, run_id, requirement_text, mode, process_type, 0),
             daemon=True,
         ).start()
         return run_id
@@ -343,16 +444,41 @@ class WebProjectService:
         requirement: str,
         mode: str = "initial",
         process_type: str = "waterfall",
+        start_phase_idx: int = 0,
     ) -> None:
         """Background thread: run requirement via ProjectSession."""
         from ..runtime.project_session import ProjectSession
 
         def on_event(event: dict[str, Any]) -> None:
-            """Sync each A2A event to the WorkflowRun in real-time."""
+            """Sync each A2A event to the WorkflowRun in real-time.
+
+            The phase_plan / phase_start / phase_complete events are
+            also mirrored onto run-level fields so the dashboard and
+            retry API don't have to re-walk the log.
+            """
             with self._lock:
                 run = self._find_run(project_id, run_id)
-                if run is not None:
-                    run.task_log.append(event)
+                if run is None:
+                    return
+                run.task_log.append(event)
+                event_type = event.get("type")
+                if event_type == "phase_plan":
+                    try:
+                        run.phase_total = int(event.get("total") or 0)
+                    except (TypeError, ValueError):
+                        pass
+                elif event_type == "phase_start":
+                    try:
+                        run.failed_phase_idx = int(event.get("phase_idx"))
+                    except (TypeError, ValueError):
+                        run.failed_phase_idx = -1
+                    run.failed_phase_name = str(event.get("phase_name", ""))
+                elif event_type == "phase_complete":
+                    # Phase cleared — if the next phase_start arrives we'll
+                    # overwrite these; if the session ends cleanly, the
+                    # final status=completed branch resets them anyway.
+                    run.failed_phase_idx = -1
+                    run.failed_phase_name = ""
 
         # Resolve project root for file output
         project_root = None
@@ -368,6 +494,7 @@ class WebProjectService:
                 on_event=on_event,
                 mode=mode,
                 process_type=process_type,
+                start_phase_idx=start_phase_idx,
             )
             result = session.run(requirement)
 
@@ -377,6 +504,8 @@ class WebProjectService:
                     run.status = "completed"
                     run.completed_at = datetime.now(timezone.utc)
                     run.result = result
+                    run.failed_phase_idx = -1
+                    run.failed_phase_name = ""
                 self._active_workflow_runs.discard((project_id, run_id))
                 self._save_state()
 
@@ -741,6 +870,21 @@ class WebProjectService:
                     raw_process = str(item.get("process_type", "waterfall")).strip().lower()
                     if raw_process not in ("waterfall", "agile"):
                         raw_process = "waterfall"
+                    failed_idx_raw = item.get("failed_phase_idx", -1)
+                    try:
+                        failed_idx = int(failed_idx_raw)
+                    except (TypeError, ValueError):
+                        failed_idx = -1
+                    total_raw = item.get("phase_total", 0)
+                    try:
+                        phase_total_val = int(total_raw)
+                    except (TypeError, ValueError):
+                        phase_total_val = 0
+                    start_idx_raw = item.get("start_phase_idx", 0)
+                    try:
+                        start_idx_val = int(start_idx_raw)
+                    except (TypeError, ValueError):
+                        start_idx_val = 0
                     self._runs_by_project[project_id].append(
                         WorkflowRun(
                             run_id=str(item.get("run_id", "")),
@@ -753,6 +897,11 @@ class WebProjectService:
                             task_log=list(item.get("task_log", [])),
                             mode=raw_mode,
                             process_type=raw_process,
+                            failed_phase_idx=failed_idx,
+                            failed_phase_name=str(item.get("failed_phase_name", "")),
+                            phase_total=phase_total_val,
+                            resumed_from_run_id=str(item.get("resumed_from_run_id", "")),
+                            start_phase_idx=max(0, start_idx_val),
                         )
                     )
 
@@ -840,6 +989,11 @@ class WebProjectService:
             "task_log": run.task_log,
             "mode": run.mode,
             "process_type": run.process_type,
+            "failed_phase_idx": run.failed_phase_idx,
+            "failed_phase_name": run.failed_phase_name,
+            "phase_total": run.phase_total,
+            "resumed_from_run_id": run.resumed_from_run_id,
+            "start_phase_idx": run.start_phase_idx,
         }
 
     @staticmethod
@@ -1349,6 +1503,24 @@ def create_app() -> FastAPI:
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
         return run
+
+    @app.post("/api/projects/{project_id}/runs/{run_id}/retry")
+    async def api_retry_run(request: Request, project_id: str, run_id: str) -> dict[str, Any]:
+        require_permission(request, PERM_RUN_PROJECTS)
+        try:
+            new_run_id = service.retry_run(project_id, run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"retried": True, "project_id": project_id, "run_id": new_run_id, "parent_run_id": run_id}
+
+    @app.post("/api/projects/{project_id}/runs/{run_id}/restart")
+    async def api_restart_run(request: Request, project_id: str, run_id: str) -> dict[str, Any]:
+        require_permission(request, PERM_RUN_PROJECTS)
+        try:
+            new_run_id = service.restart_run(project_id, run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"restarted": True, "project_id": project_id, "run_id": new_run_id, "parent_run_id": run_id}
 
     @app.get("/api/config/global")
     async def api_get_global_config(request: Request) -> dict[str, Any]:
