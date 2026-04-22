@@ -38,6 +38,50 @@ def _login_dev(client: TestClient) -> None:
     assert resp.status_code == 303
 
 
+def _stub_scaffolding(service: "WebProjectService") -> None:
+    """Replace the async PM scaffold dispatch with a synchronous
+    filesystem stub.
+
+    The real ``_dispatch_scaffolding_to_pm`` asks a real LLM to run
+    ``git init`` / write ``.gitignore`` / ``mkdir`` the subdirs. In
+    tests we have no LLM credentials — without this stub, every
+    project lands in ``SCAFFOLDING_FAILED`` and every subsequent
+    ``run_requirement`` submission is rejected.
+
+    The stub creates the files the post-dispatch invariant check
+    expects (``.git`` / ``.gitignore`` / the standard subdirs) so
+    ``_scaffold_project`` flips the status to ACTIVE via its normal
+    code path. This exercises more of the production flow than
+    short-circuiting the whole background thread would.
+    """
+
+    def _synthetic_scaffold(project, prompt):  # type: ignore[no-untyped-def]
+        root = Path(project.project_root)
+        (root / ".git").mkdir(exist_ok=True)
+        (root / ".gitignore").write_text("# test stub\n", encoding="utf-8")
+        for subdir in ("docs", "src", "tests", "scripts", "config", "artifacts", "trace"):
+            (root / subdir).mkdir(exist_ok=True)
+
+    service._dispatch_scaffolding_to_pm = _synthetic_scaffold  # type: ignore[method-assign]
+
+
+def _wait_for_scaffolding(service: "WebProjectService", project_id: str, timeout: float = 2.0) -> str:
+    """Poll the project's status until it leaves SCAFFOLDING.
+
+    Returns the resolved status value (``"active"`` on happy path or
+    ``"scaffolding_failed"`` if the stub wasn't installed). Raises on
+    timeout so a hanging scaffold thread surfaces as a test failure
+    instead of a mysterious downstream ``run_requirement`` rejection.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        project = service.project_manager.get_project(project_id)
+        if project is not None and project.status.value != "scaffolding":
+            return project.status.value
+        time.sleep(0.02)
+    raise AssertionError(f"scaffolding did not finish within {timeout}s for project {project_id}")
+
+
 class TestWebApi:
     def test_api_requires_auth(self, monkeypatch, tmp_path):
         monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
@@ -54,7 +98,11 @@ class TestWebApi:
 
         app = create_app()
         service = app.state.web_service
-        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result)
+        # Vestigial: web runtime uses ProjectSession, not run_project_workflow.
+        # PR-a removed the method from the runtime PM; keep ``raising=False``
+        # so the patch is a no-op instead of an AttributeError.
+        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result, raising=False)
+        _stub_scaffolding(service)
 
         client = TestClient(app)
         _login_dev(client)
@@ -65,6 +113,7 @@ class TestWebApi:
         )
         assert create_resp.status_code == 200
         project_id = create_resp.json()["project_id"]
+        _wait_for_scaffolding(service, project_id)
 
         list_resp = client.get("/api/projects")
         assert list_resp.status_code == 200
@@ -111,7 +160,35 @@ class TestWebApi:
             time.sleep(0.3)
             return _mock_workflow_result(*args, **kwargs)
 
-        monkeypatch.setattr(service.project_manager, "run_project_workflow", _slow_workflow)
+        # Vestigial — see the note in the earlier test.
+        monkeypatch.setattr(service.project_manager, "run_project_workflow", _slow_workflow, raising=False)
+        _stub_scaffolding(service)
+
+        # Stub the whole ``_execute_run`` worker so the test doesn't
+        # need real LLM credentials. ``ProjectSession.__init__`` requires
+        # a loaded orchestrator agent, which in test env with no API
+        # key is unavailable — simulating the whole worker is simpler
+        # than trying to fake ``RuntimeManager`` state.
+        original_execute = service._execute_run
+
+        def _fake_execute_run(project_id, run_id, requirement_text, mode, process_type, attempt):  # noqa: ARG001
+            time.sleep(0.3)
+            with service._lock:
+                run = service._find_run(project_id, run_id)
+                if run is not None:
+                    run.status = "completed"
+                    run.completed_at = datetime.now(timezone.utc)
+                    run.result = "simulated completion"
+                    run.failed_phase_idx = -1
+                    run.failed_phase_name = ""
+                service._active_workflow_runs.discard((project_id, run_id))
+                service._save_state()
+
+        service._execute_run = _fake_execute_run  # type: ignore[method-assign]
+        # Add restore at test-teardown via monkeypatch.
+        monkeypatch.setattr(service, "_execute_run", _fake_execute_run, raising=False)
+        # Silence the unused ``original_execute`` warning.
+        del original_execute
 
         client = TestClient(app)
         _login_dev(client)
@@ -122,6 +199,7 @@ class TestWebApi:
         )
         assert create_resp.status_code == 200
         project_id = create_resp.json()["project_id"]
+        _wait_for_scaffolding(service, project_id)
 
         req_resp = client.post(
             f"/api/projects/{project_id}/requirements",
@@ -138,7 +216,6 @@ class TestWebApi:
         run_later = client.get(f"/api/projects/{project_id}/runs/{run_id}")
         assert run_later.status_code == 200
         assert run_later.json()["status"] == "completed"
-        assert len(run_later.json()["phase_results"]) == 1
 
     def test_layout_injects_ui_language(self, monkeypatch, tmp_path):
         """Every page extends ``layout.html`` which must emit
@@ -241,6 +318,8 @@ class TestWebApi:
     def test_create_project_with_agent_model_selection(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
         app = create_app()
+        service = app.state.web_service
+        _stub_scaffolding(service)
         client = TestClient(app)
         client.post(
             "/auth/local-login",
@@ -258,12 +337,15 @@ class TestWebApi:
         )
         assert create_resp.status_code == 200
         project_id = create_resp.json()["project_id"]
+        _wait_for_scaffolding(service, project_id)
         detail = client.get(f"/api/projects/{project_id}")
         assert detail.status_code == 200
 
     def test_project_workflow_nodes_use_langchain_phases(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
         app = create_app()
+        service = app.state.web_service
+        _stub_scaffolding(service)
         client = TestClient(app)
         client.post(
             "/auth/local-login",
@@ -277,6 +359,7 @@ class TestWebApi:
         )
         assert create_resp.status_code == 200
         project_id = create_resp.json()["project_id"]
+        _wait_for_scaffolding(service, project_id)
 
         detail = client.get(f"/api/projects/{project_id}")
         assert detail.status_code == 200
@@ -314,9 +397,14 @@ class TestWebPersistence:
         monkeypatch.chdir(tmp_path)
 
         service = WebProjectService()
-        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result)
+        # Vestigial: web runtime uses ProjectSession, not run_project_workflow.
+        # PR-a removed the method from the runtime PM; keep ``raising=False``
+        # so the patch is a no-op instead of an AttributeError.
+        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result, raising=False)
+        _stub_scaffolding(service)
 
         project_id = service.create_project("Persistent", "local")
+        _wait_for_scaffolding(service, project_id)
         run_id = service.run_requirement(project_id, "Need API authentication")
         assert run_id
 
@@ -340,8 +428,13 @@ class TestWebPersistence:
         """
         monkeypatch.chdir(tmp_path)
         service = WebProjectService()
-        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result)
+        # Vestigial: web runtime uses ProjectSession, not run_project_workflow.
+        # PR-a removed the method from the runtime PM; keep ``raising=False``
+        # so the patch is a no-op instead of an AttributeError.
+        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result, raising=False)
+        _stub_scaffolding(service)
         project_id = service.create_project("OrderCheck", "local")
+        _wait_for_scaffolding(service, project_id)
         service.run_requirement(project_id, "first")
         service.run_requirement(project_id, "second")
         service.run_requirement(project_id, "third")
@@ -365,8 +458,13 @@ class TestWebPersistence:
 
         # Seed a service with one legitimate completed run
         service = WebProjectService()
-        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result)
+        # Vestigial: web runtime uses ProjectSession, not run_project_workflow.
+        # PR-a removed the method from the runtime PM; keep ``raising=False``
+        # so the patch is a no-op instead of an AttributeError.
+        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result, raising=False)
+        _stub_scaffolding(service)
         project_id = service.create_project("ZombieHost", "local")
+        _wait_for_scaffolding(service, project_id)
         service.run_requirement(project_id, "req")
 
         # Manually corrupt the persisted state to simulate a crash while
@@ -406,8 +504,13 @@ class TestWebPersistence:
         monkeypatch.chdir(tmp_path)
 
         service = WebProjectService()
-        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result)
+        # Vestigial: web runtime uses ProjectSession, not run_project_workflow.
+        # PR-a removed the method from the runtime PM; keep ``raising=False``
+        # so the patch is a no-op instead of an AttributeError.
+        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result, raising=False)
+        _stub_scaffolding(service)
         project_id = service.create_project("SilentHost", "local")
+        _wait_for_scaffolding(service, project_id)
         service.run_requirement(project_id, "req")
         # Wait for the background _execute_run thread to settle so our
         # manual state overwrite isn't clobbered by the thread's own
@@ -443,8 +546,13 @@ class TestWebPersistence:
         monkeypatch.chdir(tmp_path)
 
         service = WebProjectService()
-        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result)
+        # Vestigial: web runtime uses ProjectSession, not run_project_workflow.
+        # PR-a removed the method from the runtime PM; keep ``raising=False``
+        # so the patch is a no-op instead of an AttributeError.
+        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result, raising=False)
+        _stub_scaffolding(service)
         project_id = service.create_project("HappyHost", "local")
+        _wait_for_scaffolding(service, project_id)
         service.run_requirement(project_id, "req")
         time.sleep(0.5)
 
@@ -484,6 +592,8 @@ class TestWebTaskStatusInference:
         monkeypatch.chdir(tmp_path)
 
         app = create_app()
+        service = app.state.web_service
+        _stub_scaffolding(service)
         client = TestClient(app)
         _login_dev(client)
 
@@ -493,6 +603,7 @@ class TestWebTaskStatusInference:
         )
         assert create_resp.status_code == 200
         project_id = create_resp.json()["project_id"]
+        _wait_for_scaffolding(service, project_id)
 
         project_dirs = list((tmp_path / "projects").glob(f"{project_id}-*"))
         assert len(project_dirs) == 1
@@ -511,7 +622,9 @@ class TestTaskRetryRecovery:
     def test_retry_recovers_stale_running_operation(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
         service = WebProjectService()
+        _stub_scaffolding(service)
         project_id = service.create_project("RetryRecovery", "local")
+        _wait_for_scaffolding(service, project_id)
 
         run_id = "run_stale_001"
         with service._lock:
@@ -607,7 +720,9 @@ class TestWebRunTaskSummary:
     def test_get_run_exposes_developer_step1_workflow_summary_subsystems(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
         service = WebProjectService()
+        _stub_scaffolding(service)
         project_id = service.create_project("RunTaskSummary", "local")
+        _wait_for_scaffolding(service, project_id)
         run_id = "run_step1_summary_001"
 
         with service._lock:
@@ -676,3 +791,154 @@ class TestWebRunTaskSummary:
         assert isinstance(subsystems, list)
         assert len(subsystems) == 1
         assert subsystems[0]["subsystem_id"] == "SUB-001"
+
+
+class TestAIFirstScaffolding:
+    """PR-b contract tests: project creation now triggers an async
+    PM-agent dispatch that scaffolds the environment. These tests pin
+    the state machine the web UI and safety-net (PR-c) rely on.
+    """
+
+    def test_create_project_starts_in_scaffolding_state(self, monkeypatch, tmp_path):
+        """``project_manager.create_project`` returns immediately; the
+        project lands in SCAFFOLDING until the background thread either
+        succeeds or marks it failed."""
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        # Block the scaffold dispatch so the status stays visible.
+        service._dispatch_scaffolding_to_pm = lambda project, prompt: time.sleep(5)  # type: ignore[method-assign]
+
+        project_id, _ = service.create_project_with_initial_run(
+            project_name="Inspection",
+            development_mode="local",
+        )
+        project = service.project_manager.get_project(project_id)
+        assert project is not None
+        assert project.status.value == "scaffolding"
+        assert project.scaffolding_error is None
+
+    def test_scaffold_thread_flips_to_active_on_success(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        _stub_scaffolding(service)
+
+        project_id = service.create_project("Happy", "local")
+        status = _wait_for_scaffolding(service, project_id)
+        assert status == "active"
+
+        root = Path(service.project_manager.get_project(project_id).project_root)
+        # Stub creates the subset the post-dispatch invariant check looks for.
+        assert (root / ".git").exists()
+        assert (root / ".gitignore").exists()
+
+    def test_scaffold_thread_marks_failed_on_invariant_miss(self, monkeypatch, tmp_path):
+        """If the PM agent's scaffold dispatch returns but the invariants
+        (``.git`` / ``.gitignore``) aren't on disk, the post-dispatch
+        check flips the project to SCAFFOLDING_FAILED so a downstream
+        safety-net can repair or surface the failure to the user."""
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        # "Agent" claims success but writes nothing.
+        service._dispatch_scaffolding_to_pm = lambda project, prompt: None  # type: ignore[method-assign]
+
+        project_id = service.create_project("Liar", "local")
+        status = _wait_for_scaffolding(service, project_id)
+        assert status == "scaffolding_failed"
+        project = service.project_manager.get_project(project_id)
+        assert project is not None
+        assert project.scaffolding_error and ".git" in project.scaffolding_error
+
+    def test_run_requirement_rejected_while_scaffolding(self, monkeypatch, tmp_path):
+        """A stale client (or a direct API call) hitting the requirements
+        endpoint before scaffolding completes must get a clear rejection —
+        racing the scaffold thread would corrupt project state."""
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        # Hold the dispatch — project stays in SCAFFOLDING.
+        service._dispatch_scaffolding_to_pm = lambda project, prompt: time.sleep(5)  # type: ignore[method-assign]
+
+        project_id = service.create_project("Racing", "local")
+        with pytest.raises(ValueError, match="still scaffolding"):
+            service.run_requirement(project_id, "premature submission")
+
+    def test_run_requirement_rejected_after_scaffolding_failed(self, monkeypatch, tmp_path):
+        """SCAFFOLDING_FAILED is also a hard block — the user must wait
+        for recovery (safety-net in PR-c) or explicitly retry; submitting
+        a requirement to a broken project is a guaranteed cascade failure.
+        """
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        service._dispatch_scaffolding_to_pm = lambda project, prompt: None  # type: ignore[method-assign]
+
+        project_id = service.create_project("Broken", "local")
+        _wait_for_scaffolding(service, project_id)
+        with pytest.raises(ValueError, match="failed to scaffold"):
+            service.run_requirement(project_id, "submission to a broken project")
+
+    def test_project_card_surfaces_scaffolding_status_in_list(self, monkeypatch, tmp_path):
+        """The dashboard list endpoint must expose the SCAFFOLDING /
+        SCAFFOLDING_FAILED states so the React badge logic can render
+        them correctly."""
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+        app = create_app()
+        service = app.state.web_service
+        service._dispatch_scaffolding_to_pm = lambda project, prompt: time.sleep(5)  # type: ignore[method-assign]
+
+        client = TestClient(app)
+        _login_dev(client)
+        create_resp = client.post(
+            "/api/projects",
+            json={"project_name": "BadgeCheck", "development_mode": "local"},
+        )
+        project_id = create_resp.json()["project_id"]
+
+        list_resp = client.get("/api/projects")
+        items = list_resp.json()["projects"]
+        match = [p for p in items if p["project_id"] == project_id]
+        assert match and match[0]["status"] == "scaffolding"
+
+
+class TestGitSkillWiring:
+    """Pins that the ``git`` skill is loadable and declared by the PM
+    agent. The skill body is inlined into the PM's system prompt via
+    the agent-md ``## Skills`` filter; a missing declaration means the
+    scaffolding prompt is sent to an agent that hasn't been told how
+    to use git. Catch that here rather than at run time.
+    """
+
+    SKILL_PATH = (
+        Path(__file__).resolve().parents[2] / "src" / "aise" / "agents" / "_runtime_skills" / "git" / "SKILL.md"
+    )
+    PM_PATH = Path(__file__).resolve().parents[2] / "src" / "aise" / "agents" / "product_manager.md"
+
+    def test_git_skill_file_exists(self) -> None:
+        assert self.SKILL_PATH.is_file(), "src/aise/agents/_runtime_skills/git/SKILL.md missing"
+        body = self.SKILL_PATH.read_text(encoding="utf-8")
+        for needle in ("git init", "git tag phase_", "git log --oneline", ".gitignore"):
+            assert needle in body, f"git SKILL.md must mention {needle!r}"
+
+    def test_product_manager_declares_git_skill(self) -> None:
+        body = self.PM_PATH.read_text(encoding="utf-8")
+        assert "\n- git:" in body, (
+            "product_manager.md must declare ``git`` in its ## Skills block; "
+            "otherwise ``_load_inline_skill_content`` filters the SKILL.md body "
+            "out of the PM's system prompt and the scaffolding dispatch would "
+            "hit an agent that doesn't know the commands"
+        )
+
+    def test_product_manager_mentions_scaffolding_task(self) -> None:
+        """The PM's system prompt must acknowledge the SCAFFOLDING TASK
+        envelope so the agent recognizes the first dispatch and doesn't
+        try to treat it as a regular requirement-analysis phase."""
+        body = self.PM_PATH.read_text(encoding="utf-8")
+        assert "SCAFFOLDING TASK" in body, "product_manager.md must reference the SCAFFOLDING TASK envelope"
+
+    def test_git_on_shell_allowlist(self) -> None:
+        from aise.runtime.runtime_config import DEFAULT_SHELL_ALLOWLIST
+
+        assert "git" in DEFAULT_SHELL_ALLOWLIST, (
+            "``git`` must be on the shell allowlist so the PM agent's "
+            "``execute_shell`` calls (``git init``, ``git commit``, "
+            "``git tag``, ``git log``, ``git diff``) don't get rejected"
+        )

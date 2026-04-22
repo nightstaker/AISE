@@ -148,13 +148,22 @@ class ProjectManager:
         return ProjectConfig.from_json_file(self._global_config_path)
 
     def _prepare_project_root(self, project_id: str, project_name: str) -> Path:
-        """Create and return the filesystem root for a project."""
+        """Create and return the filesystem root for a project.
+
+        Only the top-level directory is created synchronously — just
+        enough to let ``create_project`` drop ``project_config.json``
+        in. The standard sub-directories (``docs/``, ``src/``,
+        ``tests/``, ``scripts/``, ``config/``, ``artifacts/``,
+        ``trace/``) are now created by the product-manager agent during
+        the SCAFFOLDING phase so the layout can vary by project type
+        (e.g. a Go service has no ``tests/`` — it uses ``*_test.go``
+        alongside sources). The safety net (PR-c) pins the minimum
+        expected directories after scaffolding completes.
+        """
         safe_name = "".join(c.lower() if c.isalnum() else "-" for c in project_name).strip("-")
         safe_name = "-".join(filter(None, safe_name.split("-"))) or "project"
         project_root = self._projects_root / f"{project_id}-{safe_name}"
         project_root.mkdir(parents=True, exist_ok=True)
-        for subdir in ("docs", "src", "tests", "scripts", "config", "artifacts", "trace"):
-            (project_root / subdir).mkdir(parents=True, exist_ok=True)
         return project_root
 
     def get_project(self, project_id: str) -> Project | None:

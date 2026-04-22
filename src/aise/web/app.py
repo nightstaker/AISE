@@ -185,6 +185,20 @@ class WebProjectService:
         initial_requirement: str = "",
         process_type: str = "waterfall",
     ) -> tuple[str, str | None]:
+        """Create a project and (optionally) its first workflow run.
+
+        AI-First scaffolding flow: the call returns immediately with a
+        project_id. Directory layout + ``git init`` + ``.gitignore``
+        happen asynchronously, driven by the product-manager agent.
+        The project sits in :pyattr:`ProjectStatus.SCAFFOLDING` until
+        the background thread flips it to ``ACTIVE`` (success) or
+        ``SCAFFOLDING_FAILED`` (reported by the agent).
+
+        If ``initial_requirement`` is provided, it is stashed and
+        dispatched once scaffolding completes — the client still sees
+        a single create-and-run call; the asynchrony is hidden behind
+        the run's ``pending`` status.
+        """
         if not project_name.strip():
             raise ValueError("Project name cannot be empty")
         mode = "github" if development_mode == "github" else "local"
@@ -203,12 +217,121 @@ class WebProjectService:
             self._runs_by_project.setdefault(project_id, [])
             self._requirements_by_project.setdefault(project_id, [])
             self._save_state()
-            run_id: str | None = None
-            initial_text = initial_requirement.strip()
-            if initial_text:
-                run_id = self.run_requirement(project_id, initial_text)
-            logger.info("Web create_project completed: project_id=%s", project_id)
-            return project_id, run_id
+            logger.info(
+                "Web create_project scheduled scaffolding: project_id=%s initial_req=%s",
+                project_id,
+                bool(initial_requirement.strip()),
+            )
+
+        # Background scaffolding — outside the lock so polling requests
+        # (``list_projects``, ``get_project``) can see SCAFFOLDING while
+        # the agent works.
+        Thread(
+            target=self._scaffold_project,
+            args=(project_id, initial_requirement.strip()),
+            daemon=True,
+            name=f"scaffold-{project_id}",
+        ).start()
+
+        return project_id, None
+
+    # -- Async scaffolding ---------------------------------------------------
+
+    def _scaffold_project(self, project_id: str, initial_requirement: str) -> None:
+        """Dispatch the product-manager agent to scaffold the project.
+
+        Runs in a background thread. The prompt asks the agent to
+        create the standard subdirs, initialize git (with a seeded
+        ``.gitignore``), and commit the root scaffold. Success → flip
+        status to ACTIVE and, if an ``initial_requirement`` was
+        supplied, kick off the first workflow run. Failure → flip
+        status to SCAFFOLDING_FAILED and let the safety-net module
+        (PR-c) decide whether to repair or surface to the user.
+        """
+        with self._lock:
+            project = self.project_manager.get_project(project_id)
+        if project is None:
+            logger.warning("Scaffold thread: project %s vanished before start", project_id)
+            return
+
+        try:
+            prompt = self._build_scaffolding_prompt(project)
+            self._dispatch_scaffolding_to_pm(project, prompt)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("Scaffold thread raised: project=%s", project_id)
+            with self._lock:
+                project.fail_scaffolding(f"scaffolding dispatch raised: {exc}")
+                self._save_state()
+            return
+
+        # Post-dispatch invariant check. The agent's happy-path answer
+        # is "I did it", but the filesystem is the source of truth.
+        # These checks are minimal — PR-c's safety net broadens them
+        # into a plan-driven verifier.
+        root = Path(project.project_root or "")
+        ok = root.is_dir() and (root / ".git").exists() and (root / ".gitignore").exists()
+        with self._lock:
+            if ok:
+                project.finish_scaffolding()
+                logger.info("Scaffold completed: project_id=%s root=%s", project_id, root)
+            else:
+                project.fail_scaffolding("post-dispatch invariants failed: .git / .gitignore missing")
+                logger.warning(
+                    "Scaffold invariants failed: project_id=%s .git=%s .gitignore=%s",
+                    project_id,
+                    (root / ".git").exists(),
+                    (root / ".gitignore").exists(),
+                )
+            self._save_state()
+
+        # Fire the deferred initial run only if scaffolding landed in ACTIVE.
+        if initial_requirement and project.status == ProjectStatus.ACTIVE:
+            try:
+                self.run_requirement(project_id, initial_requirement)
+            except Exception:
+                logger.exception("Deferred initial run failed: project_id=%s", project_id)
+
+    @staticmethod
+    def _build_scaffolding_prompt(project: Project) -> str:
+        """Compose the one-shot scaffolding task for the PM agent.
+
+        Kept terse: the ``git`` skill (inlined into the PM's system
+        prompt via its ``## Skills`` block) carries the command
+        reference. This prompt only says *what* to do and where.
+        """
+        root = project.project_root or ""
+        return (
+            f"SCAFFOLDING TASK for project ``{project.project_name}`` at ``{root}``.\n\n"
+            "Prepare the project environment so subsequent phases can run:\n"
+            "1. Create the standard subdirectories under the project root: "
+            "``docs/``, ``src/``, ``tests/``, ``scripts/``, ``config/``, "
+            "``artifacts/``, ``trace/``.\n"
+            "2. Initialize the project root as a git repository "
+            "(``git init``) and seed ``.gitignore`` with the baseline "
+            "entries from the ``git`` skill.\n"
+            "3. Stage and commit the scaffold with subject "
+            "``project_manager(scaffold): initialize project layout``.\n\n"
+            "Perform the filesystem / git operations directly via the tools "
+            "available to you. Do NOT draft any documentation in this task — "
+            "that happens in later phases. Respond with a one-line summary "
+            "of what you created."
+        )
+
+    def _dispatch_scaffolding_to_pm(self, project: Project, prompt: str) -> None:
+        """Resolve the PM runtime and send it the scaffolding prompt.
+
+        Kept separate so tests can monkeypatch it with a stub without
+        touching the runtime manager plumbing. The real implementation
+        uses the already-started ``RuntimeManager`` to pick up the
+        ``product_manager`` agent, then calls ``handle_message`` with
+        a project-scoped thread id so the scaffold conversation stays
+        isolated from workflow dispatches.
+        """
+        pm_runtime = self._runtime_manager.get_runtime("product_manager")
+        if pm_runtime is None:
+            raise RuntimeError("product_manager runtime not found in RuntimeManager")
+        thread_id = f"scaffold-{project.project_id}"
+        pm_runtime.handle_message(prompt, thread_id=thread_id)
 
     def get_project(self, project_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -403,6 +526,17 @@ class WebProjectService:
             project = self.project_manager.get_project(project_id)
             if project is None:
                 raise ValueError(f"Project {project_id} not found")
+            # Reject submissions while the project's environment is
+            # still being prepared. The UI blocks the button during
+            # ``scaffolding``, but a stale tab (or a direct API call)
+            # could still land here — fail loud rather than racing
+            # the scaffold thread.
+            if project.status == ProjectStatus.SCAFFOLDING:
+                raise ValueError(f"Project {project_id} is still scaffolding — retry once the status flips to 'active'")
+            if project.status == ProjectStatus.SCAFFOLDING_FAILED:
+                raise ValueError(
+                    f"Project {project_id} failed to scaffold: {project.scaffolding_error or 'unknown error'}"
+                )
             prior_runs = self._runs_by_project.get(project_id, [])
             has_baseline = any(r.status == "completed" and (r.result or "").strip() for r in prior_runs)
             mode = "incremental" if has_baseline else "initial"

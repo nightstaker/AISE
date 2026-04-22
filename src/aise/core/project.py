@@ -14,10 +14,12 @@ if TYPE_CHECKING:
 class ProjectStatus(Enum):
     """Status of a project in its lifecycle."""
 
+    SCAFFOLDING = "scaffolding"
     ACTIVE = "active"
     PAUSED = "paused"
     COMPLETED = "completed"
     ARCHIVED = "archived"
+    SCAFFOLDING_FAILED = "scaffolding_failed"
 
 
 class Project:
@@ -50,7 +52,15 @@ class Project:
         self.config = config
         self.orchestrator = orchestrator
         self.project_root = project_root
-        self.status = ProjectStatus.ACTIVE
+        # Projects now start in SCAFFOLDING — the product-manager agent
+        # is dispatched asynchronously to create the directory tree,
+        # initialize git, and seed ``.gitignore``. The status flips to
+        # ACTIVE once scaffolding succeeds, or SCAFFOLDING_FAILED if it
+        # does not. Callers that need a ready-to-dispatch project
+        # should wait for status != SCAFFOLDING before running
+        # requirements (see ``WebProjectService.run_requirement``).
+        self.status = ProjectStatus.SCAFFOLDING
+        self.scaffolding_error: str | None = None
         self.created_at = datetime.now(timezone.utc)
         self.updated_at = self.created_at
 
@@ -79,6 +89,31 @@ class Project:
         """Get the development process (waterfall or agile)."""
         value = getattr(self.config, "process_type", "waterfall")
         return value if value in ("waterfall", "agile") else "waterfall"
+
+    def finish_scaffolding(self) -> None:
+        """Flip from SCAFFOLDING to ACTIVE on a successful scaffold.
+
+        Idempotent: calling this on an already-active project is a
+        no-op. Callers that beat the scaffolding thread to the status
+        check (e.g. via an aggressive poll) won't regress a
+        COMPLETED / PAUSED / ARCHIVED project.
+        """
+        if self.status == ProjectStatus.SCAFFOLDING:
+            self.status = ProjectStatus.ACTIVE
+            self.scaffolding_error = None
+            self.updated_at = datetime.now(timezone.utc)
+
+    def fail_scaffolding(self, error: str) -> None:
+        """Mark the project as SCAFFOLDING_FAILED with an error blurb.
+
+        Only takes effect while the project is still in SCAFFOLDING —
+        after that, status transitions are driven by the workflow
+        machinery and scaffolding failures become moot.
+        """
+        if self.status == ProjectStatus.SCAFFOLDING:
+            self.status = ProjectStatus.SCAFFOLDING_FAILED
+            self.scaffolding_error = error[:500] if error else "unknown scaffolding failure"
+            self.updated_at = datetime.now(timezone.utc)
 
     def pause(self) -> None:
         """Pause the project (stop accepting new work)."""

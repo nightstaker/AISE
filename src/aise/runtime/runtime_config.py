@@ -90,6 +90,12 @@ DEFAULT_SHELL_ALLOWLIST: tuple[str, ...] = (
     "grep",
     "wc",
     "find",
+    # Version control. The product-manager agent initializes each
+    # project as its own local git repo during SCAFFOLDING, commits
+    # per-phase artifacts as it goes, and queries history via
+    # ``git log`` / ``git diff`` when summarizing a phase — see the
+    # ``git`` skill body for the full command surface.
+    "git",
 )
 
 DEFAULT_SHELL_TIMEOUT_SECONDS = 120
