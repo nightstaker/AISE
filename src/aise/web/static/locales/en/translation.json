@@ -42,6 +42,16 @@
       "waterfall": "Waterfall",
       "agile_hint": "Agile Sprint process: Planning → Execution → Review → Retrospective → Delivery",
       "waterfall_hint": "Waterfall process: Requirements → Architecture → Implementation → Entry → QA → Delivery"
+    },
+    "recovery": {
+      "retry_btn": "🔁 Retry failed phase",
+      "restart_btn": "↻ Restart from phase 1",
+      "retry_tooltip": "Resume from the phase that failed. Artifacts from completed phases stay on disk and are read by the resumed phase.",
+      "restart_tooltip": "Discard progress and re-run the current requirement from the first phase.",
+      "retry_from_phase": "Resume from phase {{idx}}/{{total}} \"{{name}}\".",
+      "retry_hint": "The current requirement will be re-submitted.",
+      "resumed_from_badge": "↩ Resumed from prior run",
+      "resumed_from_tooltip": "Resumed run derived from {{run_id}}."
     }
   },
   "entry": {

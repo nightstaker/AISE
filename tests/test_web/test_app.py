@@ -393,6 +393,74 @@ class TestWebPersistence:
         data2 = json.loads(state_path.read_text())
         assert data2["runs_by_project"][project_id][0]["status"] == "failed"
 
+    def test_silent_failure_run_is_reclassified_on_load(self, monkeypatch, tmp_path):
+        """Old ``_execute_run`` code marked runs as ``completed`` even when
+        ``session.run()`` returned ``""`` (LLM backend dropped mid-run, the
+        phase loop swallowed the exception, orchestrator never called
+        mark_complete). Reclassify those on load so the retry / restart UI
+        becomes available. Regression guard for run_019c47591a-style silent
+        failures."""
+        import json
+        import time
+
+        monkeypatch.chdir(tmp_path)
+
+        service = WebProjectService()
+        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result)
+        project_id = service.create_project("SilentHost", "local")
+        service.run_requirement(project_id, "req")
+        # Wait for the background _execute_run thread to settle so our
+        # manual state overwrite isn't clobbered by the thread's own
+        # status save.
+        time.sleep(0.5)
+
+        state_path = Path("projects/web_state.json")
+        data = json.loads(state_path.read_text())
+        run = data["runs_by_project"][project_id][0]
+        # The pre-fix pathology: status=completed but empty result.
+        run["status"] = "completed"
+        run["result"] = ""
+        run["error"] = ""
+        state_path.write_text(json.dumps(data))
+
+        reloaded = WebProjectService()
+        payload = reloaded.get_project(project_id)
+        assert payload is not None
+        r = payload["runs"][0]
+        assert r["status"] == "failed", "silent-failure run must be reclassified as failed"
+        assert "silent failure" in (r.get("error") or "").lower()
+
+        # Persisted state must reflect the migration so it's idempotent.
+        data2 = json.loads(state_path.read_text())
+        assert data2["runs_by_project"][project_id][0]["status"] == "failed"
+
+    def test_completed_run_with_result_is_not_reclassified(self, monkeypatch, tmp_path):
+        """Guard the migration: a run that genuinely completed with a
+        non-empty result must NOT be flipped to failed."""
+        import json
+        import time
+
+        monkeypatch.chdir(tmp_path)
+
+        service = WebProjectService()
+        monkeypatch.setattr(service.project_manager, "run_project_workflow", _mock_workflow_result)
+        project_id = service.create_project("HappyHost", "local")
+        service.run_requirement(project_id, "req")
+        time.sleep(0.5)
+
+        state_path = Path("projects/web_state.json")
+        data = json.loads(state_path.read_text())
+        run = data["runs_by_project"][project_id][0]
+        run["status"] = "completed"
+        run["result"] = "Delivery report: everything works."
+        run["error"] = ""
+        state_path.write_text(json.dumps(data))
+
+        reloaded = WebProjectService()
+        payload = reloaded.get_project(project_id)
+        r = payload["runs"][0]
+        assert r["status"] == "completed", "genuinely completed run must stay completed"
+
 
 class TestWebTaskStatusInference:
     def test_runtime_running_status_is_not_downgraded_to_pending(self):

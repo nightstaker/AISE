@@ -42,6 +42,16 @@
       "waterfall": "Waterfall 瀑布",
       "agile_hint": "Agile Sprint 流程：规划 → 执行 → 评审 → 复盘 → 交付",
       "waterfall_hint": "Waterfall 流程：需求 → 架构 → 实现 → 入口 → 测试 → 交付"
+    },
+    "recovery": {
+      "retry_btn": "🔁 重试失败步骤",
+      "restart_btn": "↻ 从头重新开始",
+      "retry_tooltip": "从失败的阶段继续执行。已完成阶段的产物会被保留并被新阶段读取。",
+      "restart_tooltip": "丢弃进度并从第一个阶段重新执行当前需求。",
+      "retry_from_phase": "将从阶段 {{idx}}/{{total}} 「{{name}}」继续执行。",
+      "retry_hint": "将重新执行当前需求。",
+      "resumed_from_badge": "↩ 由其它执行派生",
+      "resumed_from_tooltip": "从 {{run_id}} 派生的恢复执行。"
     }
   },
   "entry": {
