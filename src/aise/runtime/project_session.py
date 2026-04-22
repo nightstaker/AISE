@@ -731,8 +731,8 @@ class ProjectSession:
                 "- Write tests/test_integration.py (ONLY integration tests —\n"
                 "  developers already wrote per-module unit tests). Cover\n"
                 "  every MVP user story's acceptance criteria end-to-end.\n"
-                "- RUN the FULL suite: execute(command=\"python -m pytest\n"
-                "  tests/ -q --tb=short\") and iterate up to 3 times until\n"
+                '- RUN the FULL suite: execute(command="python -m pytest\n'
+                '  tests/ -q --tb=short") and iterate up to 3 times until\n'
                 "  tests pass.\n"
                 "- Write docs/sprint_review.md with a per-user-story\n"
                 "  PASS/FAIL table so the product owner can verify delivery\n"
@@ -881,8 +881,8 @@ class ProjectSession:
                 "  (including the new sections).\n"
                 "- EDIT tests/test_integration.py in place (do NOT rewrite)\n"
                 "  to add scenarios for the new MVP stories.\n"
-                "- RUN the FULL suite: execute(command=\"python -m pytest\n"
-                "  tests/ -q --tb=short\") and iterate up to 3 times until\n"
+                '- RUN the FULL suite: execute(command="python -m pytest\n'
+                '  tests/ -q --tb=short") and iterate up to 3 times until\n'
                 "  tests pass.\n"
                 "- EDIT docs/sprint_review.md — append a new section for\n"
                 "  this sprint with per-user-story PASS/FAIL.\n"

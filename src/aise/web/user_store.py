@@ -487,9 +487,7 @@ class UserStore:
                 raise ValueError(f"User not found: {user_id}")
             if user.role == "super_admin":
                 other_admins = [
-                    u
-                    for u in self._state.users.values()
-                    if u.id != user.id and u.role == "super_admin" and u.enabled
+                    u for u in self._state.users.values() if u.id != user.id and u.role == "super_admin" and u.enabled
                 ]
                 if not other_admins:
                     raise ValueError("Cannot delete the last super_admin")
