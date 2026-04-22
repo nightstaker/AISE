@@ -1,5 +1,35 @@
 <!doctype html>
-<html lang="zh-CN">
+{% set _lang = get_ui_language() %}
+{% set _is_en = _lang == 'en' %}
+{#-
+  Labels that need to appear in the server-rendered shell (sidebar +
+  user popover) are defined here. Client-side pages resolve their
+  labels through i18next so they react to dynamic state (``t(...)``
+  calls); but the shell is static and the user's language preference
+  comes from the global ProjectConfig, so Jinja-side conditionals are
+  enough. Keeping both zh/en in the same place avoids missing one
+  when adding a new sidebar entry.
+-#}
+{%- macro L(key) -%}
+  {%- if key == 'nav.dashboard' -%}{% if _is_en %}Dashboard{% else %}仪表盘{% endif %}
+  {%- elif key == 'nav.monitor' -%}{% if _is_en %}Monitor{% else %}监控{% endif %}
+  {%- elif key == 'nav.logs' -%}{% if _is_en %}Logs{% else %}日志{% endif %}
+  {%- elif key == 'nav.users' -%}{% if _is_en %}Users{% else %}用户{% endif %}
+  {%- elif key == 'nav.settings' -%}{% if _is_en %}Settings{% else %}设置{% endif %}
+  {%- elif key == 'nav.login' -%}{% if _is_en %}Sign in{% else %}登录{% endif %}
+  {%- elif key == 'nav.logout' -%}{% if _is_en %}Sign out{% else %}退出{% endif %}
+  {%- elif key == 'user_menu.email' -%}{% if _is_en %}Email{% else %}邮箱{% endif %}
+  {%- elif key == 'user_menu.provider' -%}{% if _is_en %}Provider{% else %}登录方式{% endif %}
+  {%- elif key == 'user_menu.role' -%}{% if _is_en %}Role{% else %}角色{% endif %}
+  {%- elif key == 'roles.super_admin' -%}{% if _is_en %}Super Admin{% else %}超级管理员{% endif %}
+  {%- elif key == 'roles.admin' -%}{% if _is_en %}Admin{% else %}管理员{% endif %}
+  {%- elif key == 'roles.developer' -%}{% if _is_en %}Developer{% else %}开发人员{% endif %}
+  {%- elif key == 'roles.viewer' -%}{% if _is_en %}Viewer{% else %}只读访客{% endif %}
+  {%- elif key == 'roles.user' -%}{% if _is_en %}User{% else %}普通用户{% endif %}
+  {%- else -%}{{ key }}
+  {%- endif -%}
+{%- endmacro -%}
+<html lang="{{ 'en' if _is_en else 'zh-CN' }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,7 +38,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@500;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap">
-  <link rel="stylesheet" href="/static/main.css?v=20260421b">
+  <link rel="stylesheet" href="/static/main.css?v=20260421f">
 </head>
 <body>
   <div class="app-shell">
@@ -21,28 +51,28 @@
         <nav class="sidebar-nav">
           <a class="sidebar-link{{ ' active' if request.url.path == '/' }}" href="/">
             <span class="sidebar-link-icon">📊</span>
-            <span>Dashboard</span>
+            <span>{{ L('nav.dashboard') }}</span>
           </a>
           <a class="sidebar-link{{ ' active' if request.url.path == '/monitor' }}" href="/monitor">
             <span class="sidebar-link-icon">🖥️</span>
-            <span>Monitor</span>
+            <span>{{ L('nav.monitor') }}</span>
           </a>
           {% set _perms = (user.permissions if user else []) or [] %}
           {% if user and ('view_logs' in _perms or user.role == 'super_admin') %}
           <a class="sidebar-link{{ ' active' if request.url.path.startswith('/logs') }}" href="/logs">
             <span class="sidebar-link-icon">📜</span>
-            <span>Logs</span>
+            <span>{{ L('nav.logs') }}</span>
           </a>
           {% endif %}
           {% if user and ('manage_users' in _perms or user.role == 'super_admin') %}
           <a class="sidebar-link{{ ' active' if request.url.path.startswith('/users') }}" href="/users">
             <span class="sidebar-link-icon">👥</span>
-            <span>Users</span>
+            <span>{{ L('nav.users') }}</span>
           </a>
           {% endif %}
           <a class="sidebar-link{{ ' active' if request.url.path.startswith('/config') }}" href="/config/global/models">
             <span class="sidebar-link-icon">⚙️</span>
-            <span>Settings</span>
+            <span>{{ L('nav.settings') }}</span>
           </a>
         </nav>
       </div>
@@ -53,24 +83,36 @@
             <span class="user-avatar">{{ user.name[:1] | upper }}</span>
             <span class="user-info">
               <span class="user-name">{{ user.name }}</span>
-              {% if user.role %}<span class="role-tag">{{ user.role }}</span>{% endif %}
+              {% if user.role %}
+              <span class="role-tag">{{ L('roles.' ~ user.role) }}</span>
+              {% endif %}
             </span>
           </summary>
           <div class="user-menu-pop">
-            <div class="user-meta">{{ user.provider }}</div>
-            <a href="/config/global/models">Settings / Models</a>
-            <a href="/config/global/agents">Settings / Agents</a>
-            <a href="/config/global/workspace">Settings / Workspace</a>
-            <a href="/config/global/logging">Settings / Logging</a>
-            <a href="/config/global/json">Settings / Raw JSON</a>
+            {% if user.email %}
+            <div class="user-menu-row">
+              <span class="user-menu-label">{{ L('user_menu.email') }}</span>
+              <span class="user-menu-value">{{ user.email }}</span>
+            </div>
+            {% endif %}
+            <div class="user-menu-row">
+              <span class="user-menu-label">{{ L('user_menu.role') }}</span>
+              <span class="user-menu-value">{{ L('roles.' ~ user.role) if user.role else '-' }}</span>
+            </div>
+            {% if user.provider %}
+            <div class="user-menu-row">
+              <span class="user-menu-label">{{ L('user_menu.provider') }}</span>
+              <span class="user-menu-value">{{ user.provider }}</span>
+            </div>
+            {% endif %}
             <hr>
-            <a href="/logout">退出</a>
+            <a class="user-menu-action" href="/logout">{{ L('nav.logout') }}</a>
           </div>
         </details>
         {% else %}
         <a class="sidebar-link" href="/login">
           <span class="sidebar-link-icon">🔑</span>
-          <span>登录</span>
+          <span>{{ L('nav.login') }}</span>
         </a>
         {% endif %}
       </div>
@@ -83,7 +125,7 @@
   <template id="legacy-compat">
     <header class="topbar"><nav class="topnav"></nav></header>
   </template>
-  <script>window.__AISE_LANG = {{ get_ui_language()|tojson }};</script>
+  <script>window.__AISE_LANG = {{ _lang|tojson }};</script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <!-- i18next: industry-standard i18n runtime. Resource JSON files live
@@ -92,7 +134,7 @@
        language is authoritative. -->
   <script src="https://unpkg.com/i18next@23.11.5/dist/umd/i18next.min.js"></script>
   <script src="https://unpkg.com/i18next-http-backend@2.5.2/i18nextHttpBackend.min.js"></script>
-  <script src="/static/app.js?v=20260421e"></script>
+  <script src="/static/app.js?v=20260421f"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

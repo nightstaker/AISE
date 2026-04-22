@@ -301,6 +301,45 @@ a:hover { color: var(--primary-hover); }
   padding: 4px 12px;
 }
 
+.user-menu-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.user-menu-row .user-menu-label {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+
+.user-menu-row .user-menu-value {
+  color: var(--text);
+  word-break: break-word;
+  text-align: right;
+  max-width: 60%;
+}
+
+.user-menu-action {
+  display: block;
+  color: var(--text);
+  text-decoration: none;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  text-align: center;
+  background: var(--surface-hover);
+  transition: background var(--transition-fast);
+}
+.user-menu-action:hover {
+  background: var(--primary);
+  color: white;
+}
+
 /* ── Legacy topbar (hidden, kept for Python compat) ── */
 .topbar {
   display: none;
