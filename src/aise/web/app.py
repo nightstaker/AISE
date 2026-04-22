@@ -254,33 +254,70 @@ class WebProjectService:
             logger.warning("Scaffold thread: project %s vanished before start", project_id)
             return
 
+        dispatch_error: str | None = None
         try:
             prompt = self._build_scaffolding_prompt(project)
             self._dispatch_scaffolding_to_pm(project, prompt)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("Scaffold thread raised: project=%s", project_id)
-            with self._lock:
-                project.fail_scaffolding(f"scaffolding dispatch raised: {exc}")
-                self._save_state()
-            return
+            dispatch_error = f"scaffolding dispatch raised: {exc}"
+            # Do NOT return yet — the safety net below may still be
+            # able to recover (e.g. if the agent's LLM is unavailable
+            # but the PM wasn't strictly necessary for a default
+            # layout). If the safety net ALSO can't recover we'll
+            # fail_scaffolding with the dispatch error context.
 
-        # Post-dispatch invariant check. The agent's happy-path answer
-        # is "I did it", but the filesystem is the source of truth.
-        # These checks are minimal — PR-c's safety net broadens them
-        # into a plan-driven verifier.
+        # Post-dispatch verification via the safety-net module. Runs
+        # layer B (``scaffolding_expectations()`` — the PM's contract)
+        # followed by layer A (hardcoded invariants) if B was clean.
+        # Any miss gets a mechanical repair attempt + a structured
+        # telemetry event at ``<project_root>/trace/safety_net_events.jsonl``
+        # so the dashboard (issue #122) can surface LLM-capability
+        # trends over time.
+        from ..runtime.safety_net import run_post_step_check, scaffolding_expectations
+
         root = Path(project.project_root or "")
-        ok = root.is_dir() and (root / ".git").exists() and (root / ".gitignore").exists()
+        outcome = run_post_step_check(
+            root,
+            step_id="scaffold",
+            layer_b_expected=scaffolding_expectations(),
+            layer_a_category="scaffold",
+        )
+        if outcome.events_emitted:
+            logger.info(
+                "Safety-net repaired scaffold gaps: project_id=%s repaired=%s failed=%s events=%d",
+                project_id,
+                outcome.repairs_succeeded,
+                outcome.repairs_failed,
+                outcome.events_emitted,
+            )
+
         with self._lock:
-            if ok:
+            if outcome.repaired_ok and not dispatch_error:
                 project.finish_scaffolding()
                 logger.info("Scaffold completed: project_id=%s root=%s", project_id, root)
-            else:
-                project.fail_scaffolding("post-dispatch invariants failed: .git / .gitignore missing")
+            elif outcome.repaired_ok and dispatch_error:
+                # Dispatch raised but the safety net ended up in a
+                # clean state anyway. Count as success — the agent
+                # failure is already logged and telemetry'd.
+                project.finish_scaffolding()
                 logger.warning(
-                    "Scaffold invariants failed: project_id=%s .git=%s .gitignore=%s",
+                    "Scaffold completed via safety-net repair (dispatch error: %s): project_id=%s",
+                    dispatch_error,
                     project_id,
-                    (root / ".git").exists(),
-                    (root / ".gitignore").exists(),
+                )
+            else:
+                # Even after repair attempts, something is still
+                # broken — surface both the dispatch error (if any)
+                # and the failed repairs.
+                failed_detail = ", ".join(f"{act}: {err}" for act, err in outcome.repairs_failed) or (
+                    dispatch_error or "unknown failure"
+                )
+                project.fail_scaffolding(failed_detail)
+                logger.warning(
+                    "Scaffold failed after safety-net repair: project_id=%s detail=%s",
+                    project_id,
+                    failed_detail,
                 )
             self._save_state()
 
