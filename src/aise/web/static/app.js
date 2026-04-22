@@ -637,43 +637,128 @@ function setupProjectReact() {
                 const hasIncrementalBaseline = runs.some(function (r) {
                     return r && r.status === "completed" && (r.result || "").toString().trim();
                 });
-                return h(
-                    "section",
-                    { className: "card", style: { display: "flex", gap: "16px", justifyContent: "center", padding: "32px", flexWrap: "wrap" } },
+                // Inline history: show up to 10 most recent requirements + runs
+                // on the project home. The "view all" button appears ONLY when
+                // either collection exceeds the cap — silent for small projects,
+                // discoverable for busy ones. Both lists are already stored in
+                // insertion order, so reverse-slicing gives the N newest.
+                const HISTORY_LIMIT = 10;
+                const recentRequirements = [...requirements]
+                    .sort((a, b) => (Date.parse(b && b.created_at) || 0) - (Date.parse(a && a.created_at) || 0))
+                    .slice(0, HISTORY_LIMIT);
+                const recentRuns = [...runs]
+                    .sort((a, b) => (Date.parse(b && b.started_at) || 0) - (Date.parse(a && a.started_at) || 0))
+                    .slice(0, HISTORY_LIMIT);
+                const hasMoreRequirements = requirements.length > HISTORY_LIMIT;
+                const hasMoreRuns = runs.length > HISTORY_LIMIT;
+                const hasMore = hasMoreRequirements || hasMoreRuns;
+                return [
                     h(
-                        "button",
-                        {
-                            type: "button",
-                            className: "btn",
-                            style: { fontSize: "1.1rem", padding: "12px 32px" },
-                            disabled: projectMissing,
-                            onClick: () => setView("new-requirement"),
-                            title: hasIncrementalBaseline
-                                ? t("project.action_new_requirement_incremental_hint")
-                                : t("project.action_new_requirement_initial_hint"),
-                        },
-                        hasIncrementalBaseline ? t("project.action_new_requirement_incremental") : t("project.action_new_requirement_initial")
+                        "section",
+                        { key: "actions", className: "card", style: { display: "flex", gap: "16px", justifyContent: "center", padding: "32px", flexWrap: "wrap" } },
+                        h(
+                            "button",
+                            {
+                                type: "button",
+                                className: "btn",
+                                style: { fontSize: "1.1rem", padding: "12px 32px" },
+                                disabled: projectMissing,
+                                onClick: () => setView("new-requirement"),
+                                title: hasIncrementalBaseline
+                                    ? t("project.action_new_requirement_incremental_hint")
+                                    : t("project.action_new_requirement_initial_hint"),
+                            },
+                            hasIncrementalBaseline ? t("project.action_new_requirement_incremental") : t("project.action_new_requirement_initial")
+                        ),
+                        latestRun && latestRun.run_id ? h(
+                            "a",
+                            {
+                                className: "btn secondary",
+                                style: { fontSize: "1.1rem", padding: "12px 32px" },
+                                href: `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(latestRun.run_id)}`,
+                            },
+                            t("project.action_view_latest_run")
+                        ) : null,
                     ),
                     h(
-                        "button",
-                        {
-                            type: "button",
-                            className: "btn secondary",
-                            style: { fontSize: "1.1rem", padding: "12px 32px" },
-                            onClick: () => setView("history"),
-                        },
-                        t("project.action_view_history")
+                        "section",
+                        { key: "history", className: "card" },
+                        h("h3", null, t("project.recent_requirements_heading")),
+                        h(
+                            "ul",
+                            { className: "history-list" },
+                            ...(recentRequirements.length
+                                ? recentRequirements.map((req, idx) => h("li", { key: `${req.created_at}-${idx}` }, `${formatLocalTime(req.created_at)} - ${req.text}`))
+                                : [h("li", { key: "empty", className: "muted" }, t("project.history_empty"))])
+                        ),
+                        hasMoreRequirements ? h("p", { className: "muted", style: { fontSize: "12px", marginTop: "4px" } },
+                            t("project.history_truncated_hint", { n: HISTORY_LIMIT, total: requirements.length })) : null,
+
+                        h("h3", { style: { marginTop: "24px" } }, t("project.recent_runs_heading")),
+                        h(
+                            "div",
+                            { className: "table-scroll" },
+                            h(
+                                "table",
+                                null,
+                                h(
+                                    "thead",
+                                    null,
+                                    h(
+                                        "tr",
+                                        null,
+                                        h("th", null, t("project.col_run_id")),
+                                        h("th", null, t("project.col_time")),
+                                        h("th", null, t("project.col_status")),
+                                        h("th", null, t("project.col_requirement_summary")),
+                                        h("th", null, t("project.col_view"))
+                                    )
+                                ),
+                                h(
+                                    "tbody",
+                                    null,
+                                    ...(recentRuns.length
+                                        ? recentRuns.map((run) =>
+                                            h(
+                                                "tr",
+                                                { key: run.run_id },
+                                                h("td", null, run.run_id),
+                                                h("td", null, formatLocalTime(run.started_at)),
+                                                h("td", null, run.status || "pending"),
+                                                h("td", null, String(run.requirement_text || "").slice(0, 80)),
+                                                h(
+                                                    "td",
+                                                    null,
+                                                    h(
+                                                        "a",
+                                                        {
+                                                            href: `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(run.run_id)}`,
+                                                        },
+                                                        t("project.view_detail")
+                                                    )
+                                                )
+                                            )
+                                        )
+                                        : [h("tr", { key: "empty" }, h("td", { colSpan: 5, className: "muted" }, t("project.no_runs")))])
+                                )
+                            )
+                        ),
+                        hasMoreRuns ? h("p", { className: "muted", style: { fontSize: "12px", marginTop: "4px" } },
+                            t("project.history_truncated_hint", { n: HISTORY_LIMIT, total: runs.length })) : null,
+
+                        hasMore ? h("div", { style: { display: "flex", justifyContent: "center", marginTop: "16px" } },
+                            h(
+                                "button",
+                                {
+                                    type: "button",
+                                    className: "btn secondary",
+                                    onClick: () => setView("history"),
+                                },
+                                t("project.action_view_all_history")
+                            )
+                        ) : null
                     ),
-                    latestRun && latestRun.run_id ? h(
-                        "a",
-                        {
-                            className: "btn secondary",
-                            style: { fontSize: "1.1rem", padding: "12px 32px" },
-                            href: `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(latestRun.run_id)}`,
-                        },
-                        t("project.action_view_latest_run")
-                    ) : null,
-                );
+                ];
             })() : null,
             view === "new-requirement" ? h(
                 "section",
@@ -710,7 +795,7 @@ function setupProjectReact() {
                     { className: "card" },
                     h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" } },
                         h("h2", null, t("project.history_title")),
-                        h("button", { type: "button", className: "btn secondary", onClick: () => setView("default") }, "← 返回")
+                        h("button", { type: "button", className: "btn secondary", onClick: () => setView("default") }, "← " + t("common.back"))
                     ),
                     h("h3", null, t("project.history_requirements_heading")),
                     h(
