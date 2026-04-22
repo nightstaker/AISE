@@ -206,7 +206,9 @@
       "badge_paused": "⏸ Paused",
       "badge_archived": "▣ Archived",
       "badge_completed": "✓ Completed",
-      "badge_ready": "○ Ready"
+      "badge_ready": "○ Ready",
+      "badge_scaffolding": "⚙ Scaffolding",
+      "badge_scaffolding_failed": "⚠ Scaffolding failed"
     },
     "modal": {
       "title": "New project",

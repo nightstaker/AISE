@@ -206,7 +206,9 @@
       "badge_paused": "⏸ 暂停",
       "badge_archived": "▣ 归档",
       "badge_completed": "✓ 已完成",
-      "badge_ready": "○ 就绪"
+      "badge_ready": "○ 就绪",
+      "badge_scaffolding": "⚙ 环境准备中",
+      "badge_scaffolding_failed": "⚠ 环境准备失败"
     },
     "modal": {
       "title": "新建项目",

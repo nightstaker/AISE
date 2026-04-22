@@ -286,6 +286,13 @@ function setupDashboardReact() {
             if (latest === "completed" || latest === "success") return h("span", { className: "status-badge status-success" }, t("dashboard.card.badge_success"));
             if (latest === "failed" || latest === "error") return h("span", { className: "status-badge status-failed" }, t("dashboard.card.badge_failed"));
             const lifecycle = project ? project.status : null;
+            // Scaffolding states — the async PM dispatch is either still
+            // running (``scaffolding``) or has failed (``scaffolding_failed``).
+            // Treat them as precedence-above workflow states so a user
+            // never sees "Ready" for a project whose environment isn't
+            // actually prepared.
+            if (lifecycle === "scaffolding") return h("span", { className: "status-badge status-running" }, t("dashboard.card.badge_scaffolding"));
+            if (lifecycle === "scaffolding_failed") return h("span", { className: "status-badge status-failed" }, t("dashboard.card.badge_scaffolding_failed"));
             if (lifecycle === "paused") return h("span", { className: "status-badge status-pending" }, t("dashboard.card.badge_paused"));
             if (lifecycle === "archived") return h("span", { className: "status-badge status-pending" }, t("dashboard.card.badge_archived"));
             if (lifecycle === "completed") return h("span", { className: "status-badge status-success" }, t("dashboard.card.badge_completed"));

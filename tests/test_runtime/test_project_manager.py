@@ -140,6 +140,11 @@ class TestGlobalConfigInheritance:
         assert project.config.default_model.provider == "anthropic"
         assert project.config.workflow.max_review_iterations == 5
         assert project.project_root is not None
+        # New projects start in SCAFFOLDING — the PM agent dispatches
+        # asynchronously to create subdirs + git + .gitignore. The
+        # synchronous layer only guarantees the top-level directory
+        # and the persisted config snapshot below.
+        assert project.status == ProjectStatus.SCAFFOLDING
 
         config_file = Path(project.project_root) / "project_config.json"
         assert config_file.exists()
@@ -147,9 +152,6 @@ class TestGlobalConfigInheritance:
         assert persisted.project_name == "RD-Portal"
         assert persisted.default_model.model == "claude-opus-4"
         assert persisted.workflow.fail_on_review_rejection is True
-
-        for subdir in ("docs", "src", "tests", "scripts", "config", "artifacts", "trace"):
-            assert (Path(project.project_root) / subdir).exists(), f"scaffold missing {subdir}/"
 
     def test_create_default_project_config_returns_global_template_copy(self, tmp_path):
         global_config_path = tmp_path / "config/global_project_config.json"
@@ -178,6 +180,17 @@ class TestGlobalConfigInheritance:
         assert manager.get_project(project_id) is not None
 
 
+def _activate(manager: ProjectManager, project_id: str) -> None:
+    """Force SCAFFOLDING → ACTIVE so lifecycle tests can exercise
+    pause / resume / complete semantics without waiting on a real PM
+    dispatch. Tests that specifically validate the scaffolding flow
+    live in ``tests/test_web/test_app.py``.
+    """
+    project = manager.get_project(project_id)
+    assert project is not None
+    project.finish_scaffolding()
+
+
 class TestProjectLifecycle:
     """Lifecycle transitions the web layer invokes on user actions
     (pause / resume / complete / delete). Covered here for the first
@@ -186,6 +199,7 @@ class TestProjectLifecycle:
     def test_pause_and_resume_round_trip(self, tmp_path, monkeypatch):
         manager = _make_manager(tmp_path, monkeypatch)
         project_id = manager.create_project("LifecycleProject")
+        _activate(manager, project_id)
 
         assert manager.pause_project(project_id) is True
         project = manager.get_project(project_id)
@@ -198,12 +212,22 @@ class TestProjectLifecycle:
     def test_resume_on_non_paused_project_returns_false(self, tmp_path, monkeypatch):
         manager = _make_manager(tmp_path, monkeypatch)
         project_id = manager.create_project("ActiveProject")
+        _activate(manager, project_id)
         # Project is ACTIVE, not PAUSED → resume must return False.
+        assert manager.resume_project(project_id) is False
+
+    def test_resume_on_scaffolding_project_returns_false(self, tmp_path, monkeypatch):
+        """A SCAFFOLDING project isn't PAUSED either, so resume must
+        still return False — resume is not a generic "unblock" button."""
+        manager = _make_manager(tmp_path, monkeypatch)
+        project_id = manager.create_project("ScaffoldingProject")
+        # Deliberately NOT calling _activate — project stays in SCAFFOLDING.
         assert manager.resume_project(project_id) is False
 
     def test_complete_flips_status(self, tmp_path, monkeypatch):
         manager = _make_manager(tmp_path, monkeypatch)
         project_id = manager.create_project("CompletionProject")
+        _activate(manager, project_id)
 
         assert manager.complete_project(project_id) is True
         project = manager.get_project(project_id)
@@ -220,8 +244,11 @@ class TestProjectLifecycle:
     def test_list_projects_filters_by_status(self, tmp_path, monkeypatch):
         manager = _make_manager(tmp_path, monkeypatch)
         active_id = manager.create_project("Active")
+        _activate(manager, active_id)
         paused_id = manager.create_project("Paused")
+        _activate(manager, paused_id)
         manager.pause_project(paused_id)
+        still_scaffolding_id = manager.create_project("StillScaffolding")
 
         active_list = manager.list_projects(status_filter=ProjectStatus.ACTIVE)
         assert [p.project_id for p in active_list] == [active_id]
@@ -229,8 +256,11 @@ class TestProjectLifecycle:
         paused_list = manager.list_projects(status_filter=ProjectStatus.PAUSED)
         assert [p.project_id for p in paused_list] == [paused_id]
 
+        scaffolding_list = manager.list_projects(status_filter=ProjectStatus.SCAFFOLDING)
+        assert [p.project_id for p in scaffolding_list] == [still_scaffolding_id]
+
         all_list = manager.list_projects()
-        assert {p.project_id for p in all_list} == {active_id, paused_id}
+        assert {p.project_id for p in all_list} == {active_id, paused_id, still_scaffolding_id}
 
     def test_get_project_info_returns_dict_for_existing_and_none_for_missing(self, tmp_path, monkeypatch):
         manager = _make_manager(tmp_path, monkeypatch)
@@ -256,18 +286,31 @@ class TestProjectLifecycle:
 
 
 class TestProjectRootLayout:
-    """``_prepare_project_root`` is the only scaffolding step this PR
-    touches (just a mkdir; AI-First git init is a follow-up PR). Pin
-    the subdirs and sanitized-name logic so PR-b knows exactly what
-    it is replacing.
+    """``_prepare_project_root`` now only creates the top-level
+    project directory — the subdirectory tree (``docs/``, ``src/``,
+    ``tests/``, ``scripts/``, ``config/``, ``artifacts/``, ``trace/``)
+    is carved out by the product-manager agent during the SCAFFOLDING
+    phase. These tests pin what the sync step still owns: directory
+    existence and the ``project_<id>-<sanitized-name>`` slug.
     """
 
-    def test_subdirs_created(self, tmp_path, monkeypatch):
+    def test_top_level_root_created_synchronously(self, tmp_path, monkeypatch):
+        manager = _make_manager(tmp_path, monkeypatch)
+        project_id = manager.create_project("Any")
+        root = Path(manager.get_project(project_id).project_root)
+        assert root.is_dir(), "top-level project root must exist after create_project"
+
+    def test_subdirs_are_NOT_created_synchronously(self, tmp_path, monkeypatch):
+        """The PM agent owns subdir creation now. If this test starts
+        failing because subdirs reappear, someone reverted the
+        AI-First split — investigate before updating the assertion."""
         manager = _make_manager(tmp_path, monkeypatch)
         project_id = manager.create_project("Any")
         root = Path(manager.get_project(project_id).project_root)
         for subdir in ("docs", "src", "tests", "scripts", "config", "artifacts", "trace"):
-            assert (root / subdir).is_dir()
+            assert not (root / subdir).exists(), (
+                f"{subdir}/ should be created by the PM agent, not by _prepare_project_root"
+            )
 
     def test_project_name_sanitized_into_directory_slug(self, tmp_path, monkeypatch):
         manager = _make_manager(tmp_path, monkeypatch)
