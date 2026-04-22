@@ -23,7 +23,7 @@ from starlette.status import HTTP_303_SEE_OTHER, HTTP_401_UNAUTHORIZED
 
 from ..config import ProjectConfig
 from ..core.project import Project, ProjectStatus
-from ..core.project_manager import ProjectManager
+from ..runtime.project_manager import ProjectManager
 from ..utils.logging import configure_logging, configure_module_file_logger, get_logger
 from .i18n import make_translator
 from .log_service import LogService
