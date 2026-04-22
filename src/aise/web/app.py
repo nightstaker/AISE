@@ -25,6 +25,18 @@ from ..config import ProjectConfig
 from ..core.project import Project, ProjectStatus
 from ..core.project_manager import ProjectManager
 from ..utils.logging import configure_logging, configure_module_file_logger, get_logger
+from .log_service import LogService
+from .user_store import (
+    PERM_ANALYZE_LOGS,
+    PERM_MANAGE_PROJECTS,
+    PERM_MANAGE_SYSTEM,
+    PERM_MANAGE_USERS,
+    PERM_RUN_PROJECTS,
+    PERM_VIEW_LOGS,
+    UserStore,
+    has_permission,
+    session_payload,
+)
 
 try:
     from authlib.integrations.starlette_client import OAuth
@@ -56,6 +68,7 @@ class WorkflowRun:
     result: str = ""
     task_log: list[dict[str, Any]] = field(default_factory=list)
     mode: str = "initial"
+    process_type: str = "waterfall"
 
 
 @dataclass
@@ -91,6 +104,9 @@ class WebProjectService:
         self._lock = RLock()
         self._active_workflow_runs: set[tuple[str, str]] = set()
         self._state_path = self.project_manager._projects_root / "web_state.json"
+        self._users_path = self.project_manager._projects_root / "users.json"
+        self._user_store = UserStore(self._users_path)
+        self._log_service = LogService(self.project_manager._global_config.logging.log_dir)
         self._restore_projects_from_disk()
         self._load_state()
 
@@ -98,8 +114,17 @@ class WebProjectService:
 
         self._runtime_manager = RuntimeManager(config=self.project_manager._global_config)
         self._runtime_manager.start()
+        self._log_service.set_runtime_manager(self._runtime_manager)
 
         logger.info("WebProjectService initialized: state_path=%s", self._state_path)
+
+    @property
+    def user_store(self) -> UserStore:
+        return self._user_store
+
+    @property
+    def log_service(self) -> LogService:
+        return self._log_service
 
     # -- Project CRUD --------------------------------------------------------
 
@@ -126,12 +151,14 @@ class WebProjectService:
         development_mode: str,
         agent_models: dict[str, str] | None = None,
         initial_requirement: str = "",
+        process_type: str = "waterfall",
     ) -> str:
         project_id, _ = self.create_project_with_initial_run(
             project_name=project_name,
             development_mode=development_mode,
             agent_models=agent_models,
             initial_requirement=initial_requirement,
+            process_type=process_type,
         )
         return project_id
 
@@ -142,12 +169,16 @@ class WebProjectService:
         development_mode: str,
         agent_models: dict[str, str] | None = None,
         initial_requirement: str = "",
+        process_type: str = "waterfall",
     ) -> tuple[str, str | None]:
         if not project_name.strip():
             raise ValueError("Project name cannot be empty")
         mode = "github" if development_mode == "github" else "local"
+        raw_process = str(process_type or "waterfall").strip().lower()
+        process = raw_process if raw_process in ("waterfall", "agile") else "waterfall"
         config = self.project_manager.create_default_project_config(project_name)
         config.development_mode = mode
+        config.process_type = process
         if agent_models:
             for agent_name, model_id in agent_models.items():
                 normalized = str(model_id).strip()
@@ -273,6 +304,9 @@ class WebProjectService:
             prior_runs = self._runs_by_project.get(project_id, [])
             has_baseline = any(r.status == "completed" and (r.result or "").strip() for r in prior_runs)
             mode = "incremental" if has_baseline else "initial"
+            process_type = getattr(project.config, "process_type", "waterfall") or "waterfall"
+            if process_type not in ("waterfall", "agile"):
+                process_type = "waterfall"
             run_id = f"run_{uuid.uuid4().hex[:10]}"
             run = WorkflowRun(
                 run_id=run_id,
@@ -280,6 +314,7 @@ class WebProjectService:
                 started_at=datetime.now(timezone.utc),
                 status="running",
                 mode=mode,
+                process_type=process_type,
             )
             self._runs_by_project.setdefault(project_id, []).append(run)
             self._requirements_by_project.setdefault(project_id, []).append(
@@ -295,7 +330,7 @@ class WebProjectService:
 
         Thread(
             target=self._execute_run,
-            args=(project_id, run_id, requirement_text, mode),
+            args=(project_id, run_id, requirement_text, mode, process_type),
             daemon=True,
         ).start()
         return run_id
@@ -306,6 +341,7 @@ class WebProjectService:
         run_id: str,
         requirement: str,
         mode: str = "initial",
+        process_type: str = "waterfall",
     ) -> None:
         """Background thread: run requirement via ProjectSession."""
         from ..runtime.project_session import ProjectSession
@@ -330,6 +366,7 @@ class WebProjectService:
                 project_root=project_root,
                 on_event=on_event,
                 mode=mode,
+                process_type=process_type,
             )
             result = session.run(requirement)
 
@@ -700,6 +737,9 @@ class WebProjectService:
                     raw_mode = str(item.get("mode", "initial")).strip().lower()
                     if raw_mode not in ("initial", "incremental"):
                         raw_mode = "initial"
+                    raw_process = str(item.get("process_type", "waterfall")).strip().lower()
+                    if raw_process not in ("waterfall", "agile"):
+                        raw_process = "waterfall"
                     self._runs_by_project[project_id].append(
                         WorkflowRun(
                             run_id=str(item.get("run_id", "")),
@@ -711,6 +751,7 @@ class WebProjectService:
                             result=str(item.get("result", "")),
                             task_log=list(item.get("task_log", [])),
                             mode=raw_mode,
+                            process_type=raw_process,
                         )
                     )
 
@@ -797,6 +838,7 @@ class WebProjectService:
             "result": run.result,
             "task_log": run.task_log,
             "mode": run.mode,
+            "process_type": run.process_type,
         }
 
     @staticmethod
@@ -845,35 +887,65 @@ def _static_dir() -> Path:
 
 def create_app() -> FastAPI:
     """Create the AISE web app."""
-    _LOCALHOST_AUTO_USER: dict[str, Any] = {
-        "id": "local-auto",
-        "name": "Local User",
-        "email": "local@aise.local",
-        "provider": "local",
-        "role": "super_admin",
-        "permissions": ["super_admin", "rd_director"],
-    }
+    # Localhost auto-login no longer injects a synthetic user. Instead it
+    # signs in as the bootstrapped super_admin from the UserStore so
+    # every action is attributed to a real user record.
     _AUTH_PUBLIC_PATHS = {"/login", "/auth/local-login", "/auth/dev-login", "/api/health"}
+
+    app = FastAPI(title="AISE Web Console")
+
+    def _refresh_session_user(request: Request, user_dict: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Re-hydrate the session user from the store (role may have changed).
+
+        Keeps the session object fresh so a user whose role was changed
+        by an admin picks up new permissions on their next request
+        without needing a re-login.
+        """
+        if not user_dict:
+            return None
+        user_id = str(user_dict.get("id", ""))
+        if not user_id:
+            return user_dict
+        stored = service.user_store.get_user(user_id)
+        if stored is None:
+            # Stored record deleted — force re-login.
+            request.session.clear()
+            return None
+        if not stored.enabled:
+            request.session.clear()
+            return None
+        payload = session_payload(stored)
+        if payload != user_dict:
+            request.session["user"] = payload
+        return payload
 
     class _LocalhostAuthMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
             path = request.url.path
-            if not path.startswith("/static"):
-                host = (request.headers.get("host") or "").split(":")[0].strip().lower()
-                is_local = host in {"127.0.0.1", "localhost", "::1"}
-                if is_local and not request.session.get("user"):
-                    request.session["user"] = _LOCALHOST_AUTO_USER
-                elif (
-                    not is_local
-                    and not request.session.get("user")
-                    and not path.startswith("/auth/")
-                    and path not in _AUTH_PUBLIC_PATHS
-                    and not path.startswith("/api/")
-                ):
-                    return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
+            if path.startswith("/static"):
+                return await call_next(request)
+            host = (request.headers.get("host") or "").split(":")[0].strip().lower()
+            is_local = host in {"127.0.0.1", "localhost", "::1"}
+            current = request.session.get("user")
+            if is_local and not current:
+                # Pick the first enabled super_admin as the auto-user.
+                for candidate in service.user_store.list_users():
+                    if candidate.role == "super_admin" and candidate.enabled:
+                        request.session["user"] = session_payload(candidate)
+                        current = request.session["user"]
+                        break
+            if current:
+                _refresh_session_user(request, current)
+            if (
+                not is_local
+                and not request.session.get("user")
+                and not path.startswith("/auth/")
+                and path not in _AUTH_PUBLIC_PATHS
+                and not path.startswith("/api/")
+            ):
+                return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
             return await call_next(request)
 
-    app = FastAPI(title="AISE Web Console")
     app.add_middleware(_LocalhostAuthMiddleware)
     app.add_middleware(SessionMiddleware, secret_key=secrets.token_urlsafe(32))
     app.mount("/static", StaticFiles(directory=_static_dir()), name="static")
@@ -888,12 +960,17 @@ def create_app() -> FastAPI:
     oauth = _build_oauth()
     dev_login_enabled = os.environ.get("AISE_WEB_ENABLE_DEV_LOGIN", "").lower() in {"1", "true", "yes"}
     local_admin_username = os.environ.get("AISE_ADMIN_USERNAME", "admin")
-    local_admin_password = os.environ.get("AISE_ADMIN_PASSWORD", "123456")
 
     def require_login(request: Request) -> dict[str, Any]:
         user = request.session.get("user")
         if not user:
             raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Login required")
+        return user
+
+    def require_permission(request: Request, permission: str) -> dict[str, Any]:
+        user = require_login(request)
+        if not has_permission(user, permission):
+            raise HTTPException(status_code=403, detail=f"Permission denied: {permission}")
         return user
 
     # -- Page routes ---------------------------------------------------------
@@ -939,30 +1016,30 @@ def create_app() -> FastAPI:
 
     @app.post("/auth/local-login")
     async def local_login(request: Request, username: str = Form(...), password: str = Form(...)):
-        if username.strip() != local_admin_username or password != local_admin_password:
-            return RedirectResponse(url="/login?error=用户名或���码错误", status_code=HTTP_303_SEE_OTHER)
-        request.session["user"] = {
-            "id": "local-admin",
-            "name": "System Admin",
-            "email": "admin@aise.local",
-            "provider": "local",
-            "role": "super_admin",
-            "permissions": ["super_admin", "rd_director"],
-        }
+        user = service.user_store.authenticate(username, password)
+        if user is None:
+            return RedirectResponse(url="/login?error=用户名或密码错误", status_code=HTTP_303_SEE_OTHER)
+        request.session["user"] = session_payload(user)
         return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
 
     @app.get("/auth/dev-login")
     async def dev_login(request: Request, name: str = "Dev User", email: str = "dev@aise.local"):
         if not dev_login_enabled:
             raise HTTPException(status_code=404, detail="Not found")
-        request.session["user"] = {
-            "id": "dev-user",
-            "name": name,
-            "email": email,
-            "provider": "dev",
-            "role": "super_admin",
-            "permissions": ["super_admin", "rd_director"],
-        }
+        user = service.user_store.record_external_login(
+            provider="dev",
+            external_id=email,
+            email=email,
+            display_name=name,
+        )
+        # Dev login always grants super_admin so developers can poke every
+        # page without a two-step "create user, promote" dance.
+        try:
+            service.user_store.update_user(user.id, role="super_admin")
+        except Exception as exc:
+            logger.warning("Failed to elevate dev user to super_admin: %s", exc)
+        user = service.user_store.get_user(user.id) or user
+        request.session["user"] = session_payload(user)
         return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
 
     @app.get("/auth/{provider}")
@@ -997,14 +1074,15 @@ def create_app() -> FastAPI:
                         "name": g.get("displayName", ""),
                         "email": g.get("mail") or g.get("userPrincipalName", ""),
                     }
-        request.session["user"] = {
-            "id": userinfo.get("sub", ""),
-            "name": userinfo.get("name", "User"),
-            "email": userinfo.get("email", ""),
-            "provider": provider,
-            "role": "user",
-            "permissions": [],
-        }
+        user = service.user_store.record_external_login(
+            provider=provider,
+            external_id=str(userinfo.get("sub", "")),
+            email=str(userinfo.get("email", "")),
+            display_name=str(userinfo.get("name", "") or userinfo.get("email", "") or "User"),
+        )
+        if not user.enabled:
+            return RedirectResponse(url="/login?error=账户已禁用，联系管理员", status_code=HTTP_303_SEE_OTHER)
+        request.session["user"] = session_payload(user)
         return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
 
     @app.get("/logout")
@@ -1019,6 +1097,7 @@ def create_app() -> FastAPI:
         require_login(request)
         form_data = await request.form()
         initial_requirement = str(form_data.get("initial_requirement", ""))
+        process_type = str(form_data.get("process_type", "waterfall"))
         agent_models: dict[str, str] = {}
         for key, value in form_data.multi_items():
             if key.startswith("agent_model_"):
@@ -1029,6 +1108,7 @@ def create_app() -> FastAPI:
                 development_mode=development_mode,
                 agent_models=agent_models,
                 initial_requirement=initial_requirement,
+                process_type=process_type,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1185,7 +1265,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/projects")
     async def api_create_project(request: Request) -> dict[str, Any]:
-        require_login(request)
+        require_permission(request, PERM_MANAGE_PROJECTS)
         payload = await request.json()
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Invalid JSON body")
@@ -1195,6 +1275,7 @@ def create_app() -> FastAPI:
                 development_mode=str(payload.get("development_mode", "local")),
                 agent_models={str(k): str(v) for k, v in (payload.get("agent_models") or {}).items()},
                 initial_requirement=str(payload.get("initial_requirement", "")),
+                process_type=str(payload.get("process_type", "waterfall")),
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1210,7 +1291,7 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/projects/{project_id}")
     async def api_delete_project(request: Request, project_id: str) -> dict[str, Any]:
-        require_login(request)
+        require_permission(request, PERM_MANAGE_PROJECTS)
         try:
             service.delete_project(project_id)
         except ValueError as exc:
@@ -1219,7 +1300,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/projects/{project_id}/restart")
     async def api_restart_project(request: Request, project_id: str) -> dict[str, Any]:
-        require_login(request)
+        require_permission(request, PERM_RUN_PROJECTS)
         try:
             run_id = service.restart_project(project_id)
         except ValueError as exc:
@@ -1236,7 +1317,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/projects/{project_id}/requirements")
     async def api_add_requirement(request: Request, project_id: str) -> dict[str, Any]:
-        require_login(request)
+        require_permission(request, PERM_RUN_PROJECTS)
         payload = await request.json()
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Invalid JSON body")
@@ -1269,7 +1350,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/config/global")
     async def api_set_global_config(request: Request) -> dict[str, Any]:
-        require_login(request)
+        require_permission(request, PERM_MANAGE_SYSTEM)
         payload = await request.json()
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Invalid JSON body")
@@ -1286,7 +1367,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/config/global/data")
     async def api_set_global_config_data(request: Request) -> dict[str, Any]:
-        require_login(request)
+        require_permission(request, PERM_MANAGE_SYSTEM)
         payload = await request.json()
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Invalid JSON body")
@@ -1311,5 +1392,160 @@ def create_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"saved": True}
+
+    # -- User management pages + API ----------------------------------------
+
+    @app.get("/users", response_class=HTMLResponse)
+    async def users_page(request: Request) -> HTMLResponse:
+        user = require_login(request)
+        if not has_permission(user, PERM_MANAGE_USERS):
+            raise HTTPException(status_code=403, detail="Permission denied")
+        return templates.TemplateResponse(
+            request,
+            "users.html",
+            {"user": user},
+        )
+
+    @app.get("/api/users/me")
+    async def api_current_user(request: Request) -> dict[str, Any]:
+        user = require_login(request)
+        return {"user": user}
+
+    @app.get("/api/users")
+    async def api_list_users(request: Request) -> dict[str, Any]:
+        require_permission(request, PERM_MANAGE_USERS)
+        users = [u.to_dict() for u in service.user_store.list_users()]
+        return {"users": users, "roles": service.user_store.list_role_definitions()}
+
+    @app.get("/api/roles")
+    async def api_list_roles(request: Request) -> dict[str, Any]:
+        require_login(request)
+        return {
+            "roles": service.user_store.list_role_definitions(),
+            "permissions": service.user_store.list_all_permissions(),
+        }
+
+    @app.post("/api/users")
+    async def api_create_user(request: Request) -> dict[str, Any]:
+        require_permission(request, PERM_MANAGE_USERS)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        try:
+            user = service.user_store.create_user(
+                username=str(payload.get("username", "")),
+                email=str(payload.get("email", "")),
+                display_name=str(payload.get("display_name", "")),
+                role=str(payload.get("role", "viewer")),
+                password=str(payload.get("password", "")),
+                enabled=bool(payload.get("enabled", True)),
+                provider=str(payload.get("provider", "local")),
+                notes=str(payload.get("notes", "")),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"user": user.to_dict()}
+
+    @app.put("/api/users/{user_id}")
+    async def api_update_user(request: Request, user_id: str) -> dict[str, Any]:
+        require_permission(request, PERM_MANAGE_USERS)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        kwargs: dict[str, Any] = {}
+        for key in ("email", "display_name", "role", "notes"):
+            if key in payload:
+                kwargs[key] = str(payload[key]) if payload[key] is not None else ""
+        if "enabled" in payload:
+            kwargs["enabled"] = bool(payload["enabled"])
+        try:
+            user = service.user_store.update_user(user_id, **kwargs)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"user": user.to_dict()}
+
+    @app.post("/api/users/{user_id}/password")
+    async def api_set_user_password(request: Request, user_id: str) -> dict[str, Any]:
+        require_permission(request, PERM_MANAGE_USERS)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        try:
+            service.user_store.set_password(user_id, str(payload.get("password", "")))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"updated": True}
+
+    @app.delete("/api/users/{user_id}")
+    async def api_delete_user(request: Request, user_id: str) -> dict[str, Any]:
+        require_permission(request, PERM_MANAGE_USERS)
+        session_user = request.session.get("user") or {}
+        if session_user.get("id") == user_id:
+            raise HTTPException(status_code=400, detail="Cannot delete yourself")
+        try:
+            service.user_store.delete_user(user_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"deleted": True, "user_id": user_id}
+
+    # -- Logs page + API ----------------------------------------------------
+
+    @app.get("/logs", response_class=HTMLResponse)
+    async def logs_page(request: Request) -> HTMLResponse:
+        user = require_login(request)
+        if not has_permission(user, PERM_VIEW_LOGS):
+            raise HTTPException(status_code=403, detail="Permission denied")
+        return templates.TemplateResponse(request, "logs.html", {"user": user})
+
+    @app.get("/api/logs/files")
+    async def api_list_log_files(request: Request) -> dict[str, Any]:
+        require_permission(request, PERM_VIEW_LOGS)
+        files = service.log_service.list_files()
+        return {"files": files, "log_dir": str(service.log_service.log_dir)}
+
+    @app.get("/api/logs/tail")
+    async def api_tail_log(
+        request: Request,
+        filename: str,
+        limit: int = 500,
+        level: str | None = None,
+        logger: str | None = None,
+        q: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> dict[str, Any]:
+        require_permission(request, PERM_VIEW_LOGS)
+        try:
+            return service.log_service.read_tail(
+                filename=filename,
+                limit=limit,
+                level=level,
+                logger_filter=logger,
+                query=q,
+                since=since,
+                until=until,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"Log file not found: {exc}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/logs/analyze")
+    async def api_analyze_logs(request: Request) -> dict[str, Any]:
+        require_permission(request, PERM_ANALYZE_LOGS)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        try:
+            return service.log_service.analyze(
+                records_text=str(payload.get("text", "")),
+                focus=str(payload.get("focus", "")),
+                agent_name=str(payload.get("agent", "rd_director")),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.error("Log analyze failed: %s", exc)
+            raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
 
     return app

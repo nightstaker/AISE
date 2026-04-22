@@ -3147,3 +3147,102 @@ button.flow-composite-card:hover,
   background: rgba(100, 116, 139, 0.10);
   border: 1px solid rgba(100, 116, 139, 0.25);
 }
+
+/* ------------------------------------------------------------------ */
+/* Users management page                                                */
+/* ------------------------------------------------------------------ */
+
+.users-table, .users-roles-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+.users-table th, .users-table td,
+.users-roles-table th, .users-roles-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  text-align: left;
+  vertical-align: middle;
+}
+.users-table th, .users-roles-table th {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.72rem;
+  color: #9aa4b2;
+  font-weight: 600;
+}
+.users-roles-table td:first-child { width: 140px; }
+.btn-sm { font-size: 0.78rem; padding: 4px 10px; }
+
+/* ------------------------------------------------------------------ */
+/* Logs viewer page                                                     */
+/* ------------------------------------------------------------------ */
+
+.logs-shell { padding: 0; }
+.logs-filters .logs-filter-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, auto) minmax(0, 1fr));
+  gap: 6px 12px;
+  align-items: center;
+}
+.logs-filters .logs-filter-row label {
+  font-size: 0.78rem;
+  color: #9aa4b2;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.logs-filters .logs-filter-row input,
+.logs-filters .logs-filter-row select {
+  min-width: 100px;
+}
+.logs-filters .logs-filter-row button {
+  grid-column: span 2;
+  justify-self: start;
+}
+
+.log-viewer {
+  max-height: 60vh;
+  overflow-y: auto;
+  background: rgba(0,0,0,0.25);
+  border-radius: 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.78rem;
+}
+.log-row {
+  display: grid;
+  grid-template-columns: 170px 80px 160px 1fr;
+  padding: 2px 8px;
+  gap: 10px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  white-space: nowrap;
+}
+.log-row:hover { background: rgba(255,255,255,0.04); }
+.log-row-selected { background: rgba(14,165,233,0.10); }
+.log-col-ts { color: #94a3b8; }
+.log-col-level { font-weight: 600; text-transform: uppercase; font-size: 0.72rem; }
+.log-col-logger { color: #a5b4fc; }
+.log-col-message { white-space: normal; word-break: break-word; }
+.log-level-debug { color: #64748b; }
+.log-level-info { color: #38bdf8; }
+.log-level-warning, .log-level-warn { color: #f59e0b; }
+.log-level-error { color: #ef4444; }
+.log-level-critical, .log-level-fatal { color: #ec4899; }
+.log-row-error { background: rgba(239, 68, 68, 0.06); }
+.log-row-warn { background: rgba(245, 158, 11, 0.06); }
+
+.log-analysis {
+  margin-top: 12px;
+  background: rgba(14, 165, 233, 0.06);
+  border: 1px solid rgba(14, 165, 233, 0.2);
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+.log-analysis pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.82rem;
+  color: #e5e7eb;
+}
