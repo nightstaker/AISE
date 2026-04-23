@@ -165,6 +165,12 @@ class ToolContext:
     event_lock: threading.Lock = field(default_factory=threading.Lock)
     runtime_resolver: Callable[[str, Any], Any] | None = None
     processes_dir: Path | None = None
+    # The raw user requirement that kicked off this session. Prepended
+    # to every dispatch_task prompt so workers see the user's original
+    # natural language and can mirror it in any docs/*.md they write.
+    # Empty string means "no requirement available" (e.g. unit tests
+    # exercising the primitive directly); the prefix is then skipped.
+    original_requirement: str = ""
     # Dedup caches: the orchestrator fires a ``stage_update`` before every
     # dispatch even when the stage has not actually changed (parallel
     # developer dispatches all emit "implementation started"), and weak
@@ -420,9 +426,26 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
                     }
                 )
 
+            # Build the prompt the worker actually sees. Prepend the
+            # project's original user requirement (if the session set
+            # one on ctx) so agents have a stable signal to mirror the
+            # user's natural language when writing docs/*.md. The
+            # already-emitted ``request_msg`` keeps the unprefixed
+            # ``task_description`` in its payload so the UI/log is not
+            # bloated by N copies of the same requirement block.
+            worker_prompt = task_description
+            if ctx.original_requirement:
+                worker_prompt = (
+                    "=== ORIGINAL USER REQUIREMENT "
+                    "(preserve this natural language in all docs/*.md) ===\n"
+                    f"{ctx.original_requirement}\n"
+                    "=== END ORIGINAL REQUIREMENT ===\n\n"
+                    f"{task_description}"
+                )
+
             # First attempt.
             result = dispatch_rt.handle_message(
-                task_description,
+                worker_prompt,
                 on_todos_update=_on_todos_update,
             )
 
@@ -455,7 +478,7 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
                         _MAX_DISPATCH_RETRIES,
                         task_id,
                     )
-                retry_prompt = _build_retry_prompt(task_description, result)
+                retry_prompt = _build_retry_prompt(worker_prompt, result)
                 result = dispatch_rt.handle_message(
                     retry_prompt,
                     on_todos_update=_on_todos_update,

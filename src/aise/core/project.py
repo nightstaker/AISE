@@ -152,6 +152,7 @@ class Project:
             "project_root": self.project_root,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
+            "scaffolding_error": self.scaffolding_error,
         }
 
     def __repr__(self) -> str:

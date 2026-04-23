@@ -206,3 +206,27 @@ class TestProjectManagerGlobalConfig:
         assert len(rows) == 1
         assert rows[0]["phase"] == "requirements"
         assert rows[0]["status"] == "completed"
+
+
+class TestProjectGetInfoScaffoldingError:
+    def test_get_info_includes_scaffolding_error_key_when_unset(self):
+        project = Project(
+            project_id="p_info_0",
+            config=ProjectConfig(project_name="InfoScaffoldOK"),
+            orchestrator=_StubOrchestrator(),  # type: ignore[arg-type]
+        )
+        info = project.get_info()
+        assert "scaffolding_error" in info
+        assert info["scaffolding_error"] is None
+        assert info["status"] == "scaffolding"
+
+    def test_get_info_exposes_scaffolding_error_after_failure(self):
+        project = Project(
+            project_id="p_info_1",
+            config=ProjectConfig(project_name="InfoScaffoldFail"),
+            orchestrator=_StubOrchestrator(),  # type: ignore[arg-type]
+        )
+        project.fail_scaffolding("mkdir refused: permission denied on /opt/ai")
+        info = project.get_info()
+        assert info["status"] == "scaffolding_failed"
+        assert info["scaffolding_error"] == "mkdir refused: permission denied on /opt/ai"
