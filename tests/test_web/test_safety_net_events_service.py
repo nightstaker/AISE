@@ -181,6 +181,24 @@ class TestFilters:
         summary = svc.summarize(project_id="does-not-exist")
         assert summary.total == 0
 
+    def test_project_id_path_traversal_is_rejected(self, tmp_path: Path) -> None:
+        """The ``project_id`` filter comes straight from the query
+        string; it must not be able to escape ``projects_root``. A
+        bait file is planted as a sibling of ``projects_root`` at the
+        exact path a traversal would resolve to — if the guard is
+        missing, the service would read it.
+        """
+        root = tmp_path / "projects"
+        _seed_events(root, "legit_project", [_event(ts="2026-04-22T10:00:00+00:00")])
+        bait = tmp_path / "leaked" / "trace" / "safety_net_events.jsonl"
+        bait.parent.mkdir(parents=True)
+        bait.write_text(json.dumps(_event(ts="2099-01-01T00:00:00+00:00")) + "\n", encoding="utf-8")
+
+        svc = SafetyNetEventsService(root)
+        assert svc.summarize(project_id="../leaked").total == 0
+        assert svc.summarize(project_id="/etc").total == 0
+        assert svc.summarize(project_id="legit_project/../../leaked").total == 0
+
     def test_since_filter_excludes_older_events(self, tmp_path: Path) -> None:
         root = tmp_path / "projects"
         _seed_events(
