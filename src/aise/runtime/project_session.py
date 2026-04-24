@@ -139,6 +139,12 @@ class ProjectSession:
         global_pm_rt = self._manager.get_runtime(self._orchestrator_name)
 
         self._requirement = requirement
+        # Make the raw requirement visible to every dispatch so workers
+        # can read it directly and mirror the user's natural language
+        # in any docs/*.md they write (see tool_primitives.dispatch_task
+        # for the prefix format, and architect.md / product_manager.md /
+        # qa_engineer.md "Document Language" sections for the rule).
+        self._ctx.original_requirement = requirement
         try:
             if global_pm_rt is not None:
                 global_pm_rt._state = AgentState.WORKING

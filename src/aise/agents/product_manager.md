@@ -89,6 +89,47 @@ git diff --name-only phase_<N-1>_<name>..HEAD
 
 Cite the file list and commit subjects verbatim. Do not paraphrase.
 
+### Document Language
+
+When you write any file under `docs/`, the natural language of the prose
+(headings, narrative paragraphs, bullet text, table content, diagram
+titles) MUST match the language of the user's original requirement text.
+Every dispatch you receive begins with a fenced block in the form:
+
+```
+=== ORIGINAL USER REQUIREMENT (preserve this natural language in all docs/*.md) ===
+<the user's raw requirement text>
+=== END ORIGINAL REQUIREMENT ===
+```
+
+Read that block to determine the language. The rule is binary:
+
+- If the requirement text contains ANY CJK character (Chinese, Japanese,
+  Korean ideograph), write the entire document's prose in **Simplified
+  Chinese**.
+- Otherwise, write the entire document's prose in **English**.
+
+The language rule applies to narrative prose only. The following MUST
+remain unchanged regardless of natural language:
+
+- Markdown structural syntax (fences, table pipes, list markers, heading
+  `#` characters).
+- File paths, directory names, module names, class names, function names,
+  variable names, CLI commands, shell snippets.
+- Technical terms and library/framework names (pygame, FastAPI, pytest,
+  Mermaid, C4Context, etc.).
+- Code blocks of any language — leave them byte-exact.
+- Mermaid diagram reserved words (`flowchart`, `C4Container`, `sequenceDiagram`, …)
+  and node IDs. Human-readable labels/titles inside diagrams SHOULD be
+  translated to match the document language.
+
+When you quote the user's original requirement text verbatim (e.g. in an
+Executive Summary or a "背景" section), preserve it EXACTLY as the user
+wrote it — do not translate, paraphrase, or normalise punctuation.
+
+Do not mix languages within a single document. Pick one per the binary
+rule above and apply it consistently.
+
 ### Diagram Format
 
 Any diagram you include in a requirement or delivery document (user

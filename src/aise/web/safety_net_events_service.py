@@ -174,11 +174,20 @@ class SafetyNetEventsService:
 
     def _target_projects(self, project_id: str | None) -> list[str]:
         """Resolve the scan list. When ``project_id`` is set, scope
-        to that one directory (even if it doesn't exist yet — we'll
-        just skip it); otherwise scan everything under projects_root.
+        to that one directory; otherwise scan everything under
+        projects_root.
+
+        ``project_id`` is caller-controlled (query-string input) so it
+        is validated against :meth:`list_project_ids`. Anything that
+        doesn't match an existing direct child of ``projects_root`` —
+        including path-traversal attempts like ``../etc`` — returns
+        an empty scan list, matching the legacy "missing project →
+        no events" behavior without exposing the filesystem.
         """
         if project_id:
-            return [project_id]
+            if project_id in self.list_project_ids():
+                return [project_id]
+            return []
         return self.list_project_ids()
 
     def _read_events(self, project_id: str) -> list[_RawEvent]:

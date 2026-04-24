@@ -493,6 +493,7 @@ function setupProjectReact() {
         const h = window.React.createElement;
         const project = initial.project;
         const projectId = String((project.info || {}).project_id || "");
+        const [projectInfo, setProjectInfo] = window.React.useState(project.info || {});
         const [requirements, setRequirements] = window.React.useState(Array.isArray(project.requirements) ? project.requirements : []);
         const [runs, setRuns] = window.React.useState(Array.isArray(project.runs) ? project.runs : []);
         const [text, setText] = window.React.useState("");
@@ -506,11 +507,13 @@ function setupProjectReact() {
             let timer = 0;
             async function refresh() {
                 try {
-                    const [requirementsData, runsData] = await Promise.all([
+                    const [projData, requirementsData, runsData] = await Promise.all([
+                        fetchJson(`/api/projects/${encodeURIComponent(projectId)}`),
                         fetchJson(`/api/projects/${encodeURIComponent(projectId)}/requirements`),
                         fetchJson(`/api/projects/${encodeURIComponent(projectId)}/runs`),
                     ]);
                     if (!active) return;
+                    if (projData && projData.info) setProjectInfo(projData.info);
                     setRequirements(Array.isArray(requirementsData.requirements) ? requirementsData.requirements : []);
                     setRuns(Array.isArray(runsData.runs) ? runsData.runs : []);
                     setProjectMissing(false);
@@ -600,21 +603,26 @@ function setupProjectReact() {
             })[0];
         }
 
+        const liveStatus = projectInfo.status || (project.info || {}).status || "";
+        const isScaffolding = liveStatus === "scaffolding";
+        const scaffoldingFailed = liveStatus === "scaffolding_failed";
+        const blockActions = projectMissing || isScaffolding || scaffoldingFailed;
+
         return h(
             "div",
             { className: "project-layout" },
             h(
                 "section",
                 { className: "card card-glow project-header-card" },
-                h("h1", null, project.info.project_name),
-                h("p", { className: "muted" }, t("project.header_meta", { id: project.info.project_id, status: project.info.status, mode: project.info.development_mode })),
+                h("h1", null, projectInfo.project_name || project.info.project_name),
+                h("p", { className: "muted" }, t("project.header_meta", { id: projectInfo.project_id || project.info.project_id, status: liveStatus, mode: projectInfo.development_mode || project.info.development_mode })),
                 h("div", { style: { display: "flex", gap: "8px", marginTop: "8px" } },
                     h(
                         "button",
                         {
                             type: "button",
                             className: "btn secondary",
-                            disabled: projectMissing,
+                            disabled: blockActions,
                             onClick: restartCurrentProject,
                         },
                         t("project.restart")
@@ -639,7 +647,39 @@ function setupProjectReact() {
                     h("a", { className: "btn secondary", href: "/" }, t("project.back_to_list"))
                 )
                 : null,
-            view === "default" ? (function () {
+            !projectMissing && isScaffolding
+                ? h(
+                    "section",
+                    { className: "card", key: "scaffolding-status" },
+                    h("h2", { style: { marginTop: 0 } },
+                        h("span", { style: { display: "inline-block", width: "10px", height: "10px", borderRadius: "50%", background: "var(--warning, #f59e0b)", marginRight: "10px", animation: "pulse 1.4s ease-in-out infinite" } }),
+                        t("project.scaffolding_title")
+                    ),
+                    h("p", null, t("project.scaffolding_hint")),
+                    h("h3", null, t("project.scaffolding_steps_heading")),
+                    h("ul", { className: "history-list" },
+                        h("li", null, t("project.scaffolding_step_dirs")),
+                        h("li", null, t("project.scaffolding_step_git")),
+                        h("li", null, t("project.scaffolding_step_gitignore"))
+                    ),
+                    h("p", { className: "muted", style: { fontSize: "12px", marginTop: "12px" } }, t("project.scaffolding_polling_note"))
+                )
+                : null,
+            !projectMissing && scaffoldingFailed
+                ? h(
+                    "section",
+                    { className: "card", key: "scaffolding-failed" },
+                    h("h2", { style: { marginTop: 0 } }, t("project.scaffolding_failed_title")),
+                    h("p", null, t("project.scaffolding_failed_hint")),
+                    h("pre", { className: "error" },
+                        (projectInfo.scaffolding_error && String(projectInfo.scaffolding_error))
+                        || t("project.scaffolding_failed_fallback_error")
+                    ),
+                    h("p", { className: "muted", style: { fontSize: "12px", marginTop: "8px" } }, t("project.scaffolding_failed_guidance")),
+                    h("a", { className: "btn secondary", href: "/" }, t("project.back_to_list"))
+                )
+                : null,
+            !projectMissing && !isScaffolding && !scaffoldingFailed && view === "default" ? (function () {
                 const latestRun = pickLatestRun(runs);
                 const hasIncrementalBaseline = runs.some(function (r) {
                     return r && r.status === "completed" && (r.result || "").toString().trim();
@@ -1112,21 +1152,38 @@ function setupRunReact() {
                 taskResponseByTaskId[ev.taskId] = ev;
             }
         }
-        // Hide raw todos_update rows (render inline under their task_request)
-        // and task_response rows (merged into their request).
-        const visibleLog = taskLog.filter(
-            (e) => e.type !== "todos_update" && e.type !== "task_response",
-        );
+        // Events excluded from the timeline log:
+        //   - todos_update: rendered inline under its owning task_request.
+        //   - task_response: merged into its paired task_request card.
+        //   - phase_plan / phase_start / phase_complete: orchestrator
+        //     bookkeeping events that only drive server-side retry
+        //     metadata (run.phase_total, run.failed_phase_idx). Phase
+        //     progress is already visible to the user via the stage-chip
+        //     strip above, so rendering them as log rows is pure noise.
+        //   - tool_call: orchestrator-internal primitive invocations
+        //     (list_processes, get_process, list_agents, execute_shell).
+        //     The A2A log is meant for agent-to-agent dispatches; tool
+        //     calls are the orchestrator's private actions and carry no
+        //     taskId, so they can't be grouped under a parent dispatch.
+        const HIDDEN_LOG_EVENT_TYPES = new Set([
+            "todos_update",
+            "task_response",
+            "phase_plan",
+            "phase_start",
+            "phase_complete",
+            "phase_resume",
+            "tool_call",
+            "language_config",
+            "workflow_complete",
+        ]);
+        const isVisibleEvent = (e) => !!e && !HIDDEN_LOG_EVENT_TYPES.has(e.type);
+        const visibleLog = taskLog.filter(isVisibleEvent);
         // Filter predicate uses the NORMALIZED stage so a single
         // ``implementation`` chip matches every ``implementation_layer*``
         // event, not just the one raw id the user clicked.
         const visibleStages = taskLog
             .map((_, i) => evStagesNormalized[i])
-            .filter(
-                (_, i) =>
-                    taskLog[i].type !== "todos_update" &&
-                    taskLog[i].type !== "task_response",
-            );
+            .filter((_, i) => isVisibleEvent(taskLog[i]));
         const filteredLog = stageFilter
             ? visibleLog.filter((_, i) => visibleStages[i] === stageFilter)
             : visibleLog;

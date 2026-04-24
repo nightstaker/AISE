@@ -136,6 +136,75 @@ class TestProjectSessionTools:
         assert "task_request" in types
         assert "task_response" in types
 
+    def test_dispatch_prepends_original_requirement_to_worker_prompt(self, session):
+        """When the session has an original requirement, dispatch_task
+        must prefix it onto the worker prompt so agents can mirror the
+        user's natural language in docs/*.md. The emitted task_request
+        event keeps the raw task_description unmodified so the log is
+        not polluted by N copies of the requirement block.
+        """
+        session._ctx.original_requirement = "创建一个贪吃蛇游戏，需要方向键控制"
+        tools = session._make_tools()
+        dispatch = next(t for t in tools if t.name == "dispatch_task")
+
+        # Capture what the worker's handle_message actually receives.
+        captured = {}
+        target = session._manager.get_runtime("developer")
+        original_handle = target.handle_message
+
+        def _capture(prompt, **kw):
+            captured["prompt"] = prompt
+            return original_handle(prompt, **kw)
+
+        target.handle_message = _capture
+
+        dispatch.invoke(
+            {
+                "agent_name": "developer",
+                "task_description": "Implement module X",
+            }
+        )
+
+        worker_prompt = captured["prompt"]
+        assert "=== ORIGINAL USER REQUIREMENT" in worker_prompt
+        assert "创建一个贪吃蛇游戏" in worker_prompt
+        assert "=== END ORIGINAL REQUIREMENT ===" in worker_prompt
+        assert "Implement module X" in worker_prompt
+
+        # The emitted task_request payload keeps the raw description,
+        # unpolluted by the prefix.
+        requests = [e for e in session.task_log if e["type"] == "task_request"]
+        assert requests, "expected at least one task_request event"
+        assert requests[-1]["payload"]["task"] == "Implement module X"
+
+    def test_dispatch_without_original_requirement_is_unchanged(self, session):
+        """Default (empty) requirement means no prefix — preserves the
+        existing contract for unit tests and any caller that invokes
+        the primitive directly without setting the session requirement.
+        """
+        # Ensure nothing set it.
+        session._ctx.original_requirement = ""
+        tools = session._make_tools()
+        dispatch = next(t for t in tools if t.name == "dispatch_task")
+
+        captured = {}
+        target = session._manager.get_runtime("developer")
+        original_handle = target.handle_message
+
+        def _capture(prompt, **kw):
+            captured["prompt"] = prompt
+            return original_handle(prompt, **kw)
+
+        target.handle_message = _capture
+
+        dispatch.invoke(
+            {
+                "agent_name": "developer",
+                "task_description": "bare task",
+            }
+        )
+        assert captured["prompt"] == "bare task"
+
 
 class TestPhase4EntryPointContract:
     """The Phase 4 prompt must instruct the developer to produce an

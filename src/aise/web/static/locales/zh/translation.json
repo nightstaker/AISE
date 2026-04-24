@@ -266,7 +266,18 @@
     "col_view": "查看",
     "view_detail": "详情",
     "no_runs": "暂无执行记录。",
-    "redirect_notice": "正在跳转到最新执行记录..."
+    "redirect_notice": "正在跳转到最新执行记录...",
+    "scaffolding_title": "环境准备中",
+    "scaffolding_hint": "项目目录和 git 仓库正在由 product-manager 代理初始化。准备完成后此页面会自动刷新，可在下方看到「下发需求」入口。",
+    "scaffolding_steps_heading": "正在执行的步骤",
+    "scaffolding_step_dirs": "创建目录结构（docs/、src/、tests/、scripts/、config/、artifacts/、trace/）",
+    "scaffolding_step_git": "初始化 git 仓库并配置本地身份",
+    "scaffolding_step_gitignore": "生成基线 .gitignore 并完成首个 scaffold 提交",
+    "scaffolding_polling_note": "系统每 3 秒自动刷新一次状态，无需手动重载。",
+    "scaffolding_failed_title": "环境准备失败",
+    "scaffolding_failed_hint": "项目初始化未成功，无法继续下发需求。错误详情：",
+    "scaffolding_failed_fallback_error": "未捕获到具体错误信息，请查看运行日志。",
+    "scaffolding_failed_guidance": "建议删除该项目后重新创建；如果问题反复出现，请检查 product-manager 代理日志与项目根目录权限。"
   },
   "monitor": {
     "title": "Agent Monitor",
