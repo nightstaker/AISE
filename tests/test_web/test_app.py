@@ -1277,9 +1277,21 @@ class TestProjectTokenUsage:
         run_obj = service._find_run(project_id, run_id)
         assert run_obj is not None
         events = [
-            {"type": "token_usage", "agent": "developer", "input_tokens": 100, "output_tokens": 30, "total_tokens": 130},
+            {
+                "type": "token_usage",
+                "agent": "developer",
+                "input_tokens": 100,
+                "output_tokens": 30,
+                "total_tokens": 130,
+            },
             {"type": "token_usage", "agent": "developer", "input_tokens": 40, "output_tokens": 12, "total_tokens": 52},
-            {"type": "token_usage", "agent": "project_manager", "input_tokens": 7, "output_tokens": 5, "total_tokens": 12},
+            {
+                "type": "token_usage",
+                "agent": "project_manager",
+                "input_tokens": 7,
+                "output_tokens": 5,
+                "total_tokens": 12,
+            },
             # Non-token event must NOT bump the counters.
             {"type": "stage_update", "stage": "implementation"},
         ]
@@ -1325,9 +1337,7 @@ class TestProjectTokenUsage:
                 "total": 70,
                 "calls": 2,
             }
-            for run_idx, (input_t, output_t, total_t, calls) in enumerate(
-                [(100, 40, 140, 3), (60, 25, 85, 2)]
-            ):
+            for run_idx, (input_t, output_t, total_t, calls) in enumerate([(100, 40, 140, 3), (60, 25, 85, 2)]):
                 service._runs_by_project.setdefault(project_id, []).append(
                     web_app_module.WorkflowRun(
                         run_id=f"run_{run_idx}",

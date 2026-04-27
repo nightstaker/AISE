@@ -322,6 +322,7 @@ def _repair_remove_leftover(project_root: Path, ctx: dict[str, Any]) -> None:
         target.unlink()
     elif target.is_dir():
         import shutil
+
         shutil.rmtree(target)
     logger.info("safety_net: removed leftover %s", target)
 
@@ -415,6 +416,7 @@ def _stack_contract_valid(target: Path) -> bool:
     detail.
     """
     import json as _json
+
     if not target.is_file():
         return False
     try:
@@ -451,7 +453,8 @@ def _stack_contract_valid(target: Path) -> bool:
         if not components:
             logger.warning(
                 "stack_contract: subsystem %r has zero components in %s",
-                name, target,
+                name,
+                target,
             )
         for comp in components:
             if not isinstance(comp, dict):
@@ -470,16 +473,19 @@ def _stack_contract_valid(target: Path) -> bool:
             # different name.
             if not cfile.startswith(src_dir.rstrip("/") + "/") and cfile != src_dir.rstrip("/"):
                 logger.warning(
-                    "stack_contract: component %r file %r not under "
-                    "subsystem src_dir %r",
-                    cname, cfile, src_dir,
+                    "stack_contract: component %r file %r not under subsystem src_dir %r",
+                    cname,
+                    cfile,
+                    src_dir,
                 )
                 return False
     if len(subsystems) > _SUBSYSTEM_COUNT_SOFT_CAP:
         logger.warning(
             "stack_contract: %d subsystems exceeds soft cap of %d in "
             "%s — architect may be flat-listing components again",
-            len(subsystems), _SUBSYSTEM_COUNT_SOFT_CAP, target,
+            len(subsystems),
+            _SUBSYSTEM_COUNT_SOFT_CAP,
+            target,
         )
     return True
 
@@ -513,6 +519,7 @@ def _artifact_present(project_root: Path, artifact: ExpectedArtifact) -> bool:
             return False
         try:
             import json as _json
+
             _json.loads(target.read_text(encoding="utf-8"))
         except Exception:
             return False
@@ -800,43 +807,44 @@ def scaffolding_expectations() -> tuple[ExpectedArtifact, ...]:
         # Letting them survive into a new run with a different stack
         # produced project_7-tower's three-stacks-coexist failure
         # mode. Repair = delete.
-        ExpectedArtifact(path="package.json", kind="must_not_exist",
-                         description="leftover package.json from prior run"),
-        ExpectedArtifact(path="package-lock.json", kind="must_not_exist",
-                         description="leftover npm lockfile from prior run"),
-        ExpectedArtifact(path="pnpm-lock.yaml", kind="must_not_exist",
-                         description="leftover pnpm lockfile from prior run"),
-        ExpectedArtifact(path="yarn.lock", kind="must_not_exist",
-                         description="leftover yarn lockfile from prior run"),
-        ExpectedArtifact(path="tsconfig.json", kind="must_not_exist",
-                         description="leftover tsconfig from prior run"),
-        ExpectedArtifact(path="vitest.config.ts", kind="must_not_exist",
-                         description="leftover vitest config from prior run"),
-        ExpectedArtifact(path="vite.config.ts", kind="must_not_exist",
-                         description="leftover vite config from prior run"),
-        ExpectedArtifact(path="node_modules", kind="must_not_exist",
-                         description="leftover node_modules from prior run"),
-        ExpectedArtifact(path="Cargo.toml", kind="must_not_exist",
-                         description="leftover Cargo.toml from prior run"),
-        ExpectedArtifact(path="Cargo.lock", kind="must_not_exist",
-                         description="leftover Cargo.lock from prior run"),
-        ExpectedArtifact(path="target", kind="must_not_exist",
-                         description="leftover Rust target/ from prior run"),
-        ExpectedArtifact(path="go.mod", kind="must_not_exist",
-                         description="leftover go.mod from prior run"),
-        ExpectedArtifact(path="go.sum", kind="must_not_exist",
-                         description="leftover go.sum from prior run"),
-        ExpectedArtifact(path="vendor", kind="must_not_exist",
-                         description="leftover Go vendor/ from prior run"),
-        ExpectedArtifact(path="pom.xml", kind="must_not_exist",
-                         description="leftover Maven pom.xml from prior run"),
-        ExpectedArtifact(path="build.gradle.kts", kind="must_not_exist",
-                         description="leftover Gradle build from prior run"),
-        ExpectedArtifact(path="pyproject.toml", kind="must_not_exist",
-                         description="leftover pyproject.toml from prior run "
-                                     "(architect re-creates if Python is the chosen stack)"),
-        ExpectedArtifact(path=".coverage", kind="must_not_exist",
-                         description="leftover coverage artifact from prior run"),
+        ExpectedArtifact(
+            path="package.json", kind="must_not_exist", description="leftover package.json from prior run"
+        ),
+        ExpectedArtifact(
+            path="package-lock.json", kind="must_not_exist", description="leftover npm lockfile from prior run"
+        ),
+        ExpectedArtifact(
+            path="pnpm-lock.yaml", kind="must_not_exist", description="leftover pnpm lockfile from prior run"
+        ),
+        ExpectedArtifact(path="yarn.lock", kind="must_not_exist", description="leftover yarn lockfile from prior run"),
+        ExpectedArtifact(path="tsconfig.json", kind="must_not_exist", description="leftover tsconfig from prior run"),
+        ExpectedArtifact(
+            path="vitest.config.ts", kind="must_not_exist", description="leftover vitest config from prior run"
+        ),
+        ExpectedArtifact(
+            path="vite.config.ts", kind="must_not_exist", description="leftover vite config from prior run"
+        ),
+        ExpectedArtifact(
+            path="node_modules", kind="must_not_exist", description="leftover node_modules from prior run"
+        ),
+        ExpectedArtifact(path="Cargo.toml", kind="must_not_exist", description="leftover Cargo.toml from prior run"),
+        ExpectedArtifact(path="Cargo.lock", kind="must_not_exist", description="leftover Cargo.lock from prior run"),
+        ExpectedArtifact(path="target", kind="must_not_exist", description="leftover Rust target/ from prior run"),
+        ExpectedArtifact(path="go.mod", kind="must_not_exist", description="leftover go.mod from prior run"),
+        ExpectedArtifact(path="go.sum", kind="must_not_exist", description="leftover go.sum from prior run"),
+        ExpectedArtifact(path="vendor", kind="must_not_exist", description="leftover Go vendor/ from prior run"),
+        ExpectedArtifact(path="pom.xml", kind="must_not_exist", description="leftover Maven pom.xml from prior run"),
+        ExpectedArtifact(
+            path="build.gradle.kts", kind="must_not_exist", description="leftover Gradle build from prior run"
+        ),
+        ExpectedArtifact(
+            path="pyproject.toml",
+            kind="must_not_exist",
+            description="leftover pyproject.toml from prior run (architect re-creates if Python is the chosen stack)",
+        ),
+        ExpectedArtifact(
+            path=".coverage", kind="must_not_exist", description="leftover coverage artifact from prior run"
+        ),
     )
 
 
@@ -852,10 +860,13 @@ def architecture_expectations() -> tuple[ExpectedArtifact, ...]:
     failure detail.
     """
     return (
-        ExpectedArtifact(path="docs/architecture.md", kind="file", non_empty=True,
-                         description="architecture document"),
-        ExpectedArtifact(path="docs/stack_contract.json", kind="stack_contract", non_empty=True,
-                         description="stack contract JSON with two-level subsystems[].components[] schema"),
+        ExpectedArtifact(path="docs/architecture.md", kind="file", non_empty=True, description="architecture document"),
+        ExpectedArtifact(
+            path="docs/stack_contract.json",
+            kind="stack_contract",
+            non_empty=True,
+            description="stack contract JSON with two-level subsystems[].components[] schema",
+        ),
     )
 
 
@@ -872,6 +883,7 @@ def qa_expectations() -> tuple[ExpectedArtifact, ...]:
     real findings.
     """
     return (
-        ExpectedArtifact(path="docs/qa_report.json", kind="json_file", non_empty=True,
-                         description="QA report JSON for Phase 6"),
+        ExpectedArtifact(
+            path="docs/qa_report.json", kind="json_file", non_empty=True, description="QA report JSON for Phase 6"
+        ),
     )

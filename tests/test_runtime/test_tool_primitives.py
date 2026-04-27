@@ -396,18 +396,20 @@ class TestCompletionTool:
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "ok.py").write_text("# real source code, > 64 bytes\n" * 4, encoding="utf-8")
         (docs / "stack_contract.json").write_text(
-            json.dumps({
-                "language": "python",
-                "subsystems": [
-                    {
-                        "name": "core",
-                        "components": [
-                            {"name": "ok", "file": "src/ok.py"},
-                            {"name": "missing", "file": "src/missing.py"},
-                        ],
-                    }
-                ],
-            }),
+            json.dumps(
+                {
+                    "language": "python",
+                    "subsystems": [
+                        {
+                            "name": "core",
+                            "components": [
+                                {"name": "ok", "file": "src/ok.py"},
+                                {"name": "missing", "file": "src/missing.py"},
+                            ],
+                        }
+                    ],
+                }
+            ),
             encoding="utf-8",
         )
         ctx = ToolContext(
@@ -436,10 +438,7 @@ class TestCompletionTool:
         result = json.loads(tool.invoke({"report": bad_report}))
         assert result["status"] == "refused"
         # At least one of the patterns we care about should fire.
-        assert any(
-            pat in result["flagged_markers"]
-            for pat in (r"\bdispatch cap hit\b", r"\b0\s*/\s*\d+\b", r"❌")
-        )
+        assert any(pat in result["flagged_markers"] for pat in (r"\bdispatch cap hit\b", r"\b0\s*/\s*\d+\b", r"❌"))
         assert ctx.workflow_state.is_complete is False
 
     def test_mark_complete_acknowledges_clean_report(self, tmp_path, fake_manager):
@@ -452,12 +451,12 @@ class TestCompletionTool:
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "ok.py").write_text("# real source code, > 64 bytes\n" * 4, encoding="utf-8")
         (docs / "stack_contract.json").write_text(
-            json.dumps({
-                "language": "python",
-                "subsystems": [
-                    {"name": "core", "components": [{"name": "ok", "file": "src/ok.py"}]}
-                ],
-            }),
+            json.dumps(
+                {
+                    "language": "python",
+                    "subsystems": [{"name": "core", "components": [{"name": "ok", "file": "src/ok.py"}]}],
+                }
+            ),
             encoding="utf-8",
         )
         ctx = ToolContext(

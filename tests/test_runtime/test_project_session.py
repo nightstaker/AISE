@@ -587,17 +587,17 @@ class TestPhase6DeliveryReport:
             _LANGUAGE_TOOLCHAIN,
             _build_subsystem_task_description,
         )
+
         # Each language row must contain a static_check command — that
         # is the in-task instruction shown to the developer.
         for lang, row in _LANGUAGE_TOOLCHAIN.items():
-            assert "static_check" in row, (
-                f"language {lang!r} toolchain missing static_check command"
-            )
+            assert "static_check" in row, f"language {lang!r} toolchain missing static_check command"
         # Sanity: the rendered task description for one Python
         # subsystem must mention the analyzer phase explicitly.
         rendered = _build_subsystem_task_description(
             subsystem={
-                "name": "core", "src_dir": "src/core/",
+                "name": "core",
+                "src_dir": "src/core/",
                 "responsibilities": "x",
                 "components": [{"name": "engine", "file": "src/core/engine.py", "responsibility": "y"}],
             },
@@ -699,17 +699,18 @@ class TestDispatchCapDynamicFloor:
 
     def _seed_contract(self, project_root, n_subsystems: int, comps_per: int) -> None:
         import json as _json
+
         docs = project_root / "docs"
         docs.mkdir(parents=True, exist_ok=True)
         subsystems = []
         for i in range(n_subsystems):
-            subsystems.append({
-                "name": f"sub{i}",
-                "src_dir": f"src/sub{i}/",
-                "components": [
-                    {"name": f"c{j}", "file": f"src/sub{i}/c{j}.py"} for j in range(comps_per)
-                ],
-            })
+            subsystems.append(
+                {
+                    "name": f"sub{i}",
+                    "src_dir": f"src/sub{i}/",
+                    "components": [{"name": f"c{j}", "file": f"src/sub{i}/c{j}.py"} for j in range(comps_per)],
+                }
+            )
         (docs / "stack_contract.json").write_text(
             _json.dumps({"language": "python", "subsystems": subsystems}),
             encoding="utf-8",

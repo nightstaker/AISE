@@ -60,18 +60,29 @@ def _write_contract(root: Path, payload: dict) -> Path:
 
 class TestLoaderRendersNewSchema:
     def test_subsystems_summary_appears_with_counts(self, tmp_path):
-        _write_contract(tmp_path, {
-            "language": "python",
-            "subsystems": [
-                {"name": "ui", "src_dir": "src/ui/", "components": [
-                    {"name": "menu_ui", "file": "src/ui/menu_ui.py", "responsibility": "x"},
-                    {"name": "hud_ui", "file": "src/ui/hud_ui.py", "responsibility": "x"},
-                ]},
-                {"name": "gameplay", "src_dir": "src/gameplay/", "components": [
-                    {"name": "player", "file": "src/gameplay/player.py", "responsibility": "x"},
-                ]},
-            ],
-        })
+        _write_contract(
+            tmp_path,
+            {
+                "language": "python",
+                "subsystems": [
+                    {
+                        "name": "ui",
+                        "src_dir": "src/ui/",
+                        "components": [
+                            {"name": "menu_ui", "file": "src/ui/menu_ui.py", "responsibility": "x"},
+                            {"name": "hud_ui", "file": "src/ui/hud_ui.py", "responsibility": "x"},
+                        ],
+                    },
+                    {
+                        "name": "gameplay",
+                        "src_dir": "src/gameplay/",
+                        "components": [
+                            {"name": "player", "file": "src/gameplay/player.py", "responsibility": "x"},
+                        ],
+                    },
+                ],
+            },
+        )
         block = _load_stack_contract_block(tmp_path)
         assert "subsystems:" in block
         # Each subsystem appears with its component count
@@ -84,12 +95,15 @@ class TestLoaderRendersNewSchema:
         assert "hud_ui" not in block
 
     def test_zero_component_subsystem_omits_count(self, tmp_path):
-        _write_contract(tmp_path, {
-            "language": "go",
-            "subsystems": [
-                {"name": "stub", "src_dir": "internal/stub/", "components": []},
-            ],
-        })
+        _write_contract(
+            tmp_path,
+            {
+                "language": "go",
+                "subsystems": [
+                    {"name": "stub", "src_dir": "internal/stub/", "components": []},
+                ],
+            },
+        )
         block = _load_stack_contract_block(tmp_path)
         # No "(0 components)" noise; just the path.
         assert "- stub [internal/stub/]" in block
@@ -98,13 +112,16 @@ class TestLoaderRendersNewSchema:
 
 class TestLoaderTolerLegacyFlatModules:
     def test_legacy_modules_render_with_deprecation_marker(self, tmp_path):
-        _write_contract(tmp_path, {
-            "language": "python",
-            "modules": [
-                {"name": "auth", "src_dir": "src/auth/", "responsibilities": "x"},
-                {"name": "player", "src_dir": "src/player/", "responsibilities": "x"},
-            ],
-        })
+        _write_contract(
+            tmp_path,
+            {
+                "language": "python",
+                "modules": [
+                    {"name": "auth", "src_dir": "src/auth/", "responsibilities": "x"},
+                    {"name": "player", "src_dir": "src/player/", "responsibilities": "x"},
+                ],
+            },
+        )
         block = _load_stack_contract_block(tmp_path)
         assert "LEGACY FLAT 'modules' SCHEMA" in block
         assert "- auth [src/auth/]" in block
@@ -113,15 +130,22 @@ class TestLoaderTolerLegacyFlatModules:
     def test_subsystems_takes_precedence_over_legacy_modules(self, tmp_path):
         # If both keys exist (mid-migration), the new schema wins
         # and the legacy-flat marker does NOT appear.
-        _write_contract(tmp_path, {
-            "language": "python",
-            "subsystems": [
-                {"name": "ui", "src_dir": "src/ui/", "components": [
-                    {"name": "x", "file": "src/ui/x.py", "responsibility": "y"},
-                ]},
-            ],
-            "modules": [{"name": "should_be_ignored", "src_dir": "src/x/"}],
-        })
+        _write_contract(
+            tmp_path,
+            {
+                "language": "python",
+                "subsystems": [
+                    {
+                        "name": "ui",
+                        "src_dir": "src/ui/",
+                        "components": [
+                            {"name": "x", "file": "src/ui/x.py", "responsibility": "y"},
+                        ],
+                    },
+                ],
+                "modules": [{"name": "should_be_ignored", "src_dir": "src/x/"}],
+            },
+        )
         block = _load_stack_contract_block(tmp_path)
         assert "LEGACY FLAT" not in block
         assert "should_be_ignored" not in block
@@ -137,15 +161,23 @@ def _valid_payload() -> dict:
     return {
         "language": "python",
         "subsystems": [
-            {"name": "ui", "src_dir": "src/ui/", "responsibilities": "render",
-             "components": [
-                 {"name": "menu_ui", "file": "src/ui/menu_ui.py", "responsibility": "x"},
-                 {"name": "hud_ui", "file": "src/ui/hud_ui.py", "responsibility": "x"},
-             ]},
-            {"name": "gameplay", "src_dir": "src/gameplay/", "responsibilities": "logic",
-             "components": [
-                 {"name": "player", "file": "src/gameplay/player.py", "responsibility": "x"},
-             ]},
+            {
+                "name": "ui",
+                "src_dir": "src/ui/",
+                "responsibilities": "render",
+                "components": [
+                    {"name": "menu_ui", "file": "src/ui/menu_ui.py", "responsibility": "x"},
+                    {"name": "hud_ui", "file": "src/ui/hud_ui.py", "responsibility": "x"},
+                ],
+            },
+            {
+                "name": "gameplay",
+                "src_dir": "src/gameplay/",
+                "responsibilities": "logic",
+                "components": [
+                    {"name": "player", "file": "src/gameplay/player.py", "responsibility": "x"},
+                ],
+            },
         ],
     }
 
@@ -177,10 +209,13 @@ class TestStackContractValidator:
         # back-compat in worker prompts, the *validator* (which gates
         # architect re-dispatch) rejects them — so on a fresh project
         # the architect MUST upgrade.
-        p = _write_contract(tmp_path, {
-            "language": "python",
-            "modules": [{"name": "x", "src_dir": "src/x/"}],
-        })
+        p = _write_contract(
+            tmp_path,
+            {
+                "language": "python",
+                "modules": [{"name": "x", "src_dir": "src/x/"}],
+            },
+        )
         assert _stack_contract_valid(p) is False
 
     def test_rejects_empty_subsystems_array(self, tmp_path):
@@ -221,10 +256,13 @@ class TestStackContractValidator:
         # without being a hard error for genuinely large projects.
         many = {"language": "python", "subsystems": []}
         for i in range(11):
-            many["subsystems"].append({
-                "name": f"s{i}", "src_dir": f"src/s{i}/",
-                "components": [{"name": f"c{i}", "file": f"src/s{i}/c{i}.py", "responsibility": "x"}],
-            })
+            many["subsystems"].append(
+                {
+                    "name": f"s{i}",
+                    "src_dir": f"src/s{i}/",
+                    "components": [{"name": f"c{i}", "file": f"src/s{i}/c{i}.py", "responsibility": "x"}],
+                }
+            )
         p = _write_contract(tmp_path, many)
         with caplog.at_level(logging.WARNING, logger="aise.runtime.safety_net"):
             ok = _stack_contract_valid(p)
@@ -256,8 +294,7 @@ class TestArchitectPromptGuidesTwoLevelLayout:
         text = _read_architect_md()
         # The instruction must explicitly say Components are NOT
         # subsystems — this is the load-bearing anti-flat rule.
-        assert "NOT sources" in text or "not subsystems" in text.lower() or \
-               "NOT a directory" in text
+        assert "NOT sources" in text or "not subsystems" in text.lower() or "NOT a directory" in text
         # Container_Boundary is the source of subsystems
         assert "Container_Boundary" in text
         # Component is the unit of files inside a subsystem
@@ -275,8 +312,8 @@ class TestArchitectPromptGuidesTwoLevelLayout:
 
     def test_schema_has_subsystems_with_components_not_flat_modules(self):
         text = _read_architect_md()
-        assert "\"subsystems\":" in text
-        assert "\"components\":" in text
+        assert '"subsystems":' in text
+        assert '"components":' in text
         # The previous flat top-level "modules" key in the schema
         # has been removed — searching for it as a top-level schema
         # field should not find it. (The token "modules" can still

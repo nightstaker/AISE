@@ -75,16 +75,12 @@ def _make_llm_result(usage: dict | None = None, usage_metadata: dict | None = No
 
 class TestExtractTokenCounts:
     def test_openai_shape(self):
-        result = _make_llm_result(
-            usage={"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17}
-        )
+        result = _make_llm_result(usage={"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17})
         counts = _extract_token_counts(result)
         assert counts == {"input_tokens": 12, "output_tokens": 5, "total_tokens": 17}
 
     def test_anthropic_shape(self):
-        result = _make_llm_result(
-            usage={"input_tokens": 30, "output_tokens": 8, "total_tokens": 38}
-        )
+        result = _make_llm_result(usage={"input_tokens": 30, "output_tokens": 8, "total_tokens": 38})
         counts = _extract_token_counts(result)
         assert counts == {"input_tokens": 30, "output_tokens": 8, "total_tokens": 38}
 
@@ -166,9 +162,7 @@ class TestTraceLLMCallbackTokenUsage:
 
 
 class TestAgentRuntimeHandleMessageTokenUsage:
-    def test_on_token_usage_invoked_for_each_round_trip(
-        self, agent_md_file, skills_dir, mock_create_deep_agent
-    ):
+    def test_on_token_usage_invoked_for_each_round_trip(self, agent_md_file, skills_dir, mock_create_deep_agent):
         _, mock_agent = mock_create_deep_agent
 
         def _simulate_two_calls(state, config=None):

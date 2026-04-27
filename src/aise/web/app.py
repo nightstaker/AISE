@@ -1179,6 +1179,7 @@ class WebProjectService:
                         start_idx_val = int(start_idx_raw)
                     except (TypeError, ValueError):
                         start_idx_val = 0
+
                     def _coerce_int(value: Any) -> int:
                         try:
                             return max(0, int(value))

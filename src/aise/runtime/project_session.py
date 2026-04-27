@@ -803,7 +803,7 @@ class ProjectSession:
                 "per-subsystem fan-out):\n\n"
                 "Fan-out is performed by the orchestration layer, NOT by\n"
                 "you drafting tasks_json. You make ONE tool call:\n\n"
-                "    dispatch_subsystems(phase=\"implementation\")\n\n"
+                '    dispatch_subsystems(phase="implementation")\n\n'
                 "The primitive reads docs/stack_contract.json's\n"
                 "subsystems[] and dispatches developer in parallel (up to\n"
                 "the runtime cap). Each developer dispatch carries the\n"
@@ -818,7 +818,7 @@ class ProjectSession:
                 "2. Read docs/architecture.md briefly to understand which\n"
                 "   subsystems are NEW or CHANGED (purely informational —\n"
                 "   the dispatch primitive does not need this from you).\n"
-                "3. Call dispatch_subsystems(phase=\"implementation\")\n"
+                '3. Call dispatch_subsystems(phase="implementation")\n'
                 "   exactly once. Each developer dispatch's task\n"
                 "   description carries the full component list for its\n"
                 "   subsystem. For CHANGED components the developer is\n"
@@ -1006,7 +1006,7 @@ class ProjectSession:
                 "Execute Phase 2b — Sprint Execution (AGILE, per-subsystem fan-out):\n\n"
                 "Fan-out is performed by the orchestration layer, NOT by\n"
                 "you drafting tasks_json. You make ONE tool call:\n\n"
-                "    dispatch_subsystems(phase=\"sprint_execution\")\n\n"
+                '    dispatch_subsystems(phase="sprint_execution")\n\n'
                 "The primitive reads docs/stack_contract.json's\n"
                 "subsystems[] and dispatches developer in parallel (up to\n"
                 "the runtime cap). Each developer dispatch carries the\n"
@@ -1015,7 +1015,7 @@ class ProjectSession:
                 "1. Verify docs/stack_contract.json exists and is valid.\n"
                 "   If missing or malformed, STOP and dispatch architect.\n"
                 "2. Read docs/sprint_design.md briefly (informational).\n"
-                "3. Call dispatch_subsystems(phase=\"sprint_execution\")\n"
+                '3. Call dispatch_subsystems(phase="sprint_execution")\n'
                 "   exactly once. Each developer dispatch's task\n"
                 "   description includes the subsystem's components from\n"
                 "   the contract.\n"
@@ -1196,13 +1196,13 @@ class ProjectSession:
                 "per-subsystem fan-out):\n\n"
                 "Fan-out is performed by the orchestration layer. Make ONE\n"
                 "tool call:\n\n"
-                "    dispatch_subsystems(phase=\"sprint_execution\")\n\n"
+                '    dispatch_subsystems(phase="sprint_execution")\n\n'
                 "1. Verify docs/stack_contract.json is up to date with the\n"
                 "   incremental sprint design. If architect should have\n"
                 "   amended subsystems[] / components[] but didn't, STOP\n"
                 "   and dispatch architect to bring the contract in line.\n"
                 "2. Read docs/sprint_design.md briefly (informational).\n"
-                "3. Call dispatch_subsystems(phase=\"sprint_execution\")\n"
+                '3. Call dispatch_subsystems(phase="sprint_execution")\n'
                 "   exactly once. Each developer dispatch's task\n"
                 "   description includes the subsystem's components from\n"
                 "   the contract; CHANGED components are addressed via\n"
@@ -1366,7 +1366,7 @@ class ProjectSession:
                 "Execute Phase 3 — Implementation (TDD, per-subsystem fan-out):\n\n"
                 "Fan-out is performed by the orchestration layer, NOT by you\n"
                 "drafting tasks_json. You make ONE tool call:\n\n"
-                "    dispatch_subsystems(phase=\"implementation\")\n\n"
+                '    dispatch_subsystems(phase="implementation")\n\n'
                 "The primitive reads docs/stack_contract.json's subsystems[]\n"
                 "(written by architect in Phase 2), builds one developer\n"
                 "task description per subsystem deterministically (from the\n"
@@ -1380,7 +1380,7 @@ class ProjectSession:
                 "   reading it once with read_file. If missing or malformed,\n"
                 "   STOP and dispatch architect to produce it; do NOT guess\n"
                 "   the stack.\n"
-                "2. Call dispatch_subsystems(phase=\"implementation\")\n"
+                '2. Call dispatch_subsystems(phase="implementation")\n'
                 "   exactly once. The tool returns an aggregate result with\n"
                 "   per-subsystem pass/fail and component artifact verification.\n"
                 "3. Do NOT call dispatch_task or dispatch_tasks_parallel\n"
@@ -1409,7 +1409,7 @@ class ProjectSession:
                 "be launched directly with a single terminal command. It\n"
                 "is NOT enough to expose a class with a run() method —\n"
                 "the file itself must start the app. Use whatever hook\n"
-                'your language needs (e.g. ``if __name__ == \"__main__\":``\n'
+                'your language needs (e.g. ``if __name__ == "__main__":``\n'
                 "for Python, top-level invocation for Node, ``func main()``\n"
                 "for Go, ``fn main()`` for Rust, ``public static void main``\n"
                 "for Java, ``Program.Main`` for .NET).\n"
@@ -1493,17 +1493,17 @@ class ProjectSession:
                 "1. Read docs/qa_report.json (REQUIRED). The QA engineer\n"
                 "   wrote it in Phase 5. Schema:\n"
                 "     {\n"
-                "       \"pytest\": {\"command\": str, \"passed\": int,\n"
-                "                  \"failed\": int, \"skipped\": int,\n"
-                "                  \"failed_tests\": [str, ...]},\n"
-                "       \"ui_validation\": {\"required\": bool,\n"
-                "                          \"verdict\": \"PASS|FAILED|\n"
-                "                                       SKIPPED_HEADLESS_ONLY\",\n"
-                "                          \"reason\": str},\n"
-                "       \"product_bugs\": [{\"module\": str, \"function\":\n"
-                "                          str, \"summary\": str}, ...],\n"
-                "       \"integration_tests\": {\"file\": str,\n"
-                "                              \"scenario_count\": int}\n"
+                '       "pytest": {"command": str, "passed": int,\n'
+                '                  "failed": int, "skipped": int,\n'
+                '                  "failed_tests": [str, ...]},\n'
+                '       "ui_validation": {"required": bool,\n'
+                '                          "verdict": "PASS|FAILED|\n'
+                '                                       SKIPPED_HEADLESS_ONLY",\n'
+                '                          "reason": str},\n'
+                '       "product_bugs": [{"module": str, "function":\n'
+                '                          str, "summary": str}, ...],\n'
+                '       "integration_tests": {"file": str,\n'
+                '                              "scenario_count": int}\n'
                 "     }\n"
                 "   If docs/qa_report.json is MISSING or invalid JSON, do\n"
                 "   NOT fabricate numbers and do NOT silently re-run\n"
@@ -1537,7 +1537,7 @@ class ProjectSession:
                 "   test in qa_report.pytest.failed_tests verbatim. If\n"
                 "   product_bugs is empty AND failed_tests is empty AND\n"
                 "   ui_validation.verdict is PASS or SKIPPED_HEADLESS_ONLY,\n"
-                "   write \"none\". Otherwise enumerate them. Required\n"
+                '   write "none". Otherwise enumerate them. Required\n'
                 "   sections:\n"
                 "   1. Executive Summary — one paragraph, what was built\n"
                 "      and whether it is production-ready (DERIVE from\n"

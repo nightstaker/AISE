@@ -97,15 +97,17 @@ def _valid_contract(n_subsystems: int = 4) -> dict:
     subsystems = []
     for i in range(n_subsystems):
         sname = f"sub{i}"
-        subsystems.append({
-            "name": sname,
-            "src_dir": f"src/{sname}/",
-            "responsibilities": f"{sname} responsibilities",
-            "components": [
-                {"name": f"comp_a_{i}", "file": f"src/{sname}/comp_a_{i}.py", "responsibility": "A"},
-                {"name": f"comp_b_{i}", "file": f"src/{sname}/comp_b_{i}.py", "responsibility": "B"},
-            ],
-        })
+        subsystems.append(
+            {
+                "name": sname,
+                "src_dir": f"src/{sname}/",
+                "responsibilities": f"{sname} responsibilities",
+                "components": [
+                    {"name": f"comp_a_{i}", "file": f"src/{sname}/comp_a_{i}.py", "responsibility": "A"},
+                    {"name": f"comp_b_{i}", "file": f"src/{sname}/comp_b_{i}.py", "responsibility": "B"},
+                ],
+            }
+        )
     return {
         "language": "python",
         "test_runner": "pytest",
@@ -147,10 +149,13 @@ class TestDispatchSubsystemsContractRequired:
         # An old-style flat modules[] contract is no longer accepted
         # by dispatch_subsystems — architect must produce the new
         # subsystems[].components[] schema before phase 3 can fan out.
-        _write_contract(tmp_path, {
-            "language": "python",
-            "modules": [{"name": "x", "src_dir": "src/x/"}],
-        })
+        _write_contract(
+            tmp_path,
+            {
+                "language": "python",
+                "modules": [{"name": "x", "src_dir": "src/x/"}],
+            },
+        )
         ctx = _build_ctx(tmp_path)
         tools = build_orchestrator_tools(ctx)
         ds = next(t for t in tools if t.name == "dispatch_subsystems")
@@ -202,8 +207,7 @@ class TestDispatchSubsystemsRunsInParallel:
         # parallel (additional threads from stage 2's component fan-out
         # may push this higher; what we assert is real fan-out).
         assert len(first_start_per_thread) >= 4, (
-            f"expected ≥4 distinct worker threads (one per subsystem skeleton), "
-            f"got {len(first_start_per_thread)}"
+            f"expected ≥4 distinct worker threads (one per subsystem skeleton), got {len(first_start_per_thread)}"
         )
         # The 4 EARLIEST starts must all happen before the first finish —
         # that's the skeleton stage proving real concurrency.
@@ -314,11 +318,8 @@ class TestDispatchSubsystemsRunsInParallel:
 
         sub0_events = [e for e in events if e[0] == "sub0"]
         sub1_events = [e for e in events if e[0] == "sub1"]
-        assert any(
-            _overlaps(a, b) for a in sub0_events for b in sub1_events
-        ), (
-            "no time overlap between sub0 and sub1 dispatches — "
-            "subsystems are not running in parallel"
+        assert any(_overlaps(a, b) for a in sub0_events for b in sub1_events), (
+            "no time overlap between sub0 and sub1 dispatches — subsystems are not running in parallel"
         )
 
     def test_results_aggregate_includes_per_subsystem_status(self, tmp_path):
@@ -382,8 +383,7 @@ class TestMaxConcurrentDispatchesCap:
         assert out["subsystems_dispatched"] == 5
         assert out["components_dispatched"] == 10
         assert peak_in_flight <= 2, (
-            f"peak concurrent dispatches was {peak_in_flight}, "
-            f"exceeded cap of 2 — throttle is broken"
+            f"peak concurrent dispatches was {peak_in_flight}, exceeded cap of 2 — throttle is broken"
         )
         assert peak_in_flight >= 2, (
             f"peak concurrent dispatches was {peak_in_flight}, "
@@ -423,11 +423,14 @@ class TestMaxConcurrentDispatchesCap:
 class TestSubsystemTaskDescriptionDeterministic:
     def test_python_task_includes_component_paths_and_test_command(self):
         contract = {
-            "language": "python", "test_runner": "pytest",
+            "language": "python",
+            "test_runner": "pytest",
             "static_analyzer": ["ruff", "mypy"],
         }
         ss = {
-            "name": "ui", "src_dir": "src/ui/", "responsibilities": "render",
+            "name": "ui",
+            "src_dir": "src/ui/",
+            "responsibilities": "render",
             "components": [
                 {"name": "menu", "file": "src/ui/menu.py", "responsibility": "main menu"},
                 {"name": "hud", "file": "src/ui/hud.py", "responsibility": "in-game HUD"},
@@ -453,11 +456,14 @@ class TestSubsystemTaskDescriptionDeterministic:
 
     def test_typescript_task_uses_vitest_and_ts_paths(self):
         contract = {
-            "language": "typescript", "test_runner": "vitest",
+            "language": "typescript",
+            "test_runner": "vitest",
             "static_analyzer": ["eslint", "tsc --noEmit"],
         }
         ss = {
-            "name": "engine", "src_dir": "src/engine/", "responsibilities": "x",
+            "name": "engine",
+            "src_dir": "src/engine/",
+            "responsibilities": "x",
             "components": [
                 {"name": "loop", "file": "src/engine/loop.ts", "responsibility": "y"},
             ],
@@ -477,7 +483,8 @@ class TestSubsystemTaskDescriptionDeterministic:
         ):
             contract = {"language": lang, "test_runner": cmd, "static_analyzer": []}
             ss = {
-                "name": "x", "src_dir": src_pat.rsplit("/", 1)[0] + "/",
+                "name": "x",
+                "src_dir": src_pat.rsplit("/", 1)[0] + "/",
                 "responsibilities": "x",
                 "components": [
                     {"name": "comp", "file": src_pat, "responsibility": "y"},
@@ -495,7 +502,8 @@ class TestSubsystemTaskDescriptionDeterministic:
         # should still prefer one of the canonical languages.)
         contract = {"language": "haskell"}
         ss = {
-            "name": "x", "src_dir": "src/x/",
+            "name": "x",
+            "src_dir": "src/x/",
             "responsibilities": "x",
             "components": [{"name": "c", "file": "src/x/c.hs", "responsibility": "y"}],
         }
@@ -540,7 +548,9 @@ class TestSubsystemSkeletonTask:
     def test_python_skeleton_lists_components_and_interface(self):
         contract = {"language": "python"}
         ss = {
-            "name": "ui", "src_dir": "src/ui/", "responsibilities": "render",
+            "name": "ui",
+            "src_dir": "src/ui/",
+            "responsibilities": "render",
             "components": [
                 {"name": "menu", "file": "src/ui/menu.py", "responsibility": "main menu"},
                 {"name": "hud", "file": "src/ui/hud.py", "responsibility": "in-game HUD"},
@@ -560,7 +570,8 @@ class TestSubsystemSkeletonTask:
     def test_typescript_skeleton_uses_index_ts(self):
         contract = {"language": "typescript"}
         ss = {
-            "name": "engine", "src_dir": "src/engine/",
+            "name": "engine",
+            "src_dir": "src/engine/",
             "components": [{"name": "loop", "file": "src/engine/loop.ts", "responsibility": "tick"}],
         }
         text = _build_subsystem_skeleton_task(ss, contract, phase="implementation")
@@ -576,7 +587,8 @@ class TestComponentImplementationTask:
 
     def test_component_task_scopes_to_single_pair(self):
         contract = {
-            "language": "python", "test_runner": "pytest",
+            "language": "python",
+            "test_runner": "pytest",
             "static_analyzer": ["ruff", "mypy"],
         }
         ss = {"name": "ui", "src_dir": "src/ui/"}

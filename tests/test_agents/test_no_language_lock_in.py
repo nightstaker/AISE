@@ -37,7 +37,7 @@ _PYTHON_TOKENS = (
     "pyproject.toml",
     "tests/test_<module>.py",
     "src/<module>.py",
-    "find src -type f -name \"*.py\"",
+    'find src -type f -name "*.py"',
     "find src -type f -name '*.py'",
     "pytest --cov",
     "--cov=src",
@@ -87,13 +87,9 @@ def _file_passes(path: Path) -> tuple[bool, str]:
     # File mentions Python — must also mention a non-Python language
     multi_hits = [m for m in _NON_PYTHON_LANGUAGE_MARKERS if m in text]
     if multi_hits:
-        return True, (
-            f"Python tokens present ({len(py_hits)}) but balanced by "
-            f"{len(multi_hits)} non-Python markers"
-        )
+        return True, (f"Python tokens present ({len(py_hits)}) but balanced by {len(multi_hits)} non-Python markers")
     return False, (
-        f"Python-locked: tokens present {py_hits[:3]} but no non-Python "
-        f"language markers found anywhere in the file"
+        f"Python-locked: tokens present {py_hits[:3]} but no non-Python language markers found anywhere in the file"
     )
 
 
@@ -152,10 +148,7 @@ def test_continuation_prompt_uses_multilingual_test_command():
     # test command" anywhere in the body, OR an explicit list of multiple
     # runners.
     has_generic = "full-suite test command" in body or "project's full-suite" in body
-    runners_listed = sum(
-        marker in body
-        for marker in ("pytest", "vitest", "jest", "go test", "cargo test", "mvn test")
-    )
+    runners_listed = sum(marker in body for marker in ("pytest", "vitest", "jest", "go test", "cargo test", "mvn test"))
     assert has_generic or runners_listed >= 3, (
         "continuation prompt must either use generic 'project's test command' "
         "phrasing or list 3+ test runners; found generic="

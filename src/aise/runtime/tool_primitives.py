@@ -378,7 +378,9 @@ def _build_component_implementation_task(
 
     upper_initial = (cname[:1].upper() + cname[1:]) if cname else "?"
     test_file = component.get("test_file") or toolchain["test_path_pattern"].format(
-        subsystem=sname, component=cname, Component=upper_initial,
+        subsystem=sname,
+        component=cname,
+        Component=upper_initial,
     )
     interface_path = _interface_module_path(language, sname, src_dir)
 
@@ -388,13 +390,13 @@ def _build_component_implementation_task(
 
     test_cmd = toolchain["test_cmd"].format_map(
         _PlaceholderDict(
-            test_path=test_file, component=cname,
-            Component=upper_initial, subsystem=sname,
+            test_path=test_file,
+            component=cname,
+            Component=upper_initial,
+            subsystem=sname,
         )
     )
-    static_check = toolchain["static_check"].format_map(
-        _PlaceholderDict(src_path=cfile, subsystem=sname)
-    )
+    static_check = toolchain["static_check"].format_map(_PlaceholderDict(src_path=cfile, subsystem=sname))
 
     return (
         f"## Component implementation task: {sname}.{cname}\n\n"
@@ -464,14 +466,12 @@ def _build_subsystem_task_description(
         # language's pattern. If the contract already specifies a
         # test_file we honour it; otherwise compute one.
         test_file = c.get("test_file") or toolchain["test_path_pattern"].format(
-            subsystem=name, component=cname,
+            subsystem=name,
+            component=cname,
             Component=cname[:1].upper() + cname[1:],
         )
         component_lines.append(
-            f"  - {cname}\n"
-            f"      source: {cfile}\n"
-            f"      test:   {test_file}\n"
-            f"      responsibility: {cresp}"
+            f"  - {cname}\n      source: {cfile}\n      test:   {test_file}\n      responsibility: {cresp}"
         )
     components_block = "\n".join(component_lines) if component_lines else "  (no components declared)"
 
@@ -484,10 +484,13 @@ def _build_subsystem_task_description(
     class _PlaceholderDict(dict):
         def __missing__(self, key: str) -> str:
             return f"<{key}>"
+
     test_cmd_template = toolchain["test_cmd"].format_map(
         _PlaceholderDict(
-            test_path="<test file>", component="<component>",
-            Component="<Component>", subsystem=name,
+            test_path="<test file>",
+            component="<component>",
+            Component="<Component>",
+            subsystem=name,
         )
     )
     static_check_template = toolchain["static_check"].format_map(
@@ -546,8 +549,7 @@ def _load_stack_contract_block(project_root: Path | None) -> str:
     if not isinstance(data, dict):
         return ""
     lines = [
-        "=== STACK CONTRACT (architect-defined, FOLLOW EXACTLY — "
-        "do NOT translate to another language/framework) ===",
+        "=== STACK CONTRACT (architect-defined, FOLLOW EXACTLY — do NOT translate to another language/framework) ===",
     ]
     for key in _STACK_CONTRACT_KEYS:
         if key not in data:
@@ -1093,23 +1095,26 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
         """
         contract = _load_stack_contract_data(ctx.project_root)
         if contract is None:
-            return json.dumps({
-                "status": "failed",
-                "error": (
-                    "docs/stack_contract.json missing or unparseable. "
-                    "Dispatch architect first to produce it."
-                ),
-            })
+            return json.dumps(
+                {
+                    "status": "failed",
+                    "error": (
+                        "docs/stack_contract.json missing or unparseable. Dispatch architect first to produce it."
+                    ),
+                }
+            )
         subsystems = contract.get("subsystems")
         if not isinstance(subsystems, list) or not subsystems:
-            return json.dumps({
-                "status": "failed",
-                "error": (
-                    "docs/stack_contract.json has no subsystems[] array. "
-                    "Architect must use the two-level subsystems[].components[] "
-                    "schema (legacy flat modules[] is no longer supported here)."
-                ),
-            })
+            return json.dumps(
+                {
+                    "status": "failed",
+                    "error": (
+                        "docs/stack_contract.json has no subsystems[] array. "
+                        "Architect must use the two-level subsystems[].components[] "
+                        "schema (legacy flat modules[] is no longer supported here)."
+                    ),
+                }
+            )
 
         max_workers = max(1, ctx.config.safety_limits.max_concurrent_subsystem_dispatches)
         language = (contract.get("language") or "python").lower()
@@ -1139,31 +1144,35 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
                 cname = comp.get("name", "?")
                 upper_initial = (cname[:1].upper() + cname[1:]) if cname else "?"
                 tfile = comp.get("test_file") or toolchain["test_path_pattern"].format(
-                    subsystem=sname, component=cname, Component=upper_initial,
+                    subsystem=sname,
+                    component=cname,
+                    Component=upper_initial,
                 )
-                component_items.append({
-                    "subsystem": sname,
-                    "component": cname,
-                    "task_description": _build_component_implementation_task(
-                        ss, comp, contract, phase=phase
-                    ),
-                    "step_id": f"phase_{phase}_component_{sname}_{cname}",
-                    "phase": f"{phase}_component",
-                    "expected_artifacts": [p for p in (cf, tfile) if p],
-                })
+                component_items.append(
+                    {
+                        "subsystem": sname,
+                        "component": cname,
+                        "task_description": _build_component_implementation_task(ss, comp, contract, phase=phase),
+                        "step_id": f"phase_{phase}_component_{sname}_{cname}",
+                        "phase": f"{phase}_component",
+                        "expected_artifacts": [p for p in (cf, tfile) if p],
+                    }
+                )
             skel_expected.append(interface_path)
 
-            subsystem_plans.append({
-                "subsystem": sname,
-                "skeleton": {
+            subsystem_plans.append(
+                {
                     "subsystem": sname,
-                    "task_description": _build_subsystem_skeleton_task(ss, contract, phase=phase),
-                    "step_id": f"phase_{phase}_skeleton_{sname}",
-                    "phase": f"{phase}_skeleton",
-                    "expected_artifacts": skel_expected,
-                },
-                "components": component_items,
-            })
+                    "skeleton": {
+                        "subsystem": sname,
+                        "task_description": _build_subsystem_skeleton_task(ss, contract, phase=phase),
+                        "step_id": f"phase_{phase}_skeleton_{sname}",
+                        "phase": f"{phase}_skeleton",
+                        "expected_artifacts": skel_expected,
+                    },
+                    "components": component_items,
+                }
+            )
 
         # Cross-subsystem global throttle. Outer (subsystem) and inner
         # (component) executors are nested, so a naïve ``max_workers``
@@ -1176,13 +1185,15 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
 
         def _run_dispatch(item: dict[str, Any]) -> dict[str, Any]:
             with global_throttle:
-                raw = dispatch_task.invoke({
-                    "agent_name": agent_name,
-                    "task_description": item["task_description"],
-                    "step_id": item["step_id"],
-                    "phase": item["phase"],
-                    "expected_artifacts": item["expected_artifacts"] or None,
-                })
+                raw = dispatch_task.invoke(
+                    {
+                        "agent_name": agent_name,
+                        "task_description": item["task_description"],
+                        "step_id": item["step_id"],
+                        "phase": item["phase"],
+                        "expected_artifacts": item["expected_artifacts"] or None,
+                    }
+                )
             try:
                 parsed = json.loads(raw)
             except Exception:
@@ -1264,24 +1275,27 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
         comp_ok = sum(1 for r in component_results if r.get("status") == "completed")
         comp_fail = sum(1 for r in component_results if r.get("status") == "failed")
 
-        return json.dumps({
-            "phase": phase,
-            "agent_name": agent_name,
-            "subsystems_dispatched": len(subsystem_plans),
-            "components_dispatched": len(component_results),
-            "max_concurrent": max_workers,
-            "skeleton_completed": skel_ok,
-            "skeleton_failed": skel_fail,
-            "components_completed": comp_ok,
-            "components_failed": comp_fail,
-            # Aggregate roll-up across both stages so callers that just
-            # want pass/fail counts don't have to add the four numbers
-            # themselves.
-            "completed": skel_ok + comp_ok,
-            "failed": skel_fail + comp_fail,
-            "skeleton_results": skeleton_results,
-            "results": component_results,
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "phase": phase,
+                "agent_name": agent_name,
+                "subsystems_dispatched": len(subsystem_plans),
+                "components_dispatched": len(component_results),
+                "max_concurrent": max_workers,
+                "skeleton_completed": skel_ok,
+                "skeleton_failed": skel_fail,
+                "components_completed": comp_ok,
+                "components_failed": comp_fail,
+                # Aggregate roll-up across both stages so callers that just
+                # want pass/fail counts don't have to add the four numbers
+                # themselves.
+                "completed": skel_ok + comp_ok,
+                "failed": skel_fail + comp_fail,
+                "skeleton_results": skeleton_results,
+                "results": component_results,
+            },
+            ensure_ascii=False,
+        )
 
     return [dispatch_task, dispatch_tasks_parallel, dispatch_subsystems]
 

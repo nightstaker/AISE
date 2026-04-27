@@ -70,22 +70,26 @@ class TestLoadStackContractBlock:
 
     def test_renders_known_keys_in_canonical_order(self, tmp_path):
         (tmp_path / "docs").mkdir()
-        (tmp_path / "docs" / "stack_contract.json").write_text(json.dumps({
-            # Provide keys in scrambled order to confirm output
-            # follows the canonical _STACK_CONTRACT_KEYS ordering.
-            "ui_kind": "phaser",
-            "language": "typescript",
-            "test_runner": "vitest",
-            "framework_backend": "fastify",
-            "static_analyzer": ["npx tsc --noEmit", "eslint ."],
-            "entry_point": "src/index.ts",
-            "ui_required": True,
-            "framework_frontend": "phaser",
-            "package_manager": "npm",
-            "project_config_file": "package.json",
-            "run_command": "npm run dev",
-            "runtime": "node",
-        }))
+        (tmp_path / "docs" / "stack_contract.json").write_text(
+            json.dumps(
+                {
+                    # Provide keys in scrambled order to confirm output
+                    # follows the canonical _STACK_CONTRACT_KEYS ordering.
+                    "ui_kind": "phaser",
+                    "language": "typescript",
+                    "test_runner": "vitest",
+                    "framework_backend": "fastify",
+                    "static_analyzer": ["npx tsc --noEmit", "eslint ."],
+                    "entry_point": "src/index.ts",
+                    "ui_required": True,
+                    "framework_frontend": "phaser",
+                    "package_manager": "npm",
+                    "project_config_file": "package.json",
+                    "run_command": "npm run dev",
+                    "runtime": "node",
+                }
+            )
+        )
         block = _load_stack_contract_block(tmp_path)
         # Sentinel header + footer
         assert "=== STACK CONTRACT" in block
@@ -95,8 +99,7 @@ class TestLoadStackContractBlock:
         lang_idx = block.index("language: typescript")
         uikind_idx = block.index("ui_kind: phaser")
         assert lang_idx < uikind_idx, (
-            "block must follow canonical key ordering, not the JSON "
-            "object's serialization order"
+            "block must follow canonical key ordering, not the JSON object's serialization order"
         )
         # Lists are joined with ", " so the orchestrator sees a single
         # readable line per field.
@@ -107,10 +110,14 @@ class TestLoadStackContractBlock:
         not crash or expose them in the prompt — only the canonical
         keys round-trip."""
         (tmp_path / "docs").mkdir()
-        (tmp_path / "docs" / "stack_contract.json").write_text(json.dumps({
-            "language": "go",
-            "novel_field_from_the_future": "should not appear in block",
-        }))
+        (tmp_path / "docs" / "stack_contract.json").write_text(
+            json.dumps(
+                {
+                    "language": "go",
+                    "novel_field_from_the_future": "should not appear in block",
+                }
+            )
+        )
         block = _load_stack_contract_block(tmp_path)
         assert "language: go" in block
         assert "novel_field_from_the_future" not in block
@@ -182,15 +189,19 @@ class TestDispatchTaskInjectsContract:
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / "docs").mkdir()
-            (root / "docs" / "stack_contract.json").write_text(json.dumps({
-                "language": "typescript",
-                "framework_backend": "fastify",
-                "test_runner": "vitest",
-                "entry_point": "src/index.ts",
-                "run_command": "npm run dev",
-                "ui_required": False,
-                "ui_kind": "",
-            }))
+            (root / "docs" / "stack_contract.json").write_text(
+                json.dumps(
+                    {
+                        "language": "typescript",
+                        "framework_backend": "fastify",
+                        "test_runner": "vitest",
+                        "entry_point": "src/index.ts",
+                        "run_command": "npm run dev",
+                        "ui_required": False,
+                        "ui_kind": "",
+                    }
+                )
+            )
             ctx = _build_ctx(root, requirement="Build a tower defense game")
             prompt = self._capture_worker_prompt(ctx, "Implement auth module")
             # All three blocks present
@@ -212,10 +223,14 @@ class TestDispatchTaskInjectsContract:
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / "docs").mkdir()
-            (root / "docs" / "stack_contract.json").write_text(json.dumps({
-                "language": "go",
-                "test_runner": "go test",
-            }))
+            (root / "docs" / "stack_contract.json").write_text(
+                json.dumps(
+                    {
+                        "language": "go",
+                        "test_runner": "go test",
+                    }
+                )
+            )
             ctx = _build_ctx(root)  # empty requirement
             prompt = self._capture_worker_prompt(ctx, "do thing")
             assert "=== STACK CONTRACT" in prompt
@@ -285,12 +300,8 @@ class TestMustNotExistArtifact:
         sentinel = tmp_path.parent / "should-not-be-deleted"
         sentinel.write_text("preserve me")
         try:
-            REPAIR_ACTIONS["leftover_file"](
-                tmp_path, {"path": "../should-not-be-deleted"}
-            )
-            assert sentinel.exists(), (
-                "repair must not delete files outside the project root"
-            )
+            REPAIR_ACTIONS["leftover_file"](tmp_path, {"path": "../should-not-be-deleted"})
+            assert sentinel.exists(), "repair must not delete files outside the project root"
         finally:
             sentinel.unlink(missing_ok=True)
 
@@ -315,6 +326,5 @@ class TestScaffoldingMustNotExist:
             ".coverage",
         ):
             assert expected in leftover_paths, (
-                f"scaffolding_expectations should guard against leftover "
-                f"{expected!r} from prior runs"
+                f"scaffolding_expectations should guard against leftover {expected!r} from prior runs"
             )

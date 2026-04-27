@@ -333,10 +333,7 @@ class TestScaffoldingExpectations:
             "dir:artifacts",
             "dir:trace",
         }
-        assert required.issubset(descriptions), (
-            f"missing required scaffolding artifacts: "
-            f"{required - descriptions}"
-        )
+        assert required.issubset(descriptions), f"missing required scaffolding artifacts: {required - descriptions}"
         # Negative: leftover-file guards (must_not_exist). Subset
         # check — the canonical list may grow over time. The paths
         # below were the ones observed in real failed runs and so are
@@ -350,8 +347,7 @@ class TestScaffoldingExpectations:
             "must_not_exist:.coverage",
         }
         assert leftover_must_be_guarded.issubset(descriptions), (
-            f"missing leftover-file guards: "
-            f"{leftover_must_be_guarded - descriptions}"
+            f"missing leftover-file guards: {leftover_must_be_guarded - descriptions}"
         )
 
     def test_empty_project_gets_fully_repaired(self, tmp_path: Path) -> None:
