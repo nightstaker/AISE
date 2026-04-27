@@ -132,6 +132,18 @@ class WebProjectService:
         self._scaffolding_tokens_by_project: dict[str, dict[str, int]] = {}
         self._lock = RLock()
         self._active_workflow_runs: set[tuple[str, str]] = set()
+        # Throttled-flush bookkeeping for ``on_event``. Each event a
+        # running session emits is appended to ``run.task_log`` in
+        # memory; without flushing periodically a process restart
+        # loses every event since the run started. We flush either
+        # every ``_FLUSH_EVERY_N_EVENTS`` events OR every
+        # ``_FLUSH_INTERVAL_SECONDS`` wall-clock seconds, whichever
+        # comes first, so high-frequency runs and slow runs both get
+        # bounded loss.
+        self._events_since_save = 0
+        self._last_save_monotonic: float = 0.0
+        self._FLUSH_EVERY_N_EVENTS = 8
+        self._FLUSH_INTERVAL_SECONDS = 5.0
         self._state_path = self.project_manager._projects_root / "web_state.json"
         self._users_path = self.project_manager._projects_root / "users.json"
         self._user_store = UserStore(self._users_path)
@@ -145,7 +157,106 @@ class WebProjectService:
         self._runtime_manager.start()
         self._log_service.set_runtime_manager(self._runtime_manager)
 
+        # Graceful-shutdown hooks. Workers are daemon threads (so
+        # they get killed on process exit), but BEFORE that we get a
+        # last opportunity to flush state and mark active runs as
+        # ``interrupted`` so the next process can recognise them
+        # rather than blanket-failing them.
+        self._shutdown_invoked = False
+        self._install_shutdown_hooks()
+
         logger.info("WebProjectService initialized: state_path=%s", self._state_path)
+
+    def _install_shutdown_hooks(self) -> None:
+        """Register atexit + SIGTERM/SIGINT handlers that:
+
+        1. Flush ``_save_state()`` so the most recent ``task_log``
+           and phase-progress fields survive.
+        2. Tag every still-active run with ``status="interrupted"``
+           (a new sentinel state) so the next process can tell
+           "killed mid-run, may be resumable" apart from "the
+           previous process literally never got a chance to mark
+           this run failed".
+
+        Idempotent: subsequent invocations are no-ops, and SIGTERM /
+        SIGINT delegation falls through to the default disposition
+        after our flush.
+        """
+        import atexit
+        import signal as _signal
+
+        atexit.register(self._on_shutdown)
+
+        # Registering a signal handler is a no-op on platforms /
+        # runtimes that disallow it (e.g. tests running under
+        # pytest's threadpool, or when the service is constructed
+        # outside the main thread). Catch and continue — atexit
+        # alone is still useful coverage.
+        def _handler(signum: int, frame: object) -> None:
+            self._on_shutdown()
+            # Re-raise the default disposition so the process still
+            # exits as the signal intended.
+            _signal.signal(signum, _signal.SIG_DFL)
+            try:
+                import os
+                os.kill(os.getpid(), signum)
+            except Exception:  # pragma: no cover — best-effort
+                pass
+
+        for sig in (getattr(_signal, "SIGTERM", None), getattr(_signal, "SIGINT", None)):
+            if sig is None:
+                continue
+            try:
+                _signal.signal(sig, _handler)
+            except (ValueError, OSError):
+                # Not in main thread, or platform doesn't support it.
+                continue
+
+    def _on_shutdown(self) -> None:
+        """atexit / signal callback. Flush state, tag active runs."""
+        if self._shutdown_invoked:
+            return
+        self._shutdown_invoked = True
+        try:
+            with self._lock:
+                marked = 0
+                now = datetime.now(timezone.utc)
+                for project_id, run_id in list(self._active_workflow_runs):
+                    run = self._find_run(project_id, run_id)
+                    if run is None:
+                        continue
+                    if run.status in ("pending", "running"):
+                        # ``interrupted`` is a non-terminal-looking
+                        # state that the loader's reaper recognises
+                        # as "the previous process was shutting
+                        # down". Distinct from blanket reaping of
+                        # ``running`` runs which may indicate a hard
+                        # crash. The reaper then walks the trace
+                        # directory to reconstruct what was already
+                        # known before deciding the final status.
+                        run.status = "interrupted"
+                        if not run.error:
+                            run.error = (
+                                "interrupted: process shutdown signal received "
+                                "while this run was in progress. The reaper "
+                                "will reclassify this once the next process "
+                                "reads the trace directory."
+                            )
+                        if run.completed_at is None:
+                            run.completed_at = now
+                        marked += 1
+                # Final flush — bypass the throttle so every last
+                # event in ``task_log`` is on disk.
+                try:
+                    self._save_state()
+                except Exception as exc:
+                    logger.warning("Final flush on shutdown failed: %s", exc)
+                logger.info(
+                    "Shutdown hooks ran: %d active runs marked interrupted, state flushed",
+                    marked,
+                )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("Shutdown handler raised: %s", exc)
 
     @property
     def user_store(self) -> UserStore:
@@ -687,7 +798,12 @@ class WebProjectService:
 
             The phase_plan / phase_start / phase_complete events are
             also mirrored onto run-level fields so the dashboard and
-            retry API don't have to re-walk the log.
+            retry API don't have to re-walk the log. Each event also
+            triggers a throttled state flush so a process restart
+            mid-run does not lose progress entirely (without this,
+            ``run.task_log`` is in-memory only between
+            ``_save_state`` calls — which previously happened only at
+            terminal transitions).
             """
             with self._lock:
                 run = self._find_run(project_id, run_id)
@@ -695,6 +811,13 @@ class WebProjectService:
                     return
                 run.task_log.append(event)
                 event_type = event.get("type")
+                # Phase boundaries are load-bearing for the retry UI:
+                # ``failed_phase_idx`` / ``phase_total`` /
+                # ``failed_phase_name`` must survive a crash so the
+                # "resume from phase N/M" hint is accurate.
+                phase_boundary = event_type in (
+                    "phase_plan", "phase_start", "phase_complete",
+                )
                 if event_type == "phase_plan":
                     try:
                         run.phase_total = int(event.get("total") or 0)
@@ -720,6 +843,8 @@ class WebProjectService:
                         run.llm_call_count += 1
                     except (TypeError, ValueError):
                         pass
+                self._events_since_save += 1
+                self._save_state_throttled(force_phase_event=phase_boundary)
 
         # Resolve project root for file output
         project_root = None
@@ -1113,27 +1238,110 @@ class WebProjectService:
                             pass
                     raw_status = str(item.get("status", "completed"))
                     raw_error = str(item.get("error", ""))
-                    # Reap zombie runs: any run stored as pending/running when
-                    # this process starts has no live worker thread (we never
-                    # persist _active_workflow_runs). Without this, the
-                    # run-detail UI polls forever and the dashboard keeps the
-                    # project in a misleading in-progress state. Mark them as
-                    # ``failed`` with a clear "interrupted" message so the UI
-                    # reaches a terminal state and the user can decide whether
-                    # to re-run.
-                    if raw_status in ("pending", "running"):
+                    raw_run_id = str(item.get("run_id", ""))
+                    # Smart reaper: any run stored as pending / running /
+                    # interrupted when this process starts has no live
+                    # worker thread. Instead of blanket-failing them all
+                    # with the legacy "no worker thread remained" message,
+                    # consult three sources to estimate how far the run
+                    # got AND whether resumption is sensible:
+                    #
+                    #   1. The persisted ``task_log`` (now flushed on a
+                    #      throttle by ``on_event``).
+                    #   2. ``failed_phase_idx`` / ``phase_total`` /
+                    #      ``failed_phase_name`` (also flushed on phase
+                    #      boundaries).
+                    #   3. ``runs/trace/`` JSON files — the LLM trace
+                    #      writer flushes every dispatch to disk, so
+                    #      these survive even hard crashes.
+                    #
+                    # Result: the user gets a specific message
+                    # ("interrupted at phase 3/6 'implementation'; X
+                    # subsystem dispatches recorded; click Retry to
+                    # resume") instead of a blanket re-run prompt.
+                    if raw_status in ("pending", "running", "interrupted"):
+                        existing_task_log = item.get("task_log") or []
+                        n_events = len(existing_task_log) if isinstance(existing_task_log, list) else 0
+                        # Trace-file fallback: count developer / qa
+                        # dispatches that were definitely recorded.
+                        try:
+                            n_trace = self._count_trace_files_for_project(project_id)
+                        except Exception:
+                            n_trace = 0
+                        try:
+                            failed_idx_int = int(item.get("failed_phase_idx", -1))
+                        except (TypeError, ValueError):
+                            failed_idx_int = -1
+                        try:
+                            phase_total_int = int(item.get("phase_total", 0))
+                        except (TypeError, ValueError):
+                            phase_total_int = 0
+                        phase_name = str(item.get("failed_phase_name") or "")
+                        had_progress = (
+                            n_events > 0
+                            or n_trace > 0
+                            or failed_idx_int >= 0
+                            or phase_total_int > 0
+                        )
+                        if raw_status == "interrupted":
+                            kind = "graceful shutdown"
+                        elif had_progress:
+                            kind = "hard restart"
+                        else:
+                            kind = "zero-progress restart"
                         logger.warning(
-                            "Reaping zombie run: project=%s run=%s prior_status=%s",
-                            project_id,
-                            str(item.get("run_id", "")),
-                            raw_status,
+                            "Reaping run (%s): project=%s run=%s prior_status=%s "
+                            "events=%d trace_files=%d phase=%s/%s",
+                            kind, project_id, raw_run_id, raw_status,
+                            n_events, n_trace,
+                            (failed_idx_int + 1) if failed_idx_int >= 0 else "?",
+                            phase_total_int or "?",
                         )
                         raw_status = "failed"
-                        raw_error = raw_error or (
-                            "interrupted: web server restarted while this run "
-                            "was in progress; no worker thread remained to "
-                            "advance it. Re-run to retry."
-                        )
+                        if not raw_error:
+                            phase_hint = ""
+                            if failed_idx_int >= 0 and phase_total_int > 0:
+                                phase_hint = (
+                                    f" Last known phase: {failed_idx_int + 1}/"
+                                    f"{phase_total_int}"
+                                )
+                                if phase_name:
+                                    phase_hint += f" ({phase_name})"
+                                phase_hint += "."
+                            elif failed_idx_int >= 0:
+                                phase_hint = (
+                                    f" Last known phase index: "
+                                    f"{failed_idx_int + 1}."
+                                )
+                            progress_hint = ""
+                            if n_events > 0 or n_trace > 0:
+                                progress_hint = (
+                                    f" Progress on disk: {n_events} task-log "
+                                    f"events, {n_trace} agent trace files. "
+                                )
+                            if kind == "graceful shutdown":
+                                raw_error = (
+                                    "interrupted: process received a shutdown "
+                                    "signal mid-run." + phase_hint + progress_hint
+                                    + " Click Retry to resume from the last "
+                                    "completed phase, or Restart to begin "
+                                    "again from phase 1."
+                                )
+                            elif had_progress:
+                                raw_error = (
+                                    "interrupted: process exited unexpectedly "
+                                    "mid-run (worker thread killed)."
+                                    + phase_hint + progress_hint
+                                    + " Click Retry to resume from the last "
+                                    "completed phase, or Restart to begin "
+                                    "again from phase 1."
+                                )
+                            else:
+                                raw_error = (
+                                    "interrupted: web server restarted before "
+                                    "this run produced any progress. Re-run "
+                                    "to retry."
+                                )
                         if completed is None:
                             completed = datetime.now(timezone.utc)
                         reaped_any = True
@@ -1272,6 +1480,62 @@ class WebProjectService:
                 self._save_state()
             except Exception as exc:
                 logger.debug("Failed to persist reaped state: %s", exc)
+
+    def _count_trace_files_for_project(self, project_id: str) -> int:
+        """Count agent trace JSON files under the project's trace
+        directory. Used by the smart reaper to estimate progress
+        when the persisted ``task_log`` is empty (hard crash before
+        the throttled flush could fire). Returns 0 if the project
+        root is unknown or the trace directory does not exist.
+        """
+        try:
+            project = self.project_manager.get_project(project_id)
+        except Exception:
+            return 0
+        if project is None or not project.project_root:
+            return 0
+        trace_dir = Path(project.project_root) / "runs" / "trace"
+        if not trace_dir.is_dir():
+            return 0
+        try:
+            return sum(1 for p in trace_dir.iterdir() if p.is_file() and p.suffix == ".json")
+        except OSError:
+            return 0
+
+    def _save_state_throttled(self, *, force_phase_event: bool = False) -> None:
+        """Save state subject to a low-overhead throttle.
+
+        ``on_event`` calls this after every event recorded on a
+        running run. We flush to disk if any of these is true:
+
+        - Force flag set (phase boundaries — phase_plan / phase_start
+          / phase_complete — always flush so the most recent
+          ``failed_phase_idx`` survives a crash).
+        - At least ``_FLUSH_EVERY_N_EVENTS`` events have accumulated
+          since the last save.
+        - At least ``_FLUSH_INTERVAL_SECONDS`` wall-clock seconds
+          have elapsed since the last save.
+
+        Caller MUST already hold ``self._lock``.
+        """
+        import time as _time
+        now = _time.monotonic()
+        if not force_phase_event:
+            if (
+                self._events_since_save < self._FLUSH_EVERY_N_EVENTS
+                and (now - self._last_save_monotonic) < self._FLUSH_INTERVAL_SECONDS
+            ):
+                return
+        try:
+            self._save_state()
+        except Exception as exc:
+            # A failed throttled save is non-fatal — the next one
+            # will retry. Log at debug to avoid spamming the per-run
+            # log with disk hiccups.
+            logger.debug("Throttled state flush failed: %s", exc)
+            return
+        self._events_since_save = 0
+        self._last_save_monotonic = now
 
     def _save_state(self) -> None:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
