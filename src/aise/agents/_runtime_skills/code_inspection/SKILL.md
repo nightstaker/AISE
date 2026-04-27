@@ -36,13 +36,18 @@ Pick the toolset whose file-extension matches the file you wrote.
 Run each tool in the listed order; stop fixing only when both pass
 with zero findings. The tools below are all on the shell allowlist.
 
-| Language   | Files                 | Commands                                    |
-|------------|-----------------------|---------------------------------------------|
-| Python     | `*.py`                | `ruff check <file>` + `mypy <file>`         |
-| JavaScript | `*.js` / `*.mjs`      | `eslint <file>`                             |
-| TypeScript | `*.ts` / `*.tsx`      | `eslint <file>` + `tsc --noEmit <file>`     |
-| Go         | `*.go`                | `go vet ./...` + `gofmt -l <file>`          |
-| Rust       | `*.rs`                | `cargo clippy -- -D warnings` + `cargo check` |
+| Language     | Files                  | Commands                                          |
+|--------------|------------------------|---------------------------------------------------|
+| Python       | `*.py`                 | `ruff check <file>` + `mypy <file>`               |
+| JavaScript   | `*.js` / `*.mjs`       | `eslint <file>`                                   |
+| TypeScript   | `*.ts` / `*.tsx`       | `eslint <file>` + `tsc --noEmit`                  |
+| Go           | `*.go`                 | `go vet ./...` + `gofmt -l <file>`                |
+| Rust         | `*.rs`                 | `cargo clippy -- -D warnings` + `cargo check`     |
+| Java         | `*.java`               | `mvn -q compile` + `mvn -q checkstyle:check` (or `gradle check`) |
+| Kotlin       | `*.kt` / `*.kts`       | `gradle compileKotlin` + `ktlint <file>`          |
+| C# / .NET    | `*.cs`                 | `dotnet build --nologo -warnaserror` + `dotnet format --verify-no-changes` |
+| Ruby         | `*.rb`                 | `rubocop <file>`                                  |
+| PHP          | `*.php`                | `php -l <file>` + `phpstan analyse <file>`        |
 
 If the language of the file is not in this table, skip the inspection
 step for that file but note the skip in your response summary. Do NOT
@@ -56,28 +61,49 @@ in your summary — do NOT retry or bikeshed.
 ## Typical command shapes
 
 Run these from the project root — `execute_shell` sets the cwd
-automatically, so do not prepend `cd`.
+automatically, so do not prepend `cd`. Pick the row matching the
+language of the file you just wrote.
 
 ```
+# Python
 execute_shell(command="ruff check src/game_engine.py")
 execute_shell(command="mypy src/game_engine.py")
+# TypeScript / JavaScript
 execute_shell(command="eslint src/client/app.ts")
-execute_shell(command="tsc --noEmit src/client/app.ts")
+execute_shell(command="npx tsc --noEmit")
+# Go
 execute_shell(command="go vet ./internal/game")
 execute_shell(command="gofmt -l internal/game/engine.go")
+# Rust
 execute_shell(command="cargo clippy -- -D warnings")
+execute_shell(command="cargo check")
+# Java
+execute_shell(command="mvn -q compile")
+# C# / .NET
+execute_shell(command="dotnet build --nologo -warnaserror")
 ```
 
 ## Reporting
 
 In the summary you return to the orchestrator, include one line per
-file showing the final inspection result:
+file showing the final inspection result. Use whichever tool names
+match the language you actually ran — the format is the same.
 
 ```
+# Python project example
 Inspection:
 - src/game_engine.py: ruff OK, mypy OK
 - src/collision.py:   ruff OK, mypy OK
 - src/scoring.py:     ruff OK, mypy skipped (not installed)
+
+# TypeScript project example
+Inspection:
+- src/game_engine.ts: eslint OK, tsc OK
+- src/collision.ts:   eslint OK, tsc OK
+
+# Go project example
+Inspection:
+- internal/game/engine.go: go vet OK, gofmt OK
 ```
 
 This lets the orchestrator see at a glance that the module is both

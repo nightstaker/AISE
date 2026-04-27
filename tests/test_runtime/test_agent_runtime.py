@@ -166,7 +166,7 @@ class TestAgentRuntimeTrace:
         assert "Recursion limit" in record["error"]
         assert record["error_type"] == "RuntimeError"
 
-    def test_default_recursion_limit_is_240(self, agent_md_file, skills_dir, mock_create_deep_agent):
+    def test_default_recursion_limit_is_480(self, agent_md_file, skills_dir, mock_create_deep_agent):
         from langchain_core.messages import AIMessage
 
         _, mock_agent = mock_create_deep_agent
@@ -177,7 +177,7 @@ class TestAgentRuntimeTrace:
         runtime.handle_message("hi")
 
         _, kwargs = mock_agent.invoke.call_args
-        assert kwargs["config"]["recursion_limit"] == 240
+        assert kwargs["config"]["recursion_limit"] == 480
 
 
 class TestAgentRuntimeTodos:

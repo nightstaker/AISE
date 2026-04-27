@@ -333,6 +333,151 @@ class TestCompletionTool:
         completes = [e for e in ctx.event_log if e.get("type") == "workflow_complete"]
         assert len(completes) == 1
 
+    # -- A3 Gates: phase completion + artifact + report markers ---------
+
+    def test_mark_complete_refused_when_phases_incomplete(self, ctx):
+        """If a ``phase_plan`` was emitted, mark_complete must refuse
+        until every earlier phase has a matching ``phase_complete``
+        AND the final phase has at least started.
+
+        Regression for project_7-tower run_3f53c0dcc5 (2026-04-26): PM
+        hit the dispatch cap during implementation (phase 2) and
+        called mark_complete with a report that openly admitted
+        gameplay was 0/10. The run was wrongly stamped completed.
+        Under the gate, calling mark_complete while still inside
+        phase 2 (with phases 3/4/5 not even started) is refused.
+        """
+        ctx.event_log.append({"type": "phase_plan", "total": 6, "phases": ["p"] * 6})
+        # Phases 0,1,2 finished, but 3 (main_entry) hasn't started yet.
+        for idx in (0, 1, 2):
+            ctx.event_log.append({"type": "phase_start", "phase_idx": idx})
+            ctx.event_log.append({"type": "phase_complete", "phase_idx": idx})
+        tool = make_completion_tool(ctx)
+        result = json.loads(tool.invoke({"report": "tried our best"}))
+        assert result["status"] == "refused"
+        assert result["phases_completed"] == [0, 1, 2]
+        # Final-phase index 5 must appear in the missing list because
+        # it never started.
+        assert 5 in result["missing_phase_indices"]
+        # State must remain untouched so the orchestrator loop can
+        # continue dispatching the remaining phases.
+        assert ctx.workflow_state.is_complete is False
+        assert ctx.workflow_state.final_report == ""
+        assert not any(e.get("type") == "workflow_complete" for e in ctx.event_log)
+
+    def test_mark_complete_accepted_during_final_phase(self, ctx):
+        """The legitimate case: every earlier phase finished AND the
+        final phase has started. mark_complete is called from inside
+        the final phase's PM dispatch, BEFORE its ``phase_complete``
+        is emitted by the orchestrator loop, so the gate must allow it.
+        """
+        ctx.event_log.append({"type": "phase_plan", "total": 6, "phases": ["p"] * 6})
+        for idx in range(5):
+            ctx.event_log.append({"type": "phase_start", "phase_idx": idx})
+            ctx.event_log.append({"type": "phase_complete", "phase_idx": idx})
+        # Final phase started; its phase_complete will fire AFTER the
+        # PM dispatch returns.
+        ctx.event_log.append({"type": "phase_start", "phase_idx": 5})
+        tool = make_completion_tool(ctx)
+        result = json.loads(tool.invoke({"report": "Delivered all phases."}))
+        assert result["status"] == "acknowledged"
+        assert ctx.workflow_state.is_complete is True
+
+    def test_mark_complete_refused_when_artifacts_missing(self, tmp_path, fake_manager):
+        """If the architect's stack contract declares component files
+        that are missing or trivially small on disk, mark_complete must
+        refuse and surface the missing list so the orchestrator can
+        dispatch the gap.
+        """
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        # Two declared components; ONLY the first exists with real
+        # content. The second must show up in the missing list.
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "ok.py").write_text("# real source code, > 64 bytes\n" * 4, encoding="utf-8")
+        (docs / "stack_contract.json").write_text(
+            json.dumps({
+                "language": "python",
+                "subsystems": [
+                    {
+                        "name": "core",
+                        "components": [
+                            {"name": "ok", "file": "src/ok.py"},
+                            {"name": "missing", "file": "src/missing.py"},
+                        ],
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+        ctx = ToolContext(
+            manager=fake_manager,
+            project_root=tmp_path,
+            config=RuntimeConfig(),
+            workflow_state=WorkflowState(),
+        )
+        tool = make_completion_tool(ctx)
+        result = json.loads(tool.invoke({"report": "delivered."}))
+        assert result["status"] == "refused"
+        assert "src/missing.py" in result["missing_artifacts"]
+        assert "src/ok.py" not in result["missing_artifacts"]
+        assert result["missing_artifact_count"] == 1
+        assert ctx.workflow_state.is_complete is False
+
+    def test_mark_complete_refused_when_report_admits_partial_delivery(self, ctx):
+        """Reject reports that contain partial-delivery markers — they
+        encode a failed run, not a delivery.
+        """
+        tool = make_completion_tool(ctx)
+        bad_report = (
+            "Phase 3 implementation complete.\n\n"
+            "| gameplay | 0/10 ❌ (dispatch cap hit before this subsystem was processed) |\n"
+        )
+        result = json.loads(tool.invoke({"report": bad_report}))
+        assert result["status"] == "refused"
+        # At least one of the patterns we care about should fire.
+        assert any(
+            pat in result["flagged_markers"]
+            for pat in (r"\bdispatch cap hit\b", r"\b0\s*/\s*\d+\b", r"❌")
+        )
+        assert ctx.workflow_state.is_complete is False
+
+    def test_mark_complete_acknowledges_clean_report(self, tmp_path, fake_manager):
+        """Sanity-check: when phases are complete, every artifact is on
+        disk, and the report has no partial-delivery markers, the
+        completion tool acknowledges and stores the report.
+        """
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "ok.py").write_text("# real source code, > 64 bytes\n" * 4, encoding="utf-8")
+        (docs / "stack_contract.json").write_text(
+            json.dumps({
+                "language": "python",
+                "subsystems": [
+                    {"name": "core", "components": [{"name": "ok", "file": "src/ok.py"}]}
+                ],
+            }),
+            encoding="utf-8",
+        )
+        ctx = ToolContext(
+            manager=fake_manager,
+            project_root=tmp_path,
+            config=RuntimeConfig(),
+            workflow_state=WorkflowState(),
+        )
+        ctx.event_log.append({"type": "phase_plan", "total": 2, "phases": ["a", "b"]})
+        ctx.event_log.append({"type": "phase_start", "phase_idx": 0})
+        ctx.event_log.append({"type": "phase_complete", "phase_idx": 0})
+        ctx.event_log.append({"type": "phase_start", "phase_idx": 1})
+        # Final phase started; mark_complete is invoked from inside it,
+        # before its phase_complete fires.
+        tool = make_completion_tool(ctx)
+        result = json.loads(tool.invoke({"report": "Delivered cleanly across all phases."}))
+        assert result["status"] == "acknowledged"
+        assert ctx.workflow_state.is_complete is True
+        assert ctx.workflow_state.final_report == "Delivered cleanly across all phases."
+
 
 class TestDispatchTaskCompletionGuard:
     """Once ``mark_complete`` has fired, further dispatches must be refused.
@@ -584,6 +729,11 @@ class TestBuildOrchestratorTools:
             "list_agents",
             "dispatch_task",
             "dispatch_tasks_parallel",
+            # NEW: deterministic phase-3 fan-out that reads
+            # docs/stack_contract.json and dispatches one developer
+            # per subsystem in parallel — bypasses the orchestrator
+            # LLM's tool-call-batching weakness.
+            "dispatch_subsystems",
             "execute_shell",
             "mark_complete",
         }

@@ -269,7 +269,7 @@ class AgentRuntime:
         trace_dir: str | Path | None = None,
         url: str = "",
         checkpointer: Any = None,
-        max_iterations: int = 240,
+        max_iterations: int = 480,
     ) -> None:
         if create_deep_agent is None:
             raise RuntimeError(
@@ -429,6 +429,7 @@ class AgentRuntime:
         *,
         thread_id: str | None = None,
         on_todos_update: Any = None,
+        on_token_usage: Any = None,
     ) -> str:
         """Process an incoming text message and return the agent's response.
 
@@ -447,6 +448,11 @@ class AgentRuntime:
             on_todos_update: Optional callback ``(list[dict]) -> None`` fired
                 whenever the agent invokes deepagents' ``write_todos`` tool.
                 Used by the web UI to surface live progress.
+            on_token_usage: Optional callback ``(dict) -> None`` fired after
+                every LLM round-trip with normalized token counts
+                (``input_tokens`` / ``output_tokens`` / ``total_tokens``).
+                Used to bubble per-dispatch token consumption up to the
+                orchestrator session and the WorkflowRun.
 
         Returns:
             The agent's text response.
@@ -505,11 +511,13 @@ class AgentRuntime:
                 trace_path=trace_path,
                 lock=trace_lock,
                 on_todos_update=on_todos_update,
+                on_token_usage=on_token_usage,
             )
             config.setdefault("callbacks", []).append(llm_tracer)
-        elif on_todos_update is not None:
-            # No trace_dir but still want live todos — attach a lightweight
-            # callback whose only job is to forward ``write_todos`` invocations.
+        elif on_todos_update is not None or on_token_usage is not None:
+            # No trace_dir but still want live todos / token usage —
+            # attach a lightweight callback whose only job is to forward
+            # ``write_todos`` invocations and per-call token counts.
             from .trace_callback import TraceLLMCallback
 
             llm_tracer = TraceLLMCallback(
@@ -517,6 +525,7 @@ class AgentRuntime:
                 trace_path=None,
                 lock=trace_lock,
                 on_todos_update=on_todos_update,
+                on_token_usage=on_token_usage,
             )
             config.setdefault("callbacks", []).append(llm_tracer)
 

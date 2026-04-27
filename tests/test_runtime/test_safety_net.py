@@ -311,13 +311,18 @@ class TestRepairFailureEmitsEvent:
 
 class TestScaffoldingExpectations:
     def test_set_matches_pm_scaffolding_contract(self) -> None:
-        """The tuple must describe exactly what ``product_manager.md``
-        promises to produce during SCAFFOLDING TASK: git repo +
-        .gitignore + 7 subdirs. If this drifts, the PM's contract and
-        the safety net's checks fall out of sync."""
+        """The tuple must describe what ``product_manager.md``
+        promises to produce during SCAFFOLDING TASK (git repo +
+        .gitignore + 7 subdirs) PLUS the leftover-file guards that
+        catch carryover from prior runs (project_5 / project_7
+        bequeathed a stale ``package.json`` etc. into freshly
+        scaffolded projects). If either set drifts, the PM's
+        contract and the safety net's checks fall out of sync.
+        """
         specs = scaffolding_expectations()
         descriptions = {a.describe() for a in specs}
-        expected = {
+        # Positive: artifacts that MUST exist post-scaffold.
+        required = {
             "git_repo",
             "file:.gitignore",
             "dir:docs",
@@ -328,7 +333,26 @@ class TestScaffoldingExpectations:
             "dir:artifacts",
             "dir:trace",
         }
-        assert descriptions == expected
+        assert required.issubset(descriptions), (
+            f"missing required scaffolding artifacts: "
+            f"{required - descriptions}"
+        )
+        # Negative: leftover-file guards (must_not_exist). Subset
+        # check — the canonical list may grow over time. The paths
+        # below were the ones observed in real failed runs and so are
+        # the load-bearing minimum.
+        leftover_must_be_guarded = {
+            "must_not_exist:package.json",
+            "must_not_exist:node_modules",
+            "must_not_exist:Cargo.toml",
+            "must_not_exist:go.mod",
+            "must_not_exist:pyproject.toml",
+            "must_not_exist:.coverage",
+        }
+        assert leftover_must_be_guarded.issubset(descriptions), (
+            f"missing leftover-file guards: "
+            f"{leftover_must_be_guarded - descriptions}"
+        )
 
     def test_empty_project_gets_fully_repaired(self, tmp_path: Path) -> None:
         """Integration-style: start from nothing, run the scaffolding

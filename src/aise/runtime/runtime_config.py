@@ -25,9 +25,32 @@ from .models import ProcessCaps
 
 # Defaults preserve the prior in-code constants so behavior is unchanged
 # until a project explicitly overrides them.
-DEFAULT_MAX_DISPATCHES = 30
+#
+# ``max_dispatches`` was 30 historically. With the two-stage skeleton +
+# per-component fan-out (``dispatch_subsystems``), a 5-subsystem / 32-
+# component architecture needs:
+#
+#   5 (skeletons) + 32 (components) + 6 (PM, architect, main_entry,
+#   qa, delivery, retries) ≈ 50–60 dispatches
+#
+# 30 truncates the last subsystem deterministically (project_7-tower
+# regression). 128 covers a 50+ component architecture with headroom;
+# ``ProjectSession.run`` ALSO computes a per-run dynamic floor from
+# the architect's ``stack_contract.json`` so the cap auto-scales for
+# bigger architectures without re-tuning this default.
+DEFAULT_MAX_DISPATCHES = 128
 DEFAULT_MAX_CONTINUATIONS = 15
+# Buffer added on top of the architect's declared ``Σ(1 + components)``
+# when computing a per-run dispatch-cap floor. Covers PM / architect /
+# main_entry / qa / delivery + a margin for retries.
+DISPATCH_FLOOR_BUFFER = 16
 DEFAULT_PER_PHASE_TIMEOUT_SECONDS = 600
+# Cap concurrent worker dispatches from ``dispatch_subsystems``.
+# Sized for parallel-friendly serving infrastructure (hosted APIs or
+# multi-GPU vLLM): 16 in-flight workers + the orchestrator's
+# occasional LLM call. Lower it per-project if the local serving
+# layer cannot keep that many requests warm.
+DEFAULT_MAX_CONCURRENT_SUBSYSTEM_DISPATCHES = 16
 
 
 @dataclass
@@ -37,6 +60,11 @@ class SafetyLimits:
     max_dispatches: int = DEFAULT_MAX_DISPATCHES
     max_continuations: int = DEFAULT_MAX_CONTINUATIONS
     per_phase_timeout_seconds: int = DEFAULT_PER_PHASE_TIMEOUT_SECONDS
+    # Throttle for ``dispatch_subsystems`` — the deterministic phase-3
+    # fan-out that reads ``docs/stack_contract.json`` and dispatches
+    # one developer per subsystem in parallel. Without a cap a project
+    # with 10+ subsystems would saturate the LLM serving layer.
+    max_concurrent_subsystem_dispatches: int = DEFAULT_MAX_CONCURRENT_SUBSYSTEM_DISPATCHES
 
     def overlay(self, caps: ProcessCaps | None) -> SafetyLimits:
         """Return a new SafetyLimits with non-None ``caps`` fields applied."""
@@ -52,6 +80,10 @@ class SafetyLimits:
                 if caps.per_phase_timeout_seconds is not None
                 else self.per_phase_timeout_seconds
             ),
+            # max_concurrent_subsystem_dispatches is not exposed via
+            # ProcessCaps yet — falls back to the field default. Add
+            # to ProcessCaps if/when per-process tuning is needed.
+            max_concurrent_subsystem_dispatches=self.max_concurrent_subsystem_dispatches,
         )
 
 
