@@ -570,6 +570,331 @@ class TestWebPersistence:
         assert r["status"] == "completed", "genuinely completed run must stay completed"
 
 
+class TestRunProgressDurability:
+    """A+B+C regression coverage. The previous behaviour was that
+    ``WorkflowRun.task_log`` and phase metadata lived in memory only
+    until the run terminated; a process restart wiped them. These
+    tests pin down the new behaviour:
+
+    A. ``on_event`` flushes the persisted state on a throttle so the
+       most recent task log / phase metadata survives a hard crash.
+    B. ``_on_shutdown`` (atexit / SIGTERM hook) marks active runs
+       ``interrupted`` and forces a final flush.
+    C. The smart reaper produces a phase-aware error message based on
+       persisted task_log / phase metadata, not the legacy "no
+       worker thread remained" blanket.
+    """
+
+    def test_a_on_event_persists_task_log_immediately_via_throttle(self, monkeypatch, tmp_path):
+        """An event whose accumulated count crosses
+        ``_FLUSH_EVERY_N_EVENTS`` must be on disk before the run
+        terminates. Previously task_log was flushed only at terminal
+        transitions, losing every event in a hard crash."""
+        import json as _json
+
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        _stub_scaffolding(service)
+        project_id = service.create_project("FlushHost", "local")
+        _wait_for_scaffolding(service, project_id)
+
+        # Force the throttle to flush after the very first event so
+        # the test does not depend on real timing.
+        service._FLUSH_EVERY_N_EVENTS = 1
+        # Manually create a WorkflowRun so we can simulate on_event
+        # without needing an actual orchestrator.
+        run_id = "run_flush_test_001"
+        with service._lock:
+            service._runs_by_project.setdefault(project_id, []).append(
+                web_app_module.WorkflowRun(
+                    run_id=run_id,
+                    requirement_text="req",
+                    started_at=datetime.now(timezone.utc),
+                    status="running",
+                )
+            )
+            service._active_workflow_runs.add((project_id, run_id))
+            service._save_state()
+
+        # Replay an event using the same code path as on_event.
+        with service._lock:
+            run = service._find_run(project_id, run_id)
+            run.task_log.append({"type": "task_request", "taskId": "abc"})
+            service._events_since_save += 1
+            service._save_state_throttled(force_phase_event=False)
+
+        # Disk must now contain the event — without the throttle this
+        # would still be in-memory only.
+        state_path = Path("projects/web_state.json")
+        data = _json.loads(state_path.read_text())
+        persisted = data["runs_by_project"][project_id][0]
+        assert persisted["status"] == "running"
+        assert any(e.get("taskId") == "abc" for e in persisted.get("task_log", []))
+
+    def test_a_phase_event_forces_immediate_flush(self, monkeypatch, tmp_path):
+        """phase_plan / phase_start / phase_complete must bypass the
+        throttle entirely. Otherwise an early crash could lose the
+        most recent ``failed_phase_idx`` and the retry UI wouldn't
+        know where to resume from.
+        """
+        import json as _json
+
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        _stub_scaffolding(service)
+        project_id = service.create_project("PhaseHost", "local")
+        _wait_for_scaffolding(service, project_id)
+
+        # Set throttle far in the future so only force_phase_event=True
+        # can produce a flush.
+        service._FLUSH_EVERY_N_EVENTS = 1_000_000
+        service._FLUSH_INTERVAL_SECONDS = 1_000_000.0
+
+        run_id = "run_phase_001"
+        with service._lock:
+            service._runs_by_project.setdefault(project_id, []).append(
+                web_app_module.WorkflowRun(
+                    run_id=run_id,
+                    requirement_text="req",
+                    started_at=datetime.now(timezone.utc),
+                    status="running",
+                )
+            )
+            service._active_workflow_runs.add((project_id, run_id))
+            service._save_state()
+
+        # Update phase metadata + force flush.
+        with service._lock:
+            run = service._find_run(project_id, run_id)
+            run.phase_total = 6
+            run.failed_phase_idx = 2
+            run.failed_phase_name = "implementation"
+            service._save_state_throttled(force_phase_event=True)
+
+        # Disk must reflect the phase metadata.
+        state_path = Path("projects/web_state.json")
+        data = _json.loads(state_path.read_text())
+        persisted = data["runs_by_project"][project_id][0]
+        assert persisted["phase_total"] == 6
+        assert persisted["failed_phase_idx"] == 2
+        assert persisted["failed_phase_name"] == "implementation"
+
+    def test_b_shutdown_marks_active_runs_interrupted(self, monkeypatch, tmp_path):
+        """``_on_shutdown`` (atexit/SIGTERM callback) must:
+        - flag every active run ``status='interrupted'``,
+        - set ``completed_at`` so the UI sees a terminal state,
+        - flush state to disk.
+        """
+        import json as _json
+
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        _stub_scaffolding(service)
+        project_id = service.create_project("ShutdownHost", "local")
+        _wait_for_scaffolding(service, project_id)
+
+        run_id = "run_shutdown_001"
+        with service._lock:
+            service._runs_by_project.setdefault(project_id, []).append(
+                web_app_module.WorkflowRun(
+                    run_id=run_id,
+                    requirement_text="req",
+                    started_at=datetime.now(timezone.utc),
+                    status="running",
+                )
+            )
+            service._active_workflow_runs.add((project_id, run_id))
+            service._save_state()
+
+        # Simulate SIGTERM / atexit firing.
+        service._on_shutdown()
+
+        # Persisted record must have the new ``interrupted`` status.
+        state_path = Path("projects/web_state.json")
+        data = _json.loads(state_path.read_text())
+        persisted = data["runs_by_project"][project_id][0]
+        assert persisted["status"] == "interrupted"
+        assert persisted["completed_at"] is not None
+        assert "shutdown signal" in persisted["error"].lower() or "interrupt" in persisted["error"].lower()
+
+    def test_b_shutdown_is_idempotent(self, monkeypatch, tmp_path):
+        """Two consecutive _on_shutdown calls must not double-mark or
+        raise — this matters because atexit + SIGTERM may both fire
+        in the same process exit sequence."""
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        service._on_shutdown()
+        service._on_shutdown()  # must not raise
+        assert service._shutdown_invoked is True
+
+    def test_c_smart_reaper_emits_phase_aware_message(self, monkeypatch, tmp_path):
+        """When the persisted state shows real progress (task_log
+        events + phase metadata), the smart reaper must emit a
+        message that references the last-known phase, not the legacy
+        blanket message."""
+        import json as _json
+        import time as _time
+
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        _stub_scaffolding(service)
+        project_id = service.create_project("ReaperHost", "local")
+        _wait_for_scaffolding(service, project_id)
+        service.run_requirement(project_id, "req")
+        # Drain the dispatched run's daemon thread so its terminal
+        # write doesn't race with our manual overwrite below.
+        for _ in range(20):
+            with service._lock:
+                runs = service._runs_by_project.get(project_id, [])
+                terminal = runs and runs[-1].status in ("failed", "completed", "interrupted")
+            if terminal:
+                break
+            _time.sleep(0.05)
+        service._on_shutdown()
+
+        # Simulate a hard crash mid-implementation: the persisted
+        # state has phase metadata + a non-empty task_log but
+        # ``status`` is still ``running`` because no graceful
+        # shutdown happened.
+        state_path = Path("projects/web_state.json")
+        data = _json.loads(state_path.read_text())
+        run = data["runs_by_project"][project_id][0]
+        run["status"] = "running"
+        run["completed_at"] = None
+        run["error"] = ""
+        run["phase_total"] = 6
+        run["failed_phase_idx"] = 2
+        run["failed_phase_name"] = "implementation"
+        run["task_log"] = [
+            {"type": "phase_plan", "total": 6},
+            {"type": "phase_start", "phase_idx": 0, "phase_name": "requirements"},
+            {"type": "phase_complete"},
+            {"type": "phase_start", "phase_idx": 1, "phase_name": "architecture"},
+            {"type": "phase_complete"},
+            {"type": "phase_start", "phase_idx": 2, "phase_name": "implementation"},
+            {"type": "task_request", "taskId": "x"},
+        ]
+        state_path.write_text(_json.dumps(data))
+
+        # Reload — reaper should fire a phase-aware message.
+        reloaded = WebProjectService()
+        payload = reloaded.get_project(project_id)
+        r = payload["runs"][0]
+        assert r["status"] == "failed"
+        msg = (r.get("error") or "").lower()
+        # Concrete phase pointer ("3/6" since failed_phase_idx=2 is
+        # 0-indexed) must appear so the user knows where to resume.
+        assert "3/6" in msg or "phase" in msg, f"reaper message lacks phase context: {msg!r}"
+        # Anti-regression: the legacy blanket message no longer
+        # applies when there IS recoverable progress.
+        assert "no worker thread remained" not in msg
+
+    def test_c_interrupted_status_is_recognised_by_reaper(self, monkeypatch, tmp_path):
+        """A run persisted as ``status='interrupted'`` (i.e. produced
+        by _on_shutdown) must be recognised by the reaper and
+        reclassified to ``failed`` with a graceful-shutdown message,
+        NOT treated as a live ``running`` zombie."""
+        import json as _json
+        import time as _time
+
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        _stub_scaffolding(service)
+        project_id = service.create_project("GracefulHost", "local")
+        _wait_for_scaffolding(service, project_id)
+        service.run_requirement(project_id, "req")
+        # Drain the dispatched run's daemon thread so it finishes
+        # writing its terminal state before we manually overwrite the
+        # state file. Without this, the daemon's final flush can
+        # race with our overwrite and clobber the manual edits we
+        # need for the reaper assertion below.
+        for _ in range(20):
+            with service._lock:
+                runs = service._runs_by_project.get(project_id, [])
+                terminal = runs and runs[-1].status in ("failed", "completed", "interrupted")
+            if terminal:
+                break
+            _time.sleep(0.05)
+        # Ensure no further background flush will overwrite our edit.
+        service._on_shutdown()
+
+        state_path = Path("projects/web_state.json")
+        data = _json.loads(state_path.read_text())
+        run = data["runs_by_project"][project_id][0]
+        run["status"] = "interrupted"
+        run["completed_at"] = None
+        run["error"] = ""
+        run["phase_total"] = 4
+        run["failed_phase_idx"] = 1
+        run["task_log"] = [{"type": "phase_start", "phase_idx": 0}]
+        state_path.write_text(_json.dumps(data))
+
+        reloaded = WebProjectService()
+        payload = reloaded.get_project(project_id)
+        r = payload["runs"][0]
+        assert r["status"] == "failed"
+        msg = (r.get("error") or "").lower()
+        # Graceful-shutdown branch wording differs from hard-crash
+        # branch — both still mention the phase.
+        assert "shutdown" in msg or "phase" in msg
+
+    def test_c_zero_progress_run_falls_back_to_simple_retry_message(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        """If a run has truly zero persisted progress (empty
+        task_log, no phase metadata, no trace files) the reaper
+        falls back to the original 'restart the run' message — there
+        is genuinely nothing to resume from. Confirms the new code
+        path doesn't mis-classify true zombies as resumable."""
+        import json as _json
+        import time as _time
+
+        monkeypatch.chdir(tmp_path)
+        service = WebProjectService()
+        _stub_scaffolding(service)
+        project_id = service.create_project("ZeroProgressHost", "local")
+        _wait_for_scaffolding(service, project_id)
+        service.run_requirement(project_id, "req")
+        for _ in range(20):
+            with service._lock:
+                runs = service._runs_by_project.get(project_id, [])
+                terminal = runs and runs[-1].status in ("failed", "completed", "interrupted")
+            if terminal:
+                break
+            _time.sleep(0.05)
+        service._on_shutdown()
+
+        state_path = Path("projects/web_state.json")
+        data = _json.loads(state_path.read_text())
+        run = data["runs_by_project"][project_id][0]
+        run["status"] = "running"
+        run["completed_at"] = None
+        run["error"] = ""
+        run["task_log"] = []
+        run["phase_total"] = 0
+        run["failed_phase_idx"] = -1
+        # Wipe any trace files the test scaffold may have created.
+        info = service.project_manager.get_project(project_id)
+        if info is not None and info.project_root:
+            trace_dir = Path(info.project_root) / "runs" / "trace"
+            if trace_dir.is_dir():
+                for f in trace_dir.iterdir():
+                    if f.is_file():
+                        f.unlink()
+        state_path.write_text(_json.dumps(data))
+
+        reloaded = WebProjectService()
+        payload = reloaded.get_project(project_id)
+        r = payload["runs"][0]
+        assert r["status"] == "failed"
+        msg = (r.get("error") or "").lower()
+        # Zero-progress branch: simple "re-run to retry" — does NOT
+        # promise resume because there is nothing to resume from.
+        assert "re-run" in msg or "no progress" in msg or "no agents" in msg
+
+
 class TestWebTaskStatusInference:
     def test_runtime_running_status_is_not_downgraded_to_pending(self):
         status = WebProjectService._infer_live_task_status(

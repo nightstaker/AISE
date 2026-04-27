@@ -604,6 +604,137 @@ class TestComponentImplementationTask:
         assert "DO NOT modify any source file other than" in text
 
 
+class TestUiAwareSkeletonTask:
+    """Stage-1 skeleton must wire the UI framework's runtime when the
+    architect declared ``ui_required=True`` and the subsystem is the
+    UI layer. Without this, stage 2 component dispatches can satisfy
+    the unit tests with state-recording mocks instead of real
+    rendering — the project_0-tower regression.
+    """
+
+    _UI_CONTRACT = {
+        "language": "python",
+        "framework_frontend": "pygame",
+        "ui_kind": "pygame",
+        "ui_required": True,
+        "run_command": "python src/main.py",
+    }
+    _UI_SUBSYSTEM = {
+        "name": "ui",
+        "src_dir": "src/ui/",
+        "responsibilities": "UI 渲染：游戏画面、HUD、对话、菜单",
+        "components": [
+            {
+                "name": "game_renderer",
+                "file": "src/ui/game_renderer.py",
+                "responsibility": "render the map / characters",
+            },
+            {"name": "hud", "file": "src/ui/hud.py", "responsibility": "HUD overlay"},
+        ],
+    }
+
+    def test_pygame_skeleton_wires_real_runtime(self):
+        text = _build_subsystem_skeleton_task(self._UI_SUBSYSTEM, self._UI_CONTRACT, phase="implementation")
+        # Header explicitly flags this as a UI subsystem so the worker
+        # cannot mistake it for a domain-only component.
+        assert "UI subsystem — framework wiring required" in text
+        assert "UI framework: pygame" in text
+        # Concrete framework binding instructions present, not just
+        # generic "implement the methods" prose.
+        assert "import pygame" in text
+        assert "pygame.init()" in text
+        assert "pygame.display.set_mode" in text
+        # Main loop guidance forbids the no-op ``_running=True;
+        # _running=False`` body that project_0-tower's GameEngine had.
+        assert "FORBIDDEN" in text or "forbidden" in text.lower()
+        # Stage 2 must be forced to use a real framework type.
+        assert "pygame.Surface" in text
+        # Smoke-runnability requirement names the run command so the
+        # worker knows what 'starts' means.
+        assert "python src/main.py" in text
+
+    def test_non_ui_subsystem_keeps_stub_template(self):
+        """data / domain subsystems still get stub-only skeleton."""
+        contract = dict(self._UI_CONTRACT)
+        ss = {
+            "name": "data",
+            "src_dir": "src/data/",
+            "responsibilities": "Persistence layer for save/load",
+            "components": [{"name": "save_system", "file": "src/data/save_system.py", "responsibility": "JSON save"}],
+        }
+        text = _build_subsystem_skeleton_task(ss, contract, phase="implementation")
+        # Plain skeleton-task header (NO 'UI subsystem' marker).
+        assert "UI subsystem — framework wiring required" not in text
+        # Bodies remain stubs.
+        assert "pass" in text or "NotImplementedError" in text
+        # No pygame plumbing leaks into a non-UI subsystem.
+        assert "pygame.init" not in text
+        assert "pygame.display.set_mode" not in text
+
+    def test_ui_disabled_contract_keeps_stub_template_even_for_ui_named_subsystem(self):
+        """ui_required=False ⇒ no framework wiring, regardless of name."""
+        contract = {"language": "python", "framework_frontend": "", "ui_required": False}
+        text = _build_subsystem_skeleton_task(self._UI_SUBSYSTEM, contract, phase="implementation")
+        assert "UI subsystem — framework wiring required" not in text
+        assert "pygame.init" not in text
+
+    def test_unknown_ui_framework_falls_back_to_generic_wiring(self):
+        """An exotic framework still gets the 'import declared
+        framework + main loop required' guidance — not the stub
+        template — so the worker still produces real binding code.
+        """
+        contract = {
+            "language": "python",
+            "framework_frontend": "some_exotic_gui",
+            "ui_kind": "some_exotic_gui",
+            "ui_required": True,
+        }
+        text = _build_subsystem_skeleton_task(self._UI_SUBSYSTEM, contract, phase="implementation")
+        assert "UI subsystem — framework wiring required" in text
+        # No pygame template applied.
+        assert "pygame.init" not in text
+        # The declared name is named so worker imports the right thing.
+        assert "some_exotic_gui" in text
+
+
+class TestUiAwareComponentTask:
+    """Stage-2 per-component task in a UI subsystem must explicitly
+    forbid state-recording mocks and require real framework calls.
+    """
+
+    _UI_CONTRACT = {
+        "language": "python",
+        "framework_frontend": "pygame",
+        "ui_kind": "pygame",
+        "ui_required": True,
+    }
+    _UI_SUBSYSTEM = {
+        "name": "ui",
+        "src_dir": "src/ui/",
+        "responsibilities": "UI 渲染层",
+    }
+
+    def test_ui_component_task_forbids_state_recording_mocks(self):
+        comp = {"name": "hud", "file": "src/ui/hud.py", "responsibility": "HUD overlay"}
+        text = _build_component_implementation_task(self._UI_SUBSYSTEM, comp, self._UI_CONTRACT, phase="implementation")
+        # Anchor on a unique sentence from the new UI block.
+        assert "UI subsystem rule" in text
+        # Project_0-tower regression — the literal mock pattern that
+        # produced the failure must be called out.
+        assert "self.last_action" in text or "state-recording" in text.lower()
+        assert "FORBIDDEN" in text or "forbidden" in text.lower()
+        # Surface type appears so worker knows what to call APIs against.
+        assert "pygame.Surface" in text or "surface.blit" in text
+
+    def test_non_ui_component_task_unchanged(self):
+        contract = {"language": "python", "ui_required": False}
+        ss = {"name": "data", "src_dir": "src/data/", "responsibilities": "save / load"}
+        comp = {"name": "save_system", "file": "src/data/save_system.py", "responsibility": "save"}
+        text = _build_component_implementation_task(ss, comp, contract, phase="implementation")
+        assert "UI subsystem rule" not in text
+        assert "self.last_action" not in text
+
+
 class TestInterfaceModulePath:
     def test_python_default_is_init_py(self):
         assert _interface_module_path("python", "ui", "src/ui/") == "src/ui/__init__.py"
