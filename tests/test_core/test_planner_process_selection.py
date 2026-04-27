@@ -101,7 +101,6 @@ class TestProcessMdAdapter:
         # Should include deep workflows
         assert "deep_product_workflow" in descriptor.supersedes
         assert "deep_architecture_workflow" in descriptor.supersedes
-        assert "deep_developer_workflow" in descriptor.supersedes
         # Should also include atomic skills
         assert "requirement_analysis" in descriptor.supersedes
         assert "architecture_design" in descriptor.supersedes

@@ -2,7 +2,7 @@
 
 Machine-readable registry of all skills in the AISE multi-agent system. This file serves as the single source of truth for skill discovery, routing, and dependency resolution.
 
-> Note: The Skill Index is the complete runtime registry (36 skills) and is kept consistent with code via automated validation. Later sections focus on the core delivery workflow and may summarize a subset of skills.
+> Note: The Skill Index is the complete runtime registry (31 skills) and is kept consistent with code via automated validation. Later sections focus on the core delivery workflow and may summarize a subset of skills.
 
 ## Skill Index
 
@@ -17,7 +17,6 @@ Machine-readable registry of all skills in the AISE multi-agent system. This fil
 | SK-07 | `tech_stack_selection` | architect | design | `TechStackSelectionSkill` | `aise.skills.tech_stack_selection` |
 | SK-08 | `architecture_review` | architect | design | `ArchitectureReviewSkill` | `aise.skills.architecture_review` |
 | SK-09 | `code_generation` | developer | implementation | `CodeGenerationSkill` | `aise.skills.code_generation` |
-| SK-10 | `unit_test_writing` | developer | implementation | `UnitTestWritingSkill` | `aise.skills.unit_test_writing` |
 | SK-11 | `code_review` | developer, reviewer | implementation | `CodeReviewSkill` | `aise.skills.code_review` |
 | SK-12 | `bug_fix` | developer | implementation | `BugFixSkill` | `aise.skills.bug_fix` |
 | SK-13 | `test_plan_design` | qa_engineer | testing | `TestPlanDesignSkill` | `aise.skills.test_plan_design` |
@@ -26,8 +25,6 @@ Machine-readable registry of all skills in the AISE multi-agent system. This fil
 | SK-16 | `test_review` | qa_engineer | testing | `TestReviewSkill` | `aise.skills.test_review` |
 | SK-17 | `conflict_resolution` | project_manager | cross-cutting | `ConflictResolutionSkill` | `aise.skills.conflict_resolution` |
 | SK-18 | `progress_tracking` | project_manager | cross-cutting | `ProgressTrackingSkill` | `aise.skills.progress_tracking` |
-| SK-19 | `version_release` | project_manager | cross-cutting | `VersionReleaseSkill` | `aise.skills.version_release` |
-| SK-20 | `team_health` | project_manager | cross-cutting | `TeamHealthSkill` | `aise.skills.team_health` |
 | SK-21 | `team_formation` | rd_director | setup | `TeamFormationSkill` | `aise.skills.team_formation` |
 | SK-22 | `requirement_distribution` | rd_director | setup | `RequirementDistributionSkill` | `aise.skills.requirement_distribution` |
 | SK-23 | `system_feature_analysis` | product_manager | requirements | `SystemFeatureAnalysisSkill` | `aise.skills.system_feature_analysis` |
@@ -39,8 +36,6 @@ Machine-readable registry of all skills in the AISE multi-agent system. This fil
 | SK-29 | `document_generation` | product_manager | requirements | `DocumentGenerationSkill` | `aise.skills.document_generation` |
 | SK-30 | `deep_product_workflow` | product_manager | requirements | `DeepProductWorkflowSkill` | `aise.skills.deep_product_workflow` |
 | SK-31 | `deep_architecture_workflow` | architect | design | `DeepArchitectureWorkflowSkill` | `aise.skills.deep_architecture_workflow` |
-| SK-32 | `deep_developer_workflow` | developer | implementation | `DeepDeveloperWorkflowSkill` | `aise.skills.deep_developer_workflow` |
-| SK-33 | `tdd_session` | developer | implementation | `TDDSessionSkill` | `aise.skills.tdd_session` |
 | SK-34 | `pr_submission` | product_manager | cross-cutting | `PRSubmissionSkill` | `aise.skills.pr_submission` |
 | SK-35 | `pr_review` | architect, developer, product_manager, project_manager, qa_engineer, reviewer | cross-cutting | `PRReviewSkill` | `aise.skills.pr_review` |
 | SK-36 | `pr_merge` | product_manager, project_manager, reviewer | cross-cutting | `PRMergeSkill` | `aise.skills.pr_merge` |
@@ -55,14 +50,13 @@ Machine-readable registry of all skills in the AISE multi-agent system. This fil
 | `ARCHITECTURE_DESIGN` | `architecture_design` | system_design | api_design, tech_stack_selection, architecture_review, code_generation, test_plan_design, test_case_design |
 | `API_CONTRACT` | `api_contract` | api_design | architecture_review, code_generation, test_plan_design, test_case_design, test_review |
 | `TECH_STACK` | `tech_stack` | tech_stack_selection | architecture_review, code_generation, test_automation |
-| `SOURCE_CODE` | `source_code` | code_generation | unit_test_writing, code_review, bug_fix, architecture_review |
-| `UNIT_TESTS` | `unit_tests` | unit_test_writing | code_review, test_review |
+| `SOURCE_CODE` | `source_code` | code_generation | code_review, bug_fix, architecture_review |
 | `REVIEW_FEEDBACK` | `review_feedback` | product_review, architecture_review, code_review, test_review, conflict_resolution | orchestrator |
 | `TEST_PLAN` | `test_plan` | test_plan_design | test_review |
 | `TEST_CASES` | `test_cases` | test_case_design | test_automation, test_review |
 | `AUTOMATED_TESTS` | `automated_tests` | test_automation | test_review |
 | `BUG_REPORT` | `bug_report` | bug_fix | — |
-| `PROGRESS_REPORT` | `progress_report` | progress_tracking, version_release, team_health, team_formation | — |
+| `PROGRESS_REPORT` | `progress_report` | progress_tracking, team_formation | — |
 
 ## Dependency Graph
 
@@ -81,19 +75,16 @@ requirement_analysis          (no dependencies — delivery entry point)
   │     └─► tech_stack_selection (requires: REQUIREMENTS, ARCHITECTURE_DESIGN)
   │           └─► architecture_review (requires: ARCHITECTURE_DESIGN, API_CONTRACT, TECH_STACK) [review gate]
   └─► code_generation         (requires: ARCHITECTURE_DESIGN, API_CONTRACT, TECH_STACK)
-        ├─► unit_test_writing (requires: SOURCE_CODE)
-        │     └─► code_review (requires: SOURCE_CODE, UNIT_TESTS) [review gate]
+        ├─► code_review       (requires: SOURCE_CODE) [review gate]
         └─► bug_fix           (requires: SOURCE_CODE) [on-demand]
 
 test_plan_design              (requires: ARCHITECTURE_DESIGN, API_CONTRACT)
   └─► test_case_design        (requires: ARCHITECTURE_DESIGN, API_CONTRACT)
         └─► test_automation   (requires: TEST_CASES, TECH_STACK)
-              └─► test_review (requires: TEST_PLAN, TEST_CASES, AUTOMATED_TESTS, API_CONTRACT, UNIT_TESTS) [review gate]
+              └─► test_review (requires: TEST_PLAN, TEST_CASES, AUTOMATED_TESTS, API_CONTRACT) [review gate]
 
 conflict_resolution           (requires: REQUIREMENTS — on-demand, project_manager)
 progress_tracking             (reads all artifact types — on-demand, project_manager)
-version_release               (requires: REQUIREMENTS, ARCHITECTURE_DESIGN, SOURCE_CODE, UNIT_TESTS — on-demand, project_manager)
-team_health                   (cross-cutting, no hard dependencies — project_manager)
 ```
 
 ## Workflow Phases
@@ -124,9 +115,8 @@ team_health                   (cross-cutting, no hard dependencies — project_m
 | Order | Skill | Review Gate |
 |-------|-------|-------------|
 | 1 | `code_generation` | — |
-| 2 | `unit_test_writing` | — |
-| 3 | `code_review` | Validates SOURCE_CODE quality |
-| 4 | `bug_fix` | On-demand loop |
+| 2 | `code_review` | Validates SOURCE_CODE quality |
+| 3 | `bug_fix` | On-demand loop |
 
 ### Phase 4: Testing
 | Order | Skill | Review Gate |
@@ -198,19 +188,12 @@ team_health                   (cross-cutting, no hard dependencies — project_m
 - **Supports:** Python/FastAPI, Go/Gin
 - **Dependencies:** system_design, api_design, tech_stack_selection
 
-### SK-10: unit_test_writing
-
-- **Input:** `{}` — reads SOURCE_CODE from artifact store
-- **Output artifact:** `UNIT_TESTS` — test suites per module
-- **Dependencies:** code_generation
-
 ### SK-11: code_review
 
-- **Input:** `{}` — reads SOURCE_CODE, UNIT_TESTS from artifact store
-- **Output artifact:** `REVIEW_FEEDBACK` — code quality review results
+- **Input:** `{}` — reads SOURCE_CODE from artifact store
+- **Output artifact:** `REVIEW_FEEDBACK` — unified code-quality review (correctness, security audit, performance, maintainability, test coverage of critical paths)
 - **Review gate:** Sets SOURCE_CODE status to APPROVED or REJECTED
-- **Checks:** security, style, test coverage
-- **Dependencies:** code_generation, unit_test_writing
+- **Dependencies:** code_generation
 
 ### SK-12: bug_fix
 
@@ -239,7 +222,7 @@ team_health                   (cross-cutting, no hard dependencies — project_m
 
 ### SK-16: test_review
 
-- **Input:** `{}` — reads TEST_PLAN, TEST_CASES, AUTOMATED_TESTS, API_CONTRACT, UNIT_TESTS from artifact store
+- **Input:** `{}` — reads TEST_PLAN, TEST_CASES, AUTOMATED_TESTS, API_CONTRACT from artifact store
 - **Output artifact:** `REVIEW_FEEDBACK` — test quality review with coverage metrics
 - **Review gate:** Sets AUTOMATED_TESTS status to APPROVED or REJECTED
 - **Thresholds:** endpoint coverage ≥70%, automation rate ≥60%
@@ -258,24 +241,6 @@ team_health                   (cross-cutting, no hard dependencies — project_m
 - **Output artifact:** `PROGRESS_REPORT` — phase completion and artifact status report
 - **Metrics:** per-phase completion %, overall progress, review feedback summary
 - **Dependencies:** none (reads whatever is available)
-
-### SK-19: version_release
-
-- **Input:** `{ "version": str, "release_notes": str (optional), "release_type": str (optional) }`
-- **Output artifact:** `PROGRESS_REPORT` — release record with readiness checks and blockers
-- **Readiness checks:** REQUIREMENTS, ARCHITECTURE_DESIGN, SOURCE_CODE, UNIT_TESTS must all exist
-- **Validation:** `version` is required
-- **Trigger:** On-demand (project_manager calls when ready to cut a release)
-- **Dependencies:** requires core delivery artifacts to be present
-
-### SK-20: team_health
-
-- **Input:** `{ "agent_statuses": dict (optional), "blocked_tasks": [str] (optional), "overdue_tasks": [str] (optional) }`
-- **Output artifact:** `PROGRESS_REPORT` — health score, risk factors, and recommendations
-- **Health score:** 100 − (blocked_tasks × 10) − (overdue_tasks × 5), capped at 0
-- **Status thresholds:** healthy ≥ 70, at_risk ≥ 40, critical < 40
-- **Trigger:** On-demand or periodic (project_manager)
-- **Dependencies:** none (reads artifact store for context)
 
 ### SK-21: team_formation
 
@@ -310,7 +275,6 @@ Given a task description, use these rules to select the correct agent and skill:
 | Select technology stack | architect | tech_stack_selection |
 | Validate architecture completeness | architect | architecture_review |
 | Generate source code from design | developer | code_generation |
-| Write unit tests for code | developer | unit_test_writing |
 | Review code quality | developer | code_review |
 | Fix bugs from reports or failing tests | developer | bug_fix |
 | Create test plan with strategy | qa_engineer | test_plan_design |
@@ -319,8 +283,6 @@ Given a task description, use these rules to select the correct agent and skill:
 | Review test coverage and quality | qa_engineer | test_review |
 | Resolve inter-agent conflicts | project_manager | conflict_resolution |
 | Report project progress | project_manager | progress_tracking |
-| Cut a version release | project_manager | version_release |
-| Assess team health and flag risks | project_manager | team_health |
 
 ## Review Gates Summary
 
@@ -328,9 +290,8 @@ Given a task description, use these rules to select the correct agent and skill:
 |-------|----------|-------|-----------------|-------------------|----------------|---------------------|
 | requirements | product_manager | product_review | PRD | 1 | 3 | No |
 | design | architect | architecture_review | ARCHITECTURE_DESIGN | 3 | 3 | No |
-| implementation | developer | code_review | SOURCE_CODE | 3 | 3 | Yes |
+| implementation | developer | code_review | SOURCE_CODE | 3 | 3 | No |
 | testing | qa_engineer | test_review | AUTOMATED_TESTS | 1 | 3 | No |
 
 **Notes:**
 - **Min Review Rounds**: The minimum number of review iterations that must occur between the design/implementation work and the review gate approval. Design and Implementation phases require at least 3 rounds.
-- **Requires Tests Pass**: When set, all unit tests must pass before the review gate is reached. This ensures no PR is submitted with failing tests.

@@ -24,7 +24,6 @@ class TestQAEngineerAgent:
         arch.execute_skill("api_design", {})
         arch.execute_skill("tech_stack_selection", {})
         dev.execute_skill("code_generation", {})
-        dev.execute_skill("unit_test_writing", {})
 
         return qa, store
 

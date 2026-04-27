@@ -11,7 +11,6 @@ from .main import (
     create_team,
     run_project,
     start_web_app,
-    start_whatsapp_session,
 )
 
 __all__ = [
@@ -21,5 +20,4 @@ __all__ = [
     "create_team",
     "run_project",
     "start_web_app",
-    "start_whatsapp_session",
 ]

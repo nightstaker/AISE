@@ -10,10 +10,7 @@ from ..skills import (
     BugFixSkill,
     CodeGenerationSkill,
     CodeReviewSkill,
-    DeepDeveloperWorkflowSkill,
     PRReviewSkill,
-    TDDSessionSkill,
-    UnitTestWritingSkill,
 )
 
 
@@ -33,10 +30,7 @@ class DeveloperAgent(Agent):
             artifact_store=artifact_store,
             model_config=model_config,
         )
-        self.register_skill(DeepDeveloperWorkflowSkill())
         self.register_skill(CodeGenerationSkill())
-        self.register_skill(UnitTestWritingSkill())
         self.register_skill(CodeReviewSkill())
         self.register_skill(BugFixSkill())
-        self.register_skill(TDDSessionSkill())
         self.register_skill(PRReviewSkill(agent_role=AgentRole.DEVELOPER))

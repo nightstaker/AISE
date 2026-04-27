@@ -40,10 +40,6 @@ def process_to_descriptor(process: ProcessDefinition, registry: "ProcessRegistry
             included_process_ids.append("deep_product_workflow")
         elif any(kw in step_name_lower or kw in step_id_lower for kw in ["design", "architecture", "subsystem"]):
             included_process_ids.append("deep_architecture_workflow")
-        elif any(kw in step_name_lower or kw in step_id_lower for kw in ["implementation", "coding", "execution"]):
-            included_process_ids.append("deep_developer_workflow")
-        elif any(kw in step_name_lower or kw in step_id_lower for kw in ["test", "verification", "review"]):
-            included_process_ids.append("deep_testing_workflow")
 
     # Remove duplicates while preserving order
     seen: set[str] = set()
@@ -77,8 +73,6 @@ def process_to_descriptor(process: ProcessDefinition, registry: "ProcessRegistry
                 "subsystem_architecture_review",
             ]
         )
-    if "deep_developer_workflow" in unique_included:
-        supersedes.extend(["code_generation", "code_review", "tdd_session", "test_case_design"])
 
     descriptor = ProcessDescriptor(
         id=f"md_process_{process.process_id}",

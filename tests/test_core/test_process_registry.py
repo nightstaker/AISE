@@ -299,6 +299,5 @@ class TestProcessRegistry:
         assert registry.get("requirement_analysis") is not None
         assert registry.get("deep_product_workflow") is not None
         assert registry.get("deep_architecture_workflow") is not None
-        assert registry.get("deep_developer_workflow") is not None
         assert registry.get("code_generation") is not None
-        assert len(registry.all()) >= 30  # We have 36 skills
+        assert len(registry.all()) >= 25

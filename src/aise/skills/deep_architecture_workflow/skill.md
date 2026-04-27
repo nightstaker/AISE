@@ -82,7 +82,6 @@ Fallback behavior:
 - `system_requirement_analysis` (optional)
 
 ### Consumed By
-- `deep_developer_workflow`
 - `architecture_document_generation`
 - `status_tracking`
 - `functional_design`

@@ -101,22 +101,6 @@ class GitHubConfig:
 
 
 @dataclass
-class WhatsAppConfig:
-    """Configuration for WhatsApp Business API integration."""
-
-    phone_number_id: str = ""
-    access_token: str = ""
-    verify_token: str = ""
-    business_account_id: str = ""
-    webhook_port: int = 8080
-    webhook_path: str = "/webhook"
-
-    @property
-    def is_configured(self) -> bool:
-        return bool(self.phone_number_id and self.access_token)
-
-
-@dataclass
 class SessionConfig:
     """Configuration for concurrent development sessions."""
 
@@ -183,7 +167,6 @@ class ProjectConfig:
     session: SessionConfig = field(default_factory=SessionConfig)
     workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
-    whatsapp: WhatsAppConfig = field(default_factory=WhatsAppConfig)
     github: GitHubConfig = field(default_factory=GitHubConfig)
 
     @property
@@ -536,14 +519,6 @@ class ProjectConfig:
                 "json_format": self.logging.json_format,
                 "rotate_daily": self.logging.rotate_daily,
             },
-            "whatsapp": {
-                "phone_number_id": self.whatsapp.phone_number_id,
-                "access_token": self.whatsapp.access_token,
-                "verify_token": self.whatsapp.verify_token,
-                "business_account_id": self.whatsapp.business_account_id,
-                "webhook_port": self.whatsapp.webhook_port,
-                "webhook_path": self.whatsapp.webhook_path,
-            },
             "github": {
                 "token": self.github.token,
                 "repo_owner": self.github.repo_owner,
@@ -771,17 +746,6 @@ class ProjectConfig:
                 log_dir=str(logging_data.get("log_dir", config.logging.log_dir)),
                 json_format=bool(logging_data.get("json_format", config.logging.json_format)),
                 rotate_daily=bool(logging_data.get("rotate_daily", config.logging.rotate_daily)),
-            )
-
-        whatsapp_data = data.get("whatsapp", {})
-        if isinstance(whatsapp_data, dict):
-            config.whatsapp = WhatsAppConfig(
-                phone_number_id=str(whatsapp_data.get("phone_number_id", config.whatsapp.phone_number_id)),
-                access_token=str(whatsapp_data.get("access_token", config.whatsapp.access_token)),
-                verify_token=str(whatsapp_data.get("verify_token", config.whatsapp.verify_token)),
-                business_account_id=str(whatsapp_data.get("business_account_id", config.whatsapp.business_account_id)),
-                webhook_port=int(whatsapp_data.get("webhook_port", config.whatsapp.webhook_port)),
-                webhook_path=str(whatsapp_data.get("webhook_path", config.whatsapp.webhook_path)),
             )
 
         github_data = data.get("github", {})
