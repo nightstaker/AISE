@@ -64,7 +64,7 @@ class SandboxFilesystemBackend(FilesystemBackend, SandboxBackendProtocol):
     with ``cwd`` set to the project root. No allowlist is enforced here;
     the worker agent is already sandboxed by its project_root and the
     rest of its restricted tool surface. Orchestrator-level dispatches
-    still use the separate ``execute_shell`` tool from ``tool_primitives``
+    still use the separate ``execute_shell`` tool from ``aise.tools.shell``
     (which *does* have an allowlist).
     """
 

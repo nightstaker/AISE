@@ -1206,7 +1206,7 @@ class TestAIFirstScaffolding:
         service._dispatch_scaffolding_to_pm = lambda project, prompt: None  # type: ignore[method-assign]
 
         # Force every repair attempt to blow up.
-        from aise.runtime import safety_net as _sn
+        from aise import safety_net as _sn
 
         def _boom(project_root, ctx):  # noqa: ARG001
             raise RuntimeError("simulated repair failure")
@@ -1241,7 +1241,7 @@ class TestAIFirstScaffolding:
         monkeypatch.chdir(tmp_path)
         service = WebProjectService()
         service._dispatch_scaffolding_to_pm = lambda project, prompt: None  # type: ignore[method-assign]
-        from aise.runtime import safety_net as _sn
+        from aise import safety_net as _sn
 
         def _boom(project_root, ctx):  # noqa: ARG001
             raise RuntimeError("simulated repair failure")

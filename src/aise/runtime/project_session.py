@@ -9,7 +9,7 @@ Drives a project from a raw requirement to delivery using only:
 Nothing in this file knows what TDD is, what an "implementation phase"
 looks like, or which agent plays which role — that knowledge lives in
 the data files. Code only walks the structures it parses out of those
-files and exposes generic primitives via :mod:`tool_primitives`.
+files and exposes generic primitives via :mod:`aise.tools`.
 
 Public surface (kept stable so existing tests/web code continue to work):
 
@@ -28,10 +28,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..tools import ToolContext, WorkflowState, build_orchestrator_tools
 from ..utils.logging import get_logger
 from .llm_factory import build_llm as _factory_build_llm
 from .runtime_config import LLMDefaults, RuntimeConfig
-from .tool_primitives import ToolContext, WorkflowState, build_orchestrator_tools
 
 logger = get_logger(__name__)
 
@@ -141,7 +141,7 @@ class ProjectSession:
         self._requirement = requirement
         # Make the raw requirement visible to every dispatch so workers
         # can read it directly and mirror the user's natural language
-        # in any docs/*.md they write (see tool_primitives.dispatch_task
+        # in any docs/*.md they write (see tools.dispatch.dispatch_task
         # for the prefix format, and architect.md / product_manager.md /
         # qa_engineer.md "Document Language" sections for the rule).
         self._ctx.original_requirement = requirement

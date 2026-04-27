@@ -401,7 +401,7 @@ class WebProjectService:
         # telemetry event at ``<project_root>/trace/safety_net_events.jsonl``
         # so the dashboard (issue #122) can surface LLM-capability
         # trends over time.
-        from ..runtime.safety_net import run_post_step_check, scaffolding_expectations
+        from ..safety_net import run_post_step_check, scaffolding_expectations
 
         root = Path(project.project_root or "")
         outcome = run_post_step_check(

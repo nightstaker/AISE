@@ -42,8 +42,8 @@ import json
 import logging
 from pathlib import Path
 
-from aise.runtime.safety_net import _stack_contract_valid
-from aise.runtime.tool_primitives import _load_stack_contract_block
+from aise.safety_net import _stack_contract_valid
+from aise.tools.stack_contract import _load_stack_contract_block
 
 # ---------------------------------------------------------------------------
 # 1. Loader — new schema rendering
@@ -264,7 +264,7 @@ class TestStackContractValidator:
                 }
             )
         p = _write_contract(tmp_path, many)
-        with caplog.at_level(logging.WARNING, logger="aise.runtime.safety_net"):
+        with caplog.at_level(logging.WARNING, logger="aise.safety_net"):
             ok = _stack_contract_valid(p)
         assert ok is True
         assert any("exceeds soft cap" in r.message for r in caplog.records)
@@ -273,7 +273,7 @@ class TestStackContractValidator:
         partial = _valid_payload()
         partial["subsystems"][1]["components"] = []
         p = _write_contract(tmp_path, partial)
-        with caplog.at_level(logging.WARNING, logger="aise.runtime.safety_net"):
+        with caplog.at_level(logging.WARNING, logger="aise.safety_net"):
             ok = _stack_contract_valid(p)
         assert ok is True
         assert any("zero components" in r.message for r in caplog.records)
@@ -364,16 +364,17 @@ class TestPhase3DispatchesPerSubsystem:
             or 'dispatch_subsystems(phase=\\"sprint_execution\\")' in text
         )
 
-    def test_dispatch_subsystems_primitive_exists_in_tool_primitives(self):
+    def test_dispatch_subsystems_primitive_exists_in_tools_package(self):
         repo_root = Path(__file__).resolve().parents[2]
-        tp_text = (repo_root / "src/aise/runtime/tool_primitives.py").read_text(encoding="utf-8")
+        dispatch_text = (repo_root / "src/aise/tools/dispatch.py").read_text(encoding="utf-8")
+        td_text = (repo_root / "src/aise/tools/task_descriptions.py").read_text(encoding="utf-8")
         # The primitive itself
-        assert "def dispatch_subsystems(" in tp_text
+        assert "def dispatch_subsystems(" in dispatch_text
         # The deterministic task-description renderer (architecture
         # of fix: LLM does not draft tasks_json; Python builds it
         # from the contract).
-        assert "def _build_subsystem_task_description(" in tp_text
+        assert "def _build_subsystem_task_description(" in td_text
         # Throttle pulled from runtime config — anti-regression
         # against an unbounded ThreadPoolExecutor that would saturate
         # the LLM serving layer with N concurrent dispatches.
-        assert "max_concurrent_subsystem_dispatches" in tp_text
+        assert "max_concurrent_subsystem_dispatches" in dispatch_text

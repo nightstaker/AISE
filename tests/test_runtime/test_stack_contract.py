@@ -31,7 +31,7 @@ from unittest.mock import MagicMock
 
 from aise.runtime.models import AgentState
 from aise.runtime.runtime_config import RuntimeConfig
-from aise.runtime.safety_net import (
+from aise.safety_net import (
     REPAIR_ACTIONS,
     ExpectedArtifact,
     _artifact_present,
@@ -39,12 +39,12 @@ from aise.runtime.safety_net import (
     qa_expectations,
     scaffolding_expectations,
 )
-from aise.runtime.tool_primitives import (
+from aise.tools import (
     ToolContext,
     WorkflowState,
-    _load_stack_contract_block,
     build_orchestrator_tools,
 )
+from aise.tools.stack_contract import _load_stack_contract_block
 
 # ---------------------------------------------------------------------------
 # 1. Contract loader
