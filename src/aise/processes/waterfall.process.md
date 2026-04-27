@@ -5,7 +5,15 @@ work_type: structured_development
 keywords: waterfall, sequential, design-first, documentation, milestone
 summary: A linear and sequential approach to software development where each phase must be completed before the next begins. Default choice for most structured projects.
 caps:
-  max_dispatches: 30
+  # ``max_dispatches`` is the upper bound; the runtime auto-scales
+  # the *floor* per project as
+  # ``Σ(1 + len(components)) + DISPATCH_FLOOR_BUFFER``
+  # (see ``src/aise/runtime/runtime_config.py`` and
+  # ``ProjectSession._auto_scale_dispatch_floor``), so a 5-subsystem /
+  # 32-component project gets ~50–60 dispatches of headroom, well
+  # under this 128 cap. Bumping this higher only matters for very
+  # large projects (≥ 8 subsystems with deep component trees).
+  max_dispatches: 128
   max_continuations: 15
 terminal_step: deliver_report
 required_phases:
@@ -42,24 +50,35 @@ required_phases:
 - deliverables: docs/architecture.md
 
 ### phase_3_implementation: Implementation
-#### step_implement_modules: Per-Module TDD Implementation
+#### step_implement_modules: Subsystem Fan-Out Implementation
 - agents: developer
 - description: |
-    IMPORTANT: The orchestrator must dispatch the developer ONCE PER MODULE,
-    not once for all modules. Read docs/architecture.md to identify the list
-    of modules, then for each module:
-      1. dispatch_task(developer, "Implement module <name>: write tests/test_<name>.py then src/<name>.py.
-         This module depends on: <list imports from other modules if any>.")
-      2. After the dispatch returns, run the verification_command
-      3. If verification fails, re-dispatch with the pytest output
-      4. Move to the next module only after the current one passes
+    The orchestrator MUST issue exactly ONE tool call here:
 
-    Dispatch ORDER matters: implement base/data modules first (no dependencies),
-    then modules that depend on them. Include dependency info in each task description
-    so the developer knows what to import.
+      dispatch_subsystems(phase="implementation")
 
-    Each dispatch should produce exactly 2 files: one test file and one source file.
-    This keeps each agent invocation small and focused.
+    The runtime reads docs/stack_contract.json (produced by the
+    architect in phase 2) and fans out in two stages:
+
+      Stage 1 — skeleton: one dispatch per subsystem, producing
+      public API signatures + barrel files (no logic, no tests).
+      Skeletons across subsystems run in parallel, throttled by
+      safety_limits.max_concurrent_subsystem_dispatches.
+
+      Stage 2 — components: one dispatch per
+      subsystems[].components[] entry, each producing exactly the
+      (source, test) file pair declared in the contract. Components
+      across the entire project are eligible to run in parallel as
+      soon as their parent subsystem's skeleton completes.
+
+    Do NOT call dispatch_task or dispatch_tasks_parallel for
+    per-module implementation here — the runtime owns the fan-out
+    decision because the orchestrator LLM cannot reliably emit N
+    parallel tool_calls in one inference, which serialised the old
+    flow into N sequential ReAct cycles.
+
+    On return, the verification_command runs once over the whole
+    src/ + tests/ tree.
 - deliverables: src/, tests/
 - verification_command: python -m pytest tests/ -q --tb=short
 - on_failure: retry_with_output
@@ -68,14 +87,22 @@ required_phases:
 #### step_integrate_main: Main Entry Point
 - agents: developer
 - description: |
-    After all modules are implemented, dispatch the developer ONE MORE TIME to write
-    the main entry point that wires all modules together:
-      dispatch_task(developer, "Write src/main.py — the main entry point that imports
-      and initializes all modules (<list the implemented modules>), and provides a
-      runnable application. Also write tests/test_main.py to verify the integration.")
+    After dispatch_subsystems completes, dispatch the developer
+    once more to wire the runnable entry point:
 
-    This step ensures the system is runnable as a whole, not just isolated modules.
-- deliverables: src/main.py, tests/test_main.py
+      dispatch_task(developer, "Write the main entry file declared
+      at docs/stack_contract.json#/entry_point — import and
+      initialise every subsystem from src/, and provide a runnable
+      application using the framework recorded in
+      stack_contract.json#/framework_backend (or framework_frontend
+      for UI projects). Also add the integration test that boots
+      the entry point end-to-end.")
+
+    This is a single dispatch_task — the entry point is one file
+    pair, not a fan-out. The runtime exercises the chosen stack at
+    boot time, which is what guarantees the framework choice is
+    real and not just declared in prose.
+- deliverables: src/main.<ext>, tests/test_main.<ext>
 - verification_command: python -m pytest tests/ -q --tb=short
 - on_failure: retry_with_output
 - max_retries: 2

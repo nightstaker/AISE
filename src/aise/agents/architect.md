@@ -119,13 +119,16 @@ own — if you don't lay down the skeleton, nobody will.
   - Soft cap: aim for ≤ 10 subsystems for typical projects. If you
     exceed it, you are likely flat-listing components again.
 
-  This file is read by `dispatch_task` to prepend a `STACK
-  CONTRACT` block to every worker prompt; by qa_engineer to drive
-  UI Validation; by Phase 6 to interpret QA's metrics. **If you
-  skip this file or produce a flat-list schema, the entire
-  downstream pipeline falls back to language-detection-by-LLM,
-  which is what produced project_7-tower's three-stacks-coexist
-  AND 24-flat-directories failure modes.**
+  This file is read directly by `dispatch_subsystems` to fan
+  phase-3 out into one skeleton task + one task per component
+  (using the `subsystems[].components[]` tree as the unit of
+  parallelism); by qa_engineer to drive UI Validation; by
+  Phase 6 to interpret QA's metrics. **If you skip this file or
+  produce a flat-list schema, `dispatch_subsystems` returns a
+  failure result and the entire downstream pipeline falls back
+  to language-detection-by-LLM, which is what produced
+  project_7-tower's three-stacks-coexist AND 24-flat-directories
+  failure modes.**
 
 - **Subsystem directories — MANDATORY (one directory per *subsystem*,
   NOT one directory per component).** A "subsystem" is the unit of
