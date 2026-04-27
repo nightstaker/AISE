@@ -17,6 +17,7 @@ allowed_tools:
   - get_process
   - list_agents
   - dispatch_task
+  - dispatch_subsystems
   - dispatch_tasks_parallel
   - execute_shell
   - mark_complete
@@ -41,8 +42,9 @@ Your job is to compose these primitives in the order described by the process yo
 | `list_processes()` | Discover available process definitions |
 | `get_process(file)` | Read a process definition (phases, steps, deliverables, verification commands) |
 | `list_agents()` | Discover available agents and their cards |
-| `dispatch_task(agent_name, task_description, step_id, phase)` | Send work to an agent |
-| `dispatch_tasks_parallel(tasks_json)` | Send independent tasks concurrently |
+| `dispatch_task(agent_name, task_description, step_id, phase)` | Send work to an agent (sequential, one dispatch). Use for PM/architect/QA phases and for any single-shot worker call. |
+| `dispatch_subsystems(phase, agent_name)` | Deterministic two-stage fan-out for the implementation phase: reads `docs/stack_contract.json`, dispatches one skeleton task per subsystem, then one component task per `components[]` entry, throttled by `safety_limits.max_concurrent_subsystem_dispatches`. **The orchestrator emits a SINGLE call** — the runtime handles every per-subsystem and per-component dispatch internally. |
+| `dispatch_tasks_parallel(tasks_json)` | Legacy fallback. Send independent tasks concurrently when `dispatch_subsystems` cannot be used (e.g. ad-hoc parallelism that does not derive from the architecture). Do NOT use this to manually fan implementation out per module — use `dispatch_subsystems` instead. |
 | `execute_shell(command, cwd, timeout)` | Run an allowlisted command (e.g. the verification_command from a process step) |
 | `mark_complete(report)` | Signal that the workflow is finished and provide the final delivery report |
 | `write_file(path, content)` | Write your own outputs (plans, reports) — paths constrained by your output_layout |
@@ -61,24 +63,42 @@ Your job is to compose these primitives in the order described by the process yo
    - If the verification command fails AND the step declares `on_failure: retry_with_output` with `max_retries > 0`, dispatch the same agent again with the captured stdout/stderr attached as feedback. Retry up to `max_retries` times.
    - Steps within the same phase that have no inter-dependency may be run in parallel via `dispatch_tasks_parallel`.
 
-   **CRITICAL — Per-Module Dispatch for Implementation:**
-   When the process step says "dispatch once per module", you MUST:
-   1. Read `docs/architecture.md` YOURSELF to identify all modules and their dependencies
-   2. Group modules into layers by dependency:
-      - **Layer 1**: Base modules with NO dependencies on other project modules
-      - **Layer 2**: Modules that depend on Layer 1
-      - **Layer 3**: Integration/engine modules that depend on Layer 1+2
-   3. Dispatch each layer using `dispatch_tasks_parallel` — all modules in the
-      same layer run CONCURRENTLY:
-      ```
-      dispatch_tasks_parallel(tasks_json='[
-        {"agent_name": "developer", "task_description": "Implement module A. Arch spec: ...", "step_id": "impl_a", "phase": "implementation"},
-        {"agent_name": "developer", "task_description": "Implement module B. Arch spec: ...", "step_id": "impl_b", "phase": "implementation"}
-      ]')
-      ```
-   4. After each layer completes, run the verification command, then dispatch the next layer
-   5. For EACH module, include the architecture spec DIRECTLY in the task description
-      so the developer does NOT need to read architecture.md
+   **CRITICAL — Implementation Fan-Out Is Runtime-Driven:**
+   When the process step says "dispatch once per module" / "fan
+   out the implementation phase", you MUST issue exactly ONE tool
+   call:
+
+   ```
+   dispatch_subsystems(phase="implementation")
+   ```
+
+   `dispatch_subsystems` reads `docs/stack_contract.json` (which
+   the architect produced in Phase 2), groups files into the
+   subsystems[].components[] tree, and dispatches in two stages:
+
+   1. **Skeleton stage** — one task per subsystem to lay down
+      public API signatures + barrel files (no logic, no tests).
+      Skeletons across subsystems run in parallel.
+   2. **Component stage** — one task per component (source +
+      test pair). All components across all subsystems are
+      eligible to run in parallel as soon as their parent
+      subsystem's skeleton completes.
+
+   Both stages are throttled by
+   `safety_limits.max_concurrent_subsystem_dispatches`. You do
+   NOT need to read `docs/architecture.md`, group modules into
+   dependency layers, or hand-build a `tasks_json` payload — the
+   runtime owns that decision because empirically the
+   orchestrator LLM cannot reliably emit N parallel tool_calls
+   in one inference, which serialised the old
+   `dispatch_tasks_parallel` flow.
+
+   When `dispatch_subsystems` returns, run the
+   `verification_command` from the process step on its result
+   and proceed to the next phase. Do NOT re-issue
+   `dispatch_subsystems` for the same phase — the primitive is
+   idempotent only at the level of "produce the missing files",
+   not at the level of "rerun the entire fan-out".
 
 5. **Finish.** When every step in every phase is complete, write the final delivery report to `docs/delivery_report.md` and call `mark_complete(report=...)` with the same content. The session ends as soon as `mark_complete` is acknowledged.
 
@@ -87,7 +107,7 @@ Your job is to compose these primitives in the order described by the process yo
 - Read each agent's card (description + skills) before assigning work — do NOT assume role-name conventions.
 - Keep `dispatch_task` task descriptions concise: describe WHAT to produce and WHERE to write it, not how. Each agent already knows its own output_layout.
 - On a failed task: retry once with clarifying instructions, then move on with what you have.
-- Total dispatches should stay under the runtime safety cap (default 12 — the runtime will refuse new dispatches beyond it).
+- Total dispatches must stay under the runtime safety cap (`safety_limits.max_dispatches`, default `DEFAULT_MAX_DISPATCHES = 128`; auto-scaled per project to `Σ(1 + len(components)) + DISPATCH_FLOOR_BUFFER` so a typical 5-subsystem / 32-component project gets ~50–60 dispatches of headroom). The runtime refuses new dispatches once the cap is reached. Each `dispatch_subsystems` invocation counts every per-subsystem and per-component child dispatch against this budget.
 - Always end the session by calling `mark_complete`. If you do not, the runtime will continue prompting you until the cap is hit.
 - Do NOT use the `task` tool (subagent). Use `dispatch_task` to send work to agents instead.
 - Do NOT write or edit source code yourself. Dispatch developer to write code.
