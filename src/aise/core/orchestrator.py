@@ -122,19 +122,6 @@ class Orchestrator:
             if phase_result["status"] == "failed":
                 break
 
-            # Verify unit tests pass before review (implementation phase)
-            if phase.require_tests_pass:
-                test_result = self.workflow_engine.verify_tests_pass(workflow, executor)
-                phase_result["test_verification"] = test_result
-                if not test_result.get("passed", False):
-                    logger.warning(
-                        "Workflow phase test verification failed: workflow=%s phase=%s error=%s",
-                        workflow.name,
-                        phase.name,
-                        test_result.get("error", ""),
-                    )
-                    break
-
             # Run review gate if present (enforces min_review_rounds)
             if phase.review_gate:
                 review_result = self.workflow_engine.run_review(workflow, executor)

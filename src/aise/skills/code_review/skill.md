@@ -7,12 +7,20 @@
 | **Name** | `code_review` |
 | **Class** | `CodeReviewSkill` |
 | **Module** | `aise.skills.code_review.scripts.code_review` |
-| **Agent** | Developer (`developer`) |
-| **Description** | Review source code for correctness, style, security, and performance issues |
+| **Agent** | Developer (`developer`), Reviewer (`reviewer`) — also surfaced on the `code_reviewer` agent card |
+| **Description** | Unified review covering correctness, security audit, performance, maintainability, and test coverage of critical paths |
 
 ## Purpose
 
-Reviews generated source code across four categories: correctness, style, security, and performance. Checks for common issues like `eval`/`exec` usage, hardcoded credentials, long lines, bare `except` blocks, and missing test coverage.
+Reviews generated source code as a single bundle across five concerns:
+
+1. **Correctness** — control flow, error handling, contract adherence (e.g. bare `except: pass` blocks)
+2. **Security audit** — injection (`eval`/`exec`), XSS, auth-bypass patterns, hardcoded credentials
+3. **Performance** — N+1 queries, unnecessary allocations, hot-path inefficiencies
+4. **Maintainability / style** — long lines, naming, duplication
+5. **Test coverage of critical paths** — modules lacking unit tests, untested critical branches
+
+This skill subsumes what previously appeared as separate `security_audit`, `performance_review`, and `test_coverage_review` skill names — they are categories within `code_review`, not distinct runtime skills.
 
 ## Input
 
@@ -52,15 +60,22 @@ The skill reads from the artifact store:
 
 ## Review Checks
 
-### Security
+### Security audit
 - `eval()` or `exec()` usage — severity: `critical`
 - Potential hardcoded credentials — severity: `high`
+- Injection / XSS / auth-bypass patterns when detected — severity: `critical`
 
-### Style
+### Performance
+- Obvious N+1 query patterns — severity: `medium`
+- Unnecessary allocations on hot paths — severity: `low`
+
+### Style / maintainability
 - Lines exceeding 120 characters — severity: `low`
 
 ### Correctness
 - Bare `except: pass` blocks — severity: `medium`
+
+### Test coverage of critical paths
 - Modules without unit tests — severity: `high`
 
 ## Approval Logic
@@ -76,4 +91,3 @@ The skill reads from the artifact store:
 
 ### Depends On
 - `code_generation` — reads `ArtifactType.SOURCE_CODE`
-- `unit_test_writing` — reads `ArtifactType.UNIT_TESTS`

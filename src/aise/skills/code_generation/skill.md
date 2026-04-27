@@ -74,7 +74,6 @@ Supports both Python (FastAPI) and Go (Gin) output.
 ## Integration
 
 ### Consumed By
-- `unit_test_writing` — reads modules to generate test suites
 - `code_review` — reads code content for quality checks
 - `architecture_review` — reads modules for architecture alignment
 - `bug_fix` — reads modules to identify affected code

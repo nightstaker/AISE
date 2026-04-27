@@ -56,7 +56,6 @@ class Phase:
     tasks: list[Task] = field(default_factory=list)
     review_gate: ReviewGate | None = None
     status: PhaseStatus = PhaseStatus.PENDING
-    require_tests_pass: bool = False
 
     def add_task(self, agent: str, skill: str, input_data: dict[str, Any] | None = None) -> Task:
         task = Task(agent=agent, skill=skill, input_data=input_data or {})
@@ -292,33 +291,6 @@ class WorkflowEngine:
         )
         return result
 
-    def verify_tests_pass(self, workflow: Workflow, executor) -> dict[str, Any]:
-        """Verify that unit tests pass for the current phase.
-
-        Only applies to phases with ``require_tests_pass=True``.
-        Runs the ``unit_test_writing`` skill on the ``developer`` agent
-        and expects it to succeed before the phase can proceed to review.
-
-        Returns:
-            Dict with 'passed' boolean and optional error.
-        """
-        phase = workflow.current_phase
-        if phase is None or not phase.require_tests_pass:
-            return {"passed": True}
-
-        try:
-            logger.info("Test verification started: workflow=%s phase=%s", workflow.name, phase.name)
-            artifact_id = executor(
-                "developer",
-                "unit_test_execution",
-                {"target_artifact_type": "unit_tests"},
-            )
-            logger.info("Test verification passed: phase=%s artifact_id=%s", phase.name, artifact_id)
-            return {"passed": True, "artifact_id": artifact_id}
-        except Exception as e:
-            logger.warning("Test verification failed: phase=%s error=%s", phase.name, str(e))
-            return {"passed": False, "error": str(e)}
-
     @staticmethod
     def create_default_workflow() -> Workflow:
         """Create the standard software development workflow."""
@@ -334,9 +306,14 @@ class WorkflowEngine:
         p2.add_task("architect", "deep_architecture_workflow", {"output_dir": "docs", "source_dir": "src"})
         workflow.add_phase(p2)
 
-        # Phase 3: Implementation (Developer deep paired workflow)
+        # Phase 3: Implementation
         p3 = Phase(name="implementation")
-        p3.add_task("developer", "deep_developer_workflow", {"source_dir": "src", "tests_dir": "tests"})
+        p3.add_task("developer", "code_generation", {"source_dir": "src"})
+        p3.review_gate = ReviewGate(
+            reviewer_agent="developer",
+            review_skill="code_review",
+            target_artifact_type="source_code",
+        )
         workflow.add_phase(p3)
 
         # Phase 4: Testing

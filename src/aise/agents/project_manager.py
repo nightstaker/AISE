@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from ..config import ModelConfig
 from ..core.agent import Agent, AgentRole
 from ..core.artifact import ArtifactStore
@@ -13,14 +11,11 @@ from ..skills import (
     PRMergeSkill,
     ProgressTrackingSkill,
     PRReviewSkill,
-    TeamHealthSkill,
-    VersionReleaseSkill,
 )
 
 
 class ProjectManagerAgent(Agent):
-    """Agent responsible for project execution, progress management, version releases,
-    team health, and conflict resolution.
+    """Agent responsible for project execution, progress management, and conflict resolution.
 
     The Project Manager does **not** decompose or assign tasks — that
     responsibility belongs to the workflow engine and the RD Director's
@@ -31,8 +26,7 @@ class ProjectManagerAgent(Agent):
     -----------
     The PM listens for ``NOTIFICATION`` messages with ``event`` set to
     ``"agent_crashed"`` or ``"agent_stuck"`` and responds by broadcasting a
-    recovery directive to the team.  The underlying detection logic lives in
-    :class:`~aise.skills.TeamHealthSkill`.
+    recovery directive to the team.
     """
 
     def __init__(
@@ -50,8 +44,6 @@ class ProjectManagerAgent(Agent):
         )
         self.register_skill(ConflictResolutionSkill())
         self.register_skill(ProgressTrackingSkill())
-        self.register_skill(VersionReleaseSkill())
-        self.register_skill(TeamHealthSkill())
         self.register_skill(PRReviewSkill(agent_role=AgentRole.PROJECT_MANAGER))
         self.register_skill(PRMergeSkill(agent_role=AgentRole.PROJECT_MANAGER))
 
@@ -108,46 +100,3 @@ class ProjectManagerAgent(Agent):
             },
             msg_type=MessageType.RESPONSE,
         )
-
-    # ------------------------------------------------------------------
-    # Convenience helpers
-    # ------------------------------------------------------------------
-
-    def check_agent_health(
-        self,
-        agent_registry: dict[str, Any],
-        message_history: list[dict[str, Any]],
-        task_statuses: list[dict[str, Any]] | None = None,
-        stuck_threshold_seconds: int = 300,
-        project_name: str = "",
-    ) -> dict[str, Any]:
-        """Run a full team-health + HA check and return the report content.
-
-        Parameters
-        ----------
-        agent_registry:
-            Mapping of agent name → metadata (any dict; keys are used as
-            agent identifiers).
-        message_history:
-            List of message dicts, each containing at minimum ``sender``,
-            ``receiver``, and ``timestamp`` fields.
-        task_statuses:
-            Optional list of task dicts with ``status``, ``assignee``, and
-            ``task_id`` fields.
-        stuck_threshold_seconds:
-            How long an agent may be silent while holding in-progress tasks
-            before it is considered stuck.
-        project_name:
-            Project identifier forwarded to the skill context.
-        """
-        artifact = self.execute_skill(
-            "team_health",
-            {
-                "agent_registry": agent_registry,
-                "message_history": message_history,
-                "task_statuses": task_statuses or [],
-                "stuck_threshold_seconds": stuck_threshold_seconds,
-            },
-            project_name=project_name,
-        )
-        return artifact.content

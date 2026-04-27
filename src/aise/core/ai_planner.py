@@ -190,7 +190,8 @@ Select only the processes that are actually needed for the given requirements.
 5. Skip processes whose output artifacts are already available.
 6. Include a brief rationale explaining why each step is needed.
 7. For complex projects (multiple subsystems, integrations, authentication, etc.),
-   include ALL deep workflow phases: deep_product_workflow -> deep_architecture_workflow -> deep_developer_workflow.
+   include both deep workflow phases: deep_product_workflow -> deep_architecture_workflow,
+   then chain code_generation / test_* phases.
 8. For simple projects (single-purpose scripts, small utilities), you may skip
    phases that are not strictly necessary.
 9. MANDATORY DEPENDENCY CHAIN: If a step produces artifact A and another step
@@ -198,12 +199,12 @@ Select only the processes that are actually needed for the given requirements.
 10. COMMON DEPENDENCY CHAIN for software projects:
     - deep_product_workflow produces REQUIREMENTS and SYSTEM_REQUIREMENTS
     - deep_architecture_workflow requires REQUIREMENTS and produces ARCHITECTURE_DESIGN
-    - deep_developer_workflow requires ARCHITECTURE_DESIGN and produces SOURCE_CODE
-    - deep_testing_workflow requires SOURCE_CODE and produces TEST_RESULTS
+    - code_generation requires ARCHITECTURE_DESIGN and produces SOURCE_CODE
+    - test_plan_design / test_case_design / test_automation require ARCHITECTURE_DESIGN / SOURCE_CODE
     - NEVER skip a prerequisite step - always include the full chain
 11. ARTIFACT FLOW ANALYSIS: Before generating the plan, trace the artifact chain:
     - What final artifact is needed? (e.g., SOURCE_CODE for a working app)
-    - What produces it? (e.g., deep_developer_workflow)
+    - What produces it? (e.g., code_generation)
     - What does that require? (e.g., ARCHITECTURE_DESIGN)
     - What produces THAT? (e.g., deep_architecture_workflow)
     - Continue until you reach the root (raw requirements)
@@ -212,7 +213,7 @@ Select only the processes that are actually needed for the given requirements.
     - Simple: Single-purpose script, no UI, no data persistence (< 3 features)
     - Medium: Web app with UI, basic CRUD, 3-10 features
     - Complex: Multi-subsystem, authentication, APIs, integrations, > 10 features
-    - For Medium/Complex projects: ALWAYS include full deep workflow chain
+    - For Medium/Complex projects: ALWAYS include full chain through code_generation + test phases
 13. INPUT MAPPING: Set input_mapping to map artifact IDs from previous steps
     to the expected input keys of the current step.
 
@@ -221,8 +222,8 @@ Select only the processes that are actually needed for the given requirements.
 - SYSTEM_REQUIREMENTS: produced by deep_product_workflow
 - ARCHITECTURE_DESIGN: produced by deep_architecture_workflow
 - SUBSYSTEM_DESIGNS: produced by deep_architecture_workflow
-- SOURCE_CODE: produced by deep_developer_workflow
-- TEST_RESULTS: produced by deep_testing_workflow
+- SOURCE_CODE: produced by code_generation
+- AUTOMATED_TESTS: produced by test_automation
 
 ## Example Plans
 
@@ -247,7 +248,7 @@ GOOD (correct dependency chain for a Todo App):
       "depends_on_steps": ["deep_product_workflow"]
     }},
     {{
-      "process_id": "deep_developer_workflow",
+      "process_id": "code_generation",
       "agent": "developer",
       "rationale": "Needs ARCHITECTURE_DESIGN from deep_architecture_workflow to produce SOURCE_CODE",
       "input_mapping": {{"architecture": "<artifact_id_from_deep_architecture_workflow>"}},
@@ -286,7 +287,7 @@ BAD (missing dependency chain - DO NOT DO THIS):
       "depends_on_steps": []
     }},
     {{
-      "process_id": "deep_developer_workflow",
+      "process_id": "code_generation",
       "agent": "developer",
       "rationale": "...",
       "depends_on_steps": ["deep_architecture_workflow"]
@@ -301,14 +302,14 @@ BAD (wrong dependency direction):
 {{
   "steps": [
     {{
-      "process_id": "deep_developer_workflow",
+      "process_id": "code_generation",
       "agent": "developer",
       "depends_on_steps": []
     }},
     {{
       "process_id": "deep_architecture_workflow",
       "agent": "architect",
-      "depends_on_steps": ["deep_developer_workflow"]
+      "depends_on_steps": ["code_generation"]
     }}
   ]
 }}

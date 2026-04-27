@@ -22,8 +22,6 @@ from .config import ProjectConfig
 from .core.agent import AgentRole
 from .core.orchestrator import Orchestrator
 from .utils.logging import configure_logging
-from .whatsapp.client import WhatsAppConfig
-from .whatsapp.session import WhatsAppGroupSession
 
 
 def _get_agent_class(role: AgentRole):
@@ -260,48 +258,6 @@ def _multi_project_repl(config: ProjectConfig) -> None:
         manager.stop()
 
 
-def start_whatsapp_session(
-    project_name: str = "My Project",
-    config: ProjectConfig | None = None,
-    owner_name: str = "",
-    owner_phone: str = "",
-) -> WhatsAppGroupSession:
-    """Create a WhatsApp group chat session with the agent team.
-
-    Args:
-        project_name: Name of the project.
-        config: Optional project configuration with WhatsApp settings.
-        owner_name: Name of the human owner to auto-join.
-        owner_phone: Phone number of the human owner.
-
-    Returns:
-        A configured WhatsAppGroupSession ready to start.
-    """
-    config = config or ProjectConfig()
-    config.project_name = project_name
-    orchestrator = create_team(config)
-
-    wa_config = WhatsAppConfig(
-        phone_number_id=config.whatsapp.phone_number_id,
-        access_token=config.whatsapp.access_token,
-        verify_token=config.whatsapp.verify_token,
-        business_account_id=config.whatsapp.business_account_id,
-        webhook_port=config.whatsapp.webhook_port,
-        webhook_path=config.whatsapp.webhook_path,
-    )
-
-    session = WhatsAppGroupSession(
-        orchestrator=orchestrator,
-        project_name=project_name,
-        whatsapp_config=wa_config,
-    )
-
-    if owner_name:
-        session.add_human(owner_name, owner_phone, is_owner=True)
-
-    return session
-
-
 def start_web_app(
     host: str = "127.0.0.1",
     port: int = 8000,
@@ -392,47 +348,6 @@ def main() -> None:
     )
     _add_github_args(demand_parser)
 
-    # whatsapp command
-    wa_parser = subparsers.add_parser(
-        "whatsapp",
-        help="Start a WhatsApp group chat session with the agent team",
-    )
-    wa_parser.add_argument("--project-name", "-p", default="My Project", help="Project name")
-    wa_parser.add_argument("--owner", default="", help="Your display name in the group")
-    wa_parser.add_argument("--phone", default="", help="Your WhatsApp phone number")
-    wa_parser.add_argument(
-        "--webhook",
-        action="store_true",
-        help="Start webhook server for real WhatsApp integration",
-    )
-    wa_parser.add_argument(
-        "--webhook-port",
-        type=int,
-        default=8080,
-        help="Port for the webhook server (default: 8080)",
-    )
-    wa_parser.add_argument(
-        "--phone-number-id",
-        default=os.environ.get("WHATSAPP_PHONE_NUMBER_ID", ""),
-        help="WhatsApp Business phone number ID (env: WHATSAPP_PHONE_NUMBER_ID)",
-    )
-    wa_parser.add_argument(
-        "--access-token",
-        default=os.environ.get("WHATSAPP_ACCESS_TOKEN", ""),
-        help="WhatsApp Business API access token (env: WHATSAPP_ACCESS_TOKEN)",
-    )
-    wa_parser.add_argument(
-        "--verify-token",
-        default=os.environ.get("WHATSAPP_VERIFY_TOKEN", ""),
-        help="Webhook verification token (env: WHATSAPP_VERIFY_TOKEN)",
-    )
-    wa_parser.add_argument(
-        "--requirements",
-        "-r",
-        help="Optional initial requirements to seed the session",
-    )
-    _add_github_args(wa_parser)
-
     # team command
     team_parser = subparsers.add_parser("team", help="Show team information")
     team_parser.add_argument("--verbose", "-v", action="store_true", help="Show agent skills")
@@ -464,32 +379,6 @@ def main() -> None:
     retry_parser.add_argument("--wait", action="store_true", help="Wait for completion")
     retry_parser.add_argument("--poll-interval", type=float, default=2.0, help="Polling interval seconds")
     retry_parser.add_argument("--show-task-state", action="store_true", help="Print task memory state after completion")
-
-    # develop command — concurrent development sessions
-    dev_parser = subparsers.add_parser(
-        "develop",
-        help="Start concurrent development sessions",
-    )
-    dev_parser.add_argument("--project-name", "-p", default="My Project", help="Project name")
-    dev_parser.add_argument(
-        "--max-sessions",
-        "-n",
-        type=int,
-        default=5,
-        help="Maximum concurrent developer sessions (default: 5)",
-    )
-    dev_parser.add_argument(
-        "--mode",
-        choices=["local", "github"],
-        default="local",
-        help="Development mode (default: local)",
-    )
-    dev_parser.add_argument(
-        "--repo-root",
-        default=".",
-        help="Path to the git repository root (default: current directory)",
-    )
-    _add_github_args(dev_parser)
 
     args = parser.parse_args()
 
@@ -572,39 +461,6 @@ def main() -> None:
         finally:
             manager.stop()
 
-    elif args.command == "whatsapp":
-        config = _load_cli_project_config(args.project_name)
-        _apply_github_config(args, config)
-        if args.phone_number_id:
-            config.whatsapp.phone_number_id = args.phone_number_id
-        if args.access_token:
-            config.whatsapp.access_token = args.access_token
-        if args.verify_token:
-            config.whatsapp.verify_token = args.verify_token
-        config.whatsapp.webhook_port = args.webhook_port
-        configure_logging(config.logging, force=True)
-
-        session = start_whatsapp_session(
-            project_name=args.project_name,
-            config=config,
-            owner_name=args.owner or "Owner",
-            owner_phone=args.phone,
-        )
-
-        # Seed with initial requirements if provided
-        if args.requirements:
-            reqs = args.requirements
-            try:
-                with open(reqs) as f:
-                    reqs = f.read()
-            except (FileNotFoundError, IsADirectoryError, PermissionError):
-                pass
-            humans = session.group_chat.human_members
-            sender = humans[0].name if humans else "Owner"
-            session.send_requirement(sender, reqs)
-
-        session.start(start_webhook=args.webhook)
-
     elif args.command == "team":
         config = _load_cli_project_config("AISE Team")
         configure_logging(config.logging, force=True)
@@ -684,52 +540,6 @@ def main() -> None:
                         sys.exit(1)
                     break
                 time.sleep(poll_interval)
-
-    elif args.command == "develop":
-        import asyncio
-
-        from .core.dev_session import SessionManager
-
-        config = _load_cli_project_config(args.project_name)
-        config.development_mode = args.mode
-        config.session.max_concurrent_sessions = args.max_sessions
-        _apply_github_config(args, config)
-        configure_logging(config.logging, force=True)
-
-        # For local mode, enforce single session
-        effective_sessions = args.max_sessions
-        if config.is_local_mode:
-            effective_sessions = 1
-
-        orchestrator = create_team(config)
-
-        # Validate prerequisite: STATUS_TRACKING artifact must exist
-        from .core.artifact import ArtifactType
-
-        status_artifact = orchestrator.artifact_store.get_latest(ArtifactType.STATUS_TRACKING)
-        if status_artifact is None:
-            print(
-                "Error: No STATUS_TRACKING artifact found.\n"
-                "The architect pipeline must run first:\n"
-                "  1. system_feature_analysis (SF)\n"
-                "  2. system_requirement_analysis (SR)\n"
-                "  3. architecture_requirement_analysis (AR)\n"
-                "  4. functional_design (FN)\n"
-                "  5. status_tracking\n\n"
-                "Run 'aise run' or 'aise demand' first to generate these artifacts."
-            )
-            sys.exit(1)
-
-        session_manager = SessionManager(
-            orchestrator=orchestrator,
-            config=config,
-            max_concurrent_sessions=effective_sessions,
-            repo_root=args.repo_root,
-        )
-
-        print(f"Starting development sessions (mode={args.mode}, max_sessions={effective_sessions})")
-        asyncio.run(session_manager.start())
-        print("Development sessions completed.")
 
     else:
         parser.print_help()

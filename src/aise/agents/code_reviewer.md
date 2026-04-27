@@ -71,8 +71,5 @@ Provide code reviews that improve code quality AND developer skills:
 
 ## Skills
 
-- code_review: Review code for correctness, security, maintainability, and performance issues
-- security_audit: Identify security vulnerabilities including injection, XSS, and auth bypass
-- performance_review: Detect performance bottlenecks, N+1 queries, and unnecessary allocations
+- code_review: Unified review covering correctness, security (injection/XSS/auth bypass), performance (N+1, unnecessary allocations), maintainability, and test coverage of critical paths
 - pr_review: Review pull requests with structured feedback and priority markers
-- test_coverage_review: Assess test coverage completeness and identify untested critical paths

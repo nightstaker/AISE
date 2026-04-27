@@ -24,7 +24,7 @@ def test_skill_registry_validation_passes():
 
 def test_inventory_contains_expected_fields_and_count():
     records = module.collect_runtime_skill_records()
-    assert len(records) == 36
+    assert len(records) == 31
     target = {r.runtime_skill_name: r for r in records}["architecture_requirement_analysis"]
     assert target.directory_name == "architecture_requirement"
     assert target.class_name == "ArchitectureRequirementSkill"

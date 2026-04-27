@@ -118,13 +118,9 @@ class TestWorkflowEngine:
         wf = WorkflowEngine.create_default_workflow()
         impl_phase = wf.phases[2]
         assert impl_phase.name == "implementation"
-        assert [task.skill for task in impl_phase.tasks] == ["deep_developer_workflow"]
-        assert impl_phase.review_gate is None
-
-    def test_create_default_workflow_implementation_requires_tests(self):
-        wf = WorkflowEngine.create_default_workflow()
-        impl_phase = wf.phases[2]
-        assert impl_phase.require_tests_pass is False
+        assert [task.skill for task in impl_phase.tasks] == ["code_generation"]
+        assert impl_phase.review_gate is not None
+        assert impl_phase.review_gate.review_skill == "code_review"
 
     def test_run_review_executes_min_rounds(self):
         engine = WorkflowEngine()
@@ -213,41 +209,3 @@ class TestWorkflowEngine:
         result = engine.run_review(wf, executor)
         assert result["approved"] is True
         assert result["rounds_completed"] == 1
-
-    def test_verify_tests_pass_success(self):
-        engine = WorkflowEngine()
-        wf = Workflow(name="test")
-        p = Phase(name="impl", require_tests_pass=True)
-        p.add_task("developer", "code_generation")
-        wf.add_phase(p)
-
-        def executor(agent, skill, data):
-            return "test-artifact-1"
-
-        result = engine.verify_tests_pass(wf, executor)
-        assert result["passed"] is True
-        assert "artifact_id" in result
-
-    def test_verify_tests_pass_failure(self):
-        engine = WorkflowEngine()
-        wf = Workflow(name="test")
-        p = Phase(name="impl", require_tests_pass=True)
-        p.add_task("developer", "code_generation")
-        wf.add_phase(p)
-
-        def executor(agent, skill, data):
-            raise RuntimeError("tests failed")
-
-        result = engine.verify_tests_pass(wf, executor)
-        assert result["passed"] is False
-        assert "error" in result
-
-    def test_verify_tests_pass_skipped_when_not_required(self):
-        engine = WorkflowEngine()
-        wf = Workflow(name="test")
-        p = Phase(name="design", require_tests_pass=False)
-        p.add_task("architect", "system_design")
-        wf.add_phase(p)
-
-        result = engine.verify_tests_pass(wf, lambda a, s, d: "id")
-        assert result["passed"] is True

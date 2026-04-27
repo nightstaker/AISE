@@ -80,5 +80,4 @@ The skill reads from the artifact store:
 - `test_plan_design` — reads `ArtifactType.TEST_PLAN`
 - `test_case_design` — reads `ArtifactType.TEST_CASES`
 - `test_automation` — reads `ArtifactType.AUTOMATED_TESTS`
-- `unit_test_writing` — reads `ArtifactType.UNIT_TESTS`
 - `api_design` — reads `ArtifactType.API_CONTRACT`
