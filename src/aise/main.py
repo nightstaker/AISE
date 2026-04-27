@@ -20,9 +20,7 @@ from .agents import (
 )
 from .config import ProjectConfig
 from .core.agent import AgentRole
-from .core.multi_project_session import MultiProjectSession
 from .core.orchestrator import Orchestrator
-from .core.session import OnDemandSession
 from .utils.logging import configure_logging
 from .whatsapp.client import WhatsAppConfig
 from .whatsapp.session import WhatsAppGroupSession
@@ -150,26 +148,116 @@ def run_project(requirements: str, project_name: str = "My Project") -> str:
         manager.stop()
 
 
-def start_demand_session(project_name: str = "My Project") -> OnDemandSession:
-    """Create and return an on-demand interactive session.
+def _project_root_for(project_name: str) -> Path:
+    """Return ``projects/<slug>/`` for a CLI-provided project name.
 
-    Args:
-        project_name: Name of the project.
-
-    Returns:
-        A configured OnDemandSession ready to start.
+    Creates the directory if missing. The slug lower-cases the name and
+    replaces spaces with dashes so ``"My Project"`` and ``"my-project"``
+    resolve to the same root across invocations.
     """
-    orchestrator = create_team()
-    return OnDemandSession(orchestrator, project_name)
+    projects_root = Path("projects")
+    projects_root.mkdir(parents=True, exist_ok=True)
+    pdir = projects_root / project_name.lower().replace(" ", "-")
+    pdir.mkdir(parents=True, exist_ok=True)
+    return pdir
 
 
-def start_multi_project_session() -> MultiProjectSession:
-    """Create and return a multi-project interactive session.
+def _read_requirements_arg(value: str | None) -> str | None:
+    """Resolve a ``--requirements`` CLI value to text.
 
-    Returns:
-        A configured MultiProjectSession ready to start.
+    Treats the value as a file path first; falls back to raw text if the
+    path does not exist or is unreadable.
     """
-    return MultiProjectSession()
+    if not value:
+        return None
+    try:
+        with open(value) as f:
+            return f.read()
+    except (FileNotFoundError, IsADirectoryError, PermissionError):
+        return value
+
+
+def _multi_project_repl(config: ProjectConfig) -> None:
+    """Small REPL backed by ``ProjectSession`` for multi-project work.
+
+    Replaces the legacy ``MultiProjectSession`` (which composed the older
+    ``aise.core.project_manager.ProjectManager`` + ``DeepOrchestrator``
+    indirection). The shape here is deliberately minimal — create a
+    project root, optionally switch between several, and dispatch one
+    requirement at a time through the same ``RuntimeManager`` that the
+    web service uses.
+    """
+    from .runtime import ProjectSession, RuntimeManager
+
+    manager = RuntimeManager(config=config)
+    manager.start()
+
+    projects: dict[str, Path] = {}
+    current: str | None = None
+
+    def _help() -> None:
+        print("Commands:")
+        print("  create <name>          Create projects/<slug>/ and switch to it")
+        print("  list                   List known projects")
+        print("  switch <name>          Make <name> the current project")
+        print("  run <requirement>      Run ProjectSession against the current project")
+        print("  help                   Show this message")
+        print("  quit                   Exit")
+
+    print("AISE multi-project REPL — type 'help' for commands, Ctrl-D to exit.")
+    try:
+        while True:
+            try:
+                line = input("aise> ").strip()
+            except EOFError:
+                print()
+                break
+            if not line:
+                continue
+            cmd, _, rest = line.partition(" ")
+            cmd = cmd.lower()
+            if cmd in {"quit", "exit"}:
+                break
+            elif cmd == "help":
+                _help()
+            elif cmd == "create":
+                name = rest.strip()
+                if not name:
+                    print("Usage: create <name>")
+                    continue
+                pdir = _project_root_for(name)
+                projects[name] = pdir
+                current = name
+                print(f"Created project '{name}' at {pdir}.")
+            elif cmd == "list":
+                if not projects:
+                    print("(no projects yet — use 'create <name>')")
+                else:
+                    for n, p in projects.items():
+                        marker = " *" if n == current else ""
+                        print(f"  {n} → {p}{marker}")
+            elif cmd == "switch":
+                name = rest.strip()
+                if name not in projects:
+                    print(f"Unknown project '{name}'. Use 'list' to see available.")
+                    continue
+                current = name
+                print(f"Switched to '{name}'.")
+            elif cmd == "run":
+                if current is None:
+                    print("No project selected. Use 'create <name>' or 'switch <name>' first.")
+                    continue
+                requirement = rest.strip()
+                if not requirement:
+                    print("Usage: run <requirement text>")
+                    continue
+                session = ProjectSession(manager, project_root=str(projects[current]))
+                result = session.run(requirement)
+                print(result)
+            else:
+                print(f"Unknown command '{cmd}'. Type 'help'.")
+    finally:
+        manager.stop()
 
 
 def start_whatsapp_session(
@@ -300,7 +388,7 @@ def main() -> None:
     demand_parser.add_argument(
         "--requirements",
         "-r",
-        help="Optional initial requirements to seed the session",
+        help="Requirement text or path to a file containing it. If omitted, the requirement is read from stdin.",
     )
     _add_github_args(demand_parser)
 
@@ -350,16 +438,9 @@ def main() -> None:
     team_parser.add_argument("--verbose", "-v", action="store_true", help="Show agent skills")
 
     # multi-project command
-    multi_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "multi-project",
-        help="Start an interactive multi-project session",
-    )
-    multi_parser.add_argument(
-        "--interactive",
-        "-i",
-        action="store_true",
-        default=True,
-        help="Start interactive session (default)",
+        help="Interactive multi-project REPL backed by ProjectSession (create/list/switch/run)",
     )
 
     # web command
@@ -461,20 +542,35 @@ def main() -> None:
         config = _load_cli_project_config(args.project_name)
         _apply_github_config(args, config)
         configure_logging(config.logging, force=True)
-        session = start_demand_session(args.project_name)
 
-        # Seed with initial requirements if provided
-        if args.requirements:
-            reqs = args.requirements
+        from .runtime import ProjectSession, RuntimeManager
+
+        requirements = _read_requirements_arg(args.requirements)
+        if requirements is None:
+            print("Enter your requirement (end with Ctrl-D / EOF):")
             try:
-                with open(reqs) as f:
-                    reqs = f.read()
-            except (FileNotFoundError, IsADirectoryError, PermissionError):
-                pass
-            result = session.handle_input(f"add {reqs}")
-            print(result.get("output", ""))
+                requirements = sys.stdin.read().strip()
+            except KeyboardInterrupt:
+                print("\nCancelled.")
+                sys.exit(0)
+            if not requirements:
+                print("Empty requirement; nothing to do.")
+                sys.exit(1)
 
-        session.start()
+        project_dir = _project_root_for(args.project_name)
+        manager = RuntimeManager(config=config)
+        manager.start()
+        try:
+            print(f"Project: {args.project_name} (root: {project_dir})")
+            print(f"Agents: {', '.join(manager.runtimes.keys())}")
+            print(f"Requirement: {requirements[:120]}{'...' if len(requirements) > 120 else ''}")
+            print()
+
+            session = ProjectSession(manager, project_root=str(project_dir))
+            result = session.run(requirements)
+            print(result)
+        finally:
+            manager.stop()
 
     elif args.command == "whatsapp":
         config = _load_cli_project_config(args.project_name)
@@ -535,8 +631,7 @@ def main() -> None:
     elif args.command == "multi-project":
         config = _load_cli_project_config("Multi Project Session")
         configure_logging(config.logging, force=True)
-        session = start_multi_project_session()
-        session.start()
+        _multi_project_repl(config)
 
     elif args.command == "web":
         start_web_app(host=args.host, port=args.port, reload=args.reload)

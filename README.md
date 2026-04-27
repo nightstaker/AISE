@@ -8,32 +8,72 @@ AISE orchestrates six specialized agents, each with distinct skills, through a s
 
 ## Architecture
 
+The runtime is layered around a single `ProjectSession` that drives the
+LLM-orchestrated waterfall (or agile sprint) lifecycle. Both the web
+service (`aise web`) and the CLI (`aise run`, `aise demand`,
+`aise multi-project`) construct a `RuntimeManager`, hand it to a
+`ProjectSession`, and call `session.run(requirement)`. The Project
+Manager agent emits tool calls (`dispatch_task`, `dispatch_subsystems`)
+via A2A `task_request` / `task_response` envelopes to worker agents.
+
+```mermaid
+C4Container
+  title AISE runtime — container view
+  Person(human, "User", "Submits a requirement via web UI or CLI")
+  System_Boundary(aise, "AISE") {
+    Container(web, "Web service", "FastAPI", "aise web — UI, run history, retries")
+    Container(cli, "CLI", "argparse", "aise run / demand / multi-project")
+    Container(rt, "RuntimeManager", "Python", "Owns AgentRuntime per agent + LLM clients")
+    Container(session, "ProjectSession", "Python", "Drives phase loop, emits events, persists run state")
+    Container(tools, "Tool primitives", "Python + LangChain", "dispatch_task, dispatch_subsystems, execute_shell, mark_complete")
+    Container(safety, "Safety net", "Python", "expected_artifacts checks + autocommit + invariants")
+    ContainerDb(disk, "Project root", "Filesystem", "docs/, src/, runs/, safety_net_events.jsonl")
+  }
+  System_Ext(llm, "LLM provider", "OpenAI / Anthropic / Ollama / vLLM")
+
+  Rel(human, web, "Submits requirement", "HTTP")
+  Rel(human, cli, "Submits requirement", "argv / stdin")
+  Rel(web, session, "Calls run()")
+  Rel(cli, session, "Calls run()")
+  Rel(session, rt, "Spawns AgentRuntime per dispatch")
+  Rel(session, tools, "Exposes to PM via tool registry")
+  Rel(tools, rt, "Routes A2A task_request to worker")
+  Rel(tools, safety, "Post-dispatch artifact + invariant checks")
+  Rel(rt, llm, "Inference", "HTTPS")
+  Rel(session, disk, "Persists task_log + artifacts")
+  Rel(safety, disk, "Writes safety_net_events.jsonl")
 ```
-                    ┌──────────────┐
-                    │ Orchestrator │
-                    └──────┬───────┘
-                           │
-              ┌────────────┼────────────┐
-              │        MessageBus       │
-              └─┬──┬──┬──┬──┬──┬──────┘
-                │  │  │  │  │  │
-    ┌───────────┘  │  │  │  │  └───────────┐
-    ▼              ▼  │  ▼  │              ▼
-┌────────┐  ┌─────────┤ ┌─────────┐  ┌────────┐
-│Product │  │Architect│ │Developer│  │  QA    │
-│Manager │  │         │ │         │  │Engineer│
-└────────┘  └─────────┘ └─────────┘  └────────┘
-                         │  │
-                    ┌────┘  └────┐
-                    ▼            ▼
-            ┌─────────────┐ ┌─────────────┐
-            │ RD Director │ │Project Mgr  │
-            │ (bootstrap) │ │(execution)  │
-            └─────────────┘ └─────────────┘
-                    │               │
-              ┌─────┴─────┐         │
-              ▼            ▼        ▼
-        ArtifactStore  WorkflowEngine
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as User
+  participant S as ProjectSession
+  participant PM as project_manager (PM)
+  participant DS as dispatch_subsystems
+  participant DV as developer (per subsystem / component)
+  participant FS as Project root (disk)
+
+  U->>S: run(requirement)
+  S->>PM: phase_1 requirement
+  PM->>DV: dispatch_task(product_manager, write docs/requirement.md)
+  S->>PM: phase_2 design
+  PM->>DV: dispatch_task(architect, write docs/architecture.md + stack_contract.json)
+  S->>PM: phase_3 implementation
+  PM->>DS: dispatch_subsystems(phase="implementation")
+  par Stage 1 — skeletons (parallel across subsystems)
+    DS->>DV: skeleton(subsystem A)
+    DS->>DV: skeleton(subsystem B)
+  end
+  par Stage 2 — components (parallel across all components)
+    DS->>DV: component(A.1)
+    DS->>DV: component(A.2)
+    DS->>DV: component(B.1)
+  end
+  DS-->>PM: aggregated result
+  PM-->>S: phase_complete
+  S-->>U: delivery_report
+  Note over PM,FS: each dispatch's expected_artifacts <br/>are verified by the safety net <br/>and missing files trigger auto-repair
 ```
 
 ## Features
@@ -67,27 +107,27 @@ aise whatsapp --project-name "UserAPI" --owner "Alice" \
   --phone "+1234567890" --webhook --webhook-port 8080
 ```
 
-### On-Demand Interactive Mode
+### On-Demand CLI Mode
 
-A REPL-style CLI interface that keeps the agent team alive for ad-hoc commands. Add requirements, report bugs, inspect artifacts, run individual phases, or trigger the full workflow — all within a single interactive session.
+`aise demand` runs a single project end-to-end through `ProjectSession`,
+the same engine used by `aise web`. Pass the requirement on the command
+line or pipe it via stdin; the result and a `projects/<slug>/` directory
+of artifacts (docs, source, runs/) are produced once the workflow
+completes.
 
 ```bash
-aise demand --project-name "UserAPI"
+# Provide the requirement inline:
+aise demand --project-name "UserAPI" --requirements "Build a REST API for user management"
+
+# Or read it from stdin:
+aise demand --project-name "UserAPI"  # then type/paste the requirement and Ctrl-D
+
+# Or load it from a file:
+aise demand --project-name "UserAPI" --requirements ./requirements.txt
 ```
 
-Available commands inside the session:
-
-| Command | Description |
-|---------|-------------|
-| `add <requirement>` | Add and analyze a new requirement |
-| `bug <description>` | Report a bug for the developer to fix |
-| `status` | Show project and team status |
-| `artifacts [type]` | List produced artifacts |
-| `phase <name>` | Run a specific workflow phase |
-| `workflow` | Run the full SDLC workflow |
-| `ask <question>` | Ask the Project Manager for a progress report |
-| `help` | Show available commands |
-| `quit` | End the session |
+For multi-project work where you want to run several requirements in one
+shell, use `aise multi-project` (see the *Usage* section below).
 
 ### Per-Agent Configurable LLM Models
 
@@ -163,10 +203,19 @@ pip install -e ".[dev]"
 You can place a global default config at `config/global_project_config.json`.
 Use `config/global_project_config.example.json` as a template.
 
-In `aise multi-project` mode, every new project created by `create <name>` will:
+`aise multi-project` is a small REPL backed by the same `ProjectSession`
+runtime as `aise run`. It supports the following commands:
 
-- inherit this global config by default
-- write the effective project config to `<repo>/projects/<project_id>-<project_name>/project_config.json`
+| Command | Description |
+| ---     | ---         |
+| `create <name>`     | Create `projects/<slug>/` and switch to it |
+| `list`              | List known projects in this REPL session |
+| `switch <name>`     | Make `<name>` the current project |
+| `run <requirement>` | Run `ProjectSession` against the current project |
+| `help` / `quit`     | Show commands / exit |
+
+The global default config (if present) is loaded once at REPL startup;
+each `run` invocation writes to its target project root.
 
 ### Run a development workflow
 
