@@ -839,7 +839,9 @@ class TestRunProgressDurability:
         assert "shutdown" in msg or "phase" in msg
 
     def test_c_zero_progress_run_falls_back_to_simple_retry_message(
-        self, monkeypatch, tmp_path,
+        self,
+        monkeypatch,
+        tmp_path,
     ):
         """If a run has truly zero persisted progress (empty
         task_log, no phase metadata, no trace files) the reaper

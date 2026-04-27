@@ -199,6 +199,7 @@ class WebProjectService:
             _signal.signal(signum, _signal.SIG_DFL)
             try:
                 import os
+
                 os.kill(os.getpid(), signum)
             except Exception:  # pragma: no cover — best-effort
                 pass
@@ -816,7 +817,9 @@ class WebProjectService:
                 # ``failed_phase_name`` must survive a crash so the
                 # "resume from phase N/M" hint is accurate.
                 phase_boundary = event_type in (
-                    "phase_plan", "phase_start", "phase_complete",
+                    "phase_plan",
+                    "phase_start",
+                    "phase_complete",
                 )
                 if event_type == "phase_plan":
                     try:
@@ -1277,12 +1280,7 @@ class WebProjectService:
                         except (TypeError, ValueError):
                             phase_total_int = 0
                         phase_name = str(item.get("failed_phase_name") or "")
-                        had_progress = (
-                            n_events > 0
-                            or n_trace > 0
-                            or failed_idx_int >= 0
-                            or phase_total_int > 0
-                        )
+                        had_progress = n_events > 0 or n_trace > 0 or failed_idx_int >= 0 or phase_total_int > 0
                         if raw_status == "interrupted":
                             kind = "graceful shutdown"
                         elif had_progress:
@@ -1290,10 +1288,13 @@ class WebProjectService:
                         else:
                             kind = "zero-progress restart"
                         logger.warning(
-                            "Reaping run (%s): project=%s run=%s prior_status=%s "
-                            "events=%d trace_files=%d phase=%s/%s",
-                            kind, project_id, raw_run_id, raw_status,
-                            n_events, n_trace,
+                            "Reaping run (%s): project=%s run=%s prior_status=%s events=%d trace_files=%d phase=%s/%s",
+                            kind,
+                            project_id,
+                            raw_run_id,
+                            raw_status,
+                            n_events,
+                            n_trace,
                             (failed_idx_int + 1) if failed_idx_int >= 0 else "?",
                             phase_total_int or "?",
                         )
@@ -1301,28 +1302,23 @@ class WebProjectService:
                         if not raw_error:
                             phase_hint = ""
                             if failed_idx_int >= 0 and phase_total_int > 0:
-                                phase_hint = (
-                                    f" Last known phase: {failed_idx_int + 1}/"
-                                    f"{phase_total_int}"
-                                )
+                                phase_hint = f" Last known phase: {failed_idx_int + 1}/{phase_total_int}"
                                 if phase_name:
                                     phase_hint += f" ({phase_name})"
                                 phase_hint += "."
                             elif failed_idx_int >= 0:
-                                phase_hint = (
-                                    f" Last known phase index: "
-                                    f"{failed_idx_int + 1}."
-                                )
+                                phase_hint = f" Last known phase index: {failed_idx_int + 1}."
                             progress_hint = ""
                             if n_events > 0 or n_trace > 0:
                                 progress_hint = (
-                                    f" Progress on disk: {n_events} task-log "
-                                    f"events, {n_trace} agent trace files. "
+                                    f" Progress on disk: {n_events} task-log events, {n_trace} agent trace files. "
                                 )
                             if kind == "graceful shutdown":
                                 raw_error = (
                                     "interrupted: process received a shutdown "
-                                    "signal mid-run." + phase_hint + progress_hint
+                                    "signal mid-run."
+                                    + phase_hint
+                                    + progress_hint
                                     + " Click Retry to resume from the last "
                                     "completed phase, or Restart to begin "
                                     "again from phase 1."
@@ -1331,7 +1327,8 @@ class WebProjectService:
                                 raw_error = (
                                     "interrupted: process exited unexpectedly "
                                     "mid-run (worker thread killed)."
-                                    + phase_hint + progress_hint
+                                    + phase_hint
+                                    + progress_hint
                                     + " Click Retry to resume from the last "
                                     "completed phase, or Restart to begin "
                                     "again from phase 1."
@@ -1519,6 +1516,7 @@ class WebProjectService:
         Caller MUST already hold ``self._lock``.
         """
         import time as _time
+
         now = _time.monotonic()
         if not force_phase_event:
             if (
