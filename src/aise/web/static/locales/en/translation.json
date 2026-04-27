@@ -277,7 +277,15 @@
     "scaffolding_failed_title": "Environment preparation failed",
     "scaffolding_failed_hint": "Project initialisation did not complete, so no requirement can be submitted. Error detail:",
     "scaffolding_failed_fallback_error": "No specific error was captured. Check the runtime logs for details.",
-    "scaffolding_failed_guidance": "The recommended recovery is to delete the project and re-create it. If the failure recurs, inspect the product-manager agent logs and the project-root directory permissions."
+    "scaffolding_failed_guidance": "The recommended recovery is to delete the project and re-create it. If the failure recurs, inspect the product-manager agent logs and the project-root directory permissions.",
+    "token_usage_title": "Token usage",
+    "token_usage_hint": "Cumulative LLM input / output tokens for this project — scaffolding plus every workflow run.",
+    "token_usage_input": "Input tokens",
+    "token_usage_output": "Output tokens",
+    "token_usage_total": "Total tokens",
+    "token_usage_calls": "LLM calls",
+    "token_usage_scaffolding": "Scaffolding: in {{input}} / out {{output}} / {{calls}} calls",
+    "token_usage_run_breakdown": "This run: in {{input}} / out {{output}} / {{calls}} calls"
   },
   "monitor": {
     "title": "Agent Monitor",

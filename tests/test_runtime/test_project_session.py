@@ -177,6 +177,44 @@ class TestProjectSessionTools:
         assert requests, "expected at least one task_request event"
         assert requests[-1]["payload"]["task"] == "Implement module X"
 
+    def test_dispatch_emits_token_usage_events(self, session):
+        """dispatch_task must wire an ``on_token_usage`` callback into
+        the worker's ``handle_message`` and surface each round-trip as
+        a ``token_usage`` event on the orchestrator's event log so the
+        web layer can aggregate per-WorkflowRun totals without parsing
+        trace files at runtime.
+        """
+        tools = session._make_tools()
+        dispatch = next(t for t in tools if t.name == "dispatch_task")
+
+        target = session._manager.get_runtime("developer")
+        original_handle = target.handle_message
+
+        def _emit_two_calls(prompt, **kw):
+            cb = kw.get("on_token_usage")
+            if cb is not None:
+                cb({"input_tokens": 10, "output_tokens": 4, "total_tokens": 14})
+                cb({"input_tokens": 6, "output_tokens": 2, "total_tokens": 8})
+            return original_handle(prompt, **kw)
+
+        target.handle_message = _emit_two_calls
+
+        dispatch.invoke(
+            {
+                "agent_name": "developer",
+                "task_description": "produce something",
+            }
+        )
+
+        token_events = [e for e in session.task_log if e["type"] == "token_usage"]
+        assert len(token_events) == 2
+        assert token_events[0]["agent"] == "developer"
+        assert token_events[0]["input_tokens"] == 10
+        assert token_events[0]["output_tokens"] == 4
+        assert token_events[0]["total_tokens"] == 14
+        # Second call gets summed by upstream consumers (web layer).
+        assert token_events[1]["input_tokens"] == 6
+
     def test_dispatch_without_original_requirement_is_unchanged(self, session):
         """Default (empty) requirement means no prefix — preserves the
         existing contract for unit tests and any caller that invokes
@@ -272,17 +310,37 @@ class TestPhase6DeliveryReport:
     """
 
     def test_phase6_prompt_collects_implementation_metrics(self, session):
+        """Phase-6 reads test results from docs/qa_report.json (the QA
+        engineer's structured output) instead of re-running pytest
+        itself — running pytest twice introduces flakiness that hides
+        QA-flagged failures. Source LOC is still gathered live via
+        ``find`` + ``wc -l`` because QA does not produce that.
+        """
         phases = session._build_phase_prompts("Build a thing")
         delivery = dict(phases).get("delivery", "")
-        # Runs shell commands to count files / LOC / tests / coverage.
-        assert "execute_shell" in delivery or "execute(" in delivery
-        # Source counting via find + wc -l (language-agnostic multi-ext).
+        # Source-LOC commands: still language-agnostic via find + wc -l.
         assert "wc -l" in delivery
         assert "find src" in delivery
-        # Test counting via pytest --collect-only.
-        assert "--collect-only" in delivery or "collect-only" in delivery
-        # Coverage attempted but optional — must mention --cov.
-        assert "--cov" in delivery
+        # Test results: read structured QA report, NOT re-run pytest.
+        assert "qa_report.json" in delivery, (
+            "Phase 6 must read docs/qa_report.json instead of re-running "
+            "pytest (avoids flakiness covering up QA findings)"
+        )
+        # Anti-regression: the prompt must NOT instruct the orchestrator
+        # to run the full test suite or coverage tool. That belongs to
+        # the QA engineer in Phase 5.
+        bad_substrings = (
+            "python -m pytest tests/ --cov",
+            "python -m pytest tests/ -q",
+            "go test ./... 2>&1",
+            "cargo test 2>&1",
+        )
+        for bad in bad_substrings:
+            assert bad not in delivery, (
+                f"Phase 6 prompt re-runs the test suite ({bad!r}) — that "
+                f"causes flaky overrides of QA findings. Read qa_report.json "
+                f"instead."
+            )
 
     def test_phase6_prompt_dispatches_product_manager(self, session):
         phases = session._build_phase_prompts("Build a thing")
@@ -303,12 +361,23 @@ class TestPhase6DeliveryReport:
 
     def test_phase6_prompt_forbids_fabricated_numbers(self, session):
         phases = session._build_phase_prompts("Build a thing")
-        delivery = dict(phases).get("delivery", "")
-        # Explicit anti-fabrication clause — PM must cite real outputs.
-        assert (
-            "do not invent numbers" in delivery.lower()
-            or "do not fabricate" in delivery.lower()
-            or "do not guess" in delivery.lower()
+        # The anti-fabrication / read-qa-verbatim clause may be
+        # word-wrapped across newlines, so collapse whitespace before
+        # matching to make the assertion robust to template formatting.
+        delivery = " ".join(dict(phases).get("delivery", "").split()).lower()
+        # Either the explicit anti-fabrication clause, or the new
+        # design's stronger "read qa_report verbatim" instruction.
+        guards = (
+            "do not invent numbers",
+            "do not fabricate",
+            "do not guess",
+            "cite verbatim",
+            "verbatim",
+        )
+        assert any(g in delivery for g in guards), (
+            "Phase 6 prompt must include an anti-fabrication clause OR a "
+            "read-qa-verbatim instruction so the PM cannot rewrite QA's "
+            "structured findings"
         )
 
     def test_phase6_prompt_ends_with_mark_complete(self, session):
@@ -501,13 +570,42 @@ class TestPhase6DeliveryReport:
         assert "mermaid" in architecture.lower()
 
     def test_phase3_prompt_requires_code_inspection(self, session):
-        """Phase 3 prompt must instruct the developer to run the
-        static analyzer via the ``code_inspection`` skill after tests
-        pass."""
-        phases = session._build_phase_prompts("Build a thing")
-        implementation = dict(phases).get("implementation", "")
-        assert "code_inspection" in implementation
-        assert "ruff" in implementation or "static analyzer" in implementation.lower()
+        """Phase 3's code-inspection requirement is now embedded in
+        the per-subsystem task description that ``dispatch_subsystems``
+        renders deterministically (see
+        ``tool_primitives._build_subsystem_task_description``), not in
+        the orchestrator prompt itself. The orchestrator prompt only
+        has to tell the orchestrator to call ``dispatch_subsystems``
+        once; the rendered worker task is what carries the static-
+        analyzer instruction.
+
+        This test asserts the per-subsystem renderer references the
+        ``static_check`` toolchain row so every developer dispatch
+        gets the static-analysis step.
+        """
+        from aise.runtime.tool_primitives import (
+            _LANGUAGE_TOOLCHAIN,
+            _build_subsystem_task_description,
+        )
+
+        # Each language row must contain a static_check command — that
+        # is the in-task instruction shown to the developer.
+        for lang, row in _LANGUAGE_TOOLCHAIN.items():
+            assert "static_check" in row, f"language {lang!r} toolchain missing static_check command"
+        # Sanity: the rendered task description for one Python
+        # subsystem must mention the analyzer phase explicitly.
+        rendered = _build_subsystem_task_description(
+            subsystem={
+                "name": "core",
+                "src_dir": "src/core/",
+                "responsibilities": "x",
+                "components": [{"name": "engine", "file": "src/core/engine.py", "responsibility": "y"}],
+            },
+            contract={"language": "python", "test_runner": "pytest", "static_analyzer": ["ruff", "mypy"]},
+            phase="implementation",
+        )
+        assert "INSPECT" in rendered
+        assert "static analyzer" in rendered.lower() or "ruff" in rendered
 
     def test_code_inspection_skill_file_exists(self):
         """The ``code_inspection`` skill body must live at the
@@ -586,6 +684,121 @@ class TestProjectSessionPhaseEvents:
         session.run("Fresh run")
         resumes = [e for e in session.task_log if e.get("type") == "phase_resume"]
         assert resumes == []
+
+
+class TestDispatchCapDynamicFloor:
+    """A1: ``ProjectSession`` raises ``max_dispatches`` to a per-run
+    floor derived from the architect's stack contract so the cap
+    auto-scales with the actual architecture.
+
+    Regression for project_7-tower run_3f53c0dcc5: 30 dispatches was
+    fewer than 5 subsystems + 32 components and the gameplay
+    subsystem got truncated. The floor must be Σ(1 + components) +
+    DISPATCH_FLOOR_BUFFER.
+    """
+
+    def _seed_contract(self, project_root, n_subsystems: int, comps_per: int) -> None:
+        import json as _json
+
+        docs = project_root / "docs"
+        docs.mkdir(parents=True, exist_ok=True)
+        subsystems = []
+        for i in range(n_subsystems):
+            subsystems.append(
+                {
+                    "name": f"sub{i}",
+                    "src_dir": f"src/sub{i}/",
+                    "components": [{"name": f"c{j}", "file": f"src/sub{i}/c{j}.py"} for j in range(comps_per)],
+                }
+            )
+        (docs / "stack_contract.json").write_text(
+            _json.dumps({"language": "python", "subsystems": subsystems}),
+            encoding="utf-8",
+        )
+
+    def test_floor_raises_cap_when_contract_exceeds_default(self, started_manager, tmp_path):
+        from unittest.mock import patch as _patch
+
+        from aise.runtime.runtime_config import DISPATCH_FLOOR_BUFFER, RuntimeConfig
+
+        # Force the default low so the contract clearly forces a raise
+        # regardless of what the global default is set to.
+        rc = RuntimeConfig()
+        rc.safety_limits.max_dispatches = 10
+
+        self._seed_contract(tmp_path, n_subsystems=5, comps_per=10)
+
+        with _patch.object(ProjectSession, "_build_pm_runtime") as mock_build:
+            pm_rt = MagicMock()
+            pm_rt.handle_message.return_value = "ok"
+            mock_build.return_value = pm_rt
+            sess = ProjectSession(
+                started_manager,
+                project_root=tmp_path,
+                runtime_config=rc,
+            )
+            sess._apply_dispatch_floor(reason="unit_test")
+
+        # 5 subsystems × (1 skeleton + 10 components) = 55, plus buffer.
+        expected_floor = 5 * (1 + 10) + DISPATCH_FLOOR_BUFFER
+        assert sess._config.safety_limits.max_dispatches == expected_floor
+
+        events = [e for e in sess.task_log if e.get("type") == "dispatch_cap_raised"]
+        assert events, "expected a dispatch_cap_raised event"
+        assert events[-1]["to"] == expected_floor
+        assert events[-1]["from"] == 10
+
+    def test_floor_does_not_lower_an_already_higher_cap(self, started_manager, tmp_path):
+        from unittest.mock import patch as _patch
+
+        from aise.runtime.runtime_config import RuntimeConfig
+
+        rc = RuntimeConfig()
+        rc.safety_limits.max_dispatches = 1024  # explicit project override
+
+        self._seed_contract(tmp_path, n_subsystems=2, comps_per=2)
+
+        with _patch.object(ProjectSession, "_build_pm_runtime") as mock_build:
+            pm_rt = MagicMock()
+            pm_rt.handle_message.return_value = "ok"
+            mock_build.return_value = pm_rt
+            sess = ProjectSession(
+                started_manager,
+                project_root=tmp_path,
+                runtime_config=rc,
+            )
+            sess._apply_dispatch_floor(reason="unit_test")
+
+        # Floor here is 2*(1+2)+16 = 22 — far below 1024. The override
+        # must NOT be lowered.
+        assert sess._config.safety_limits.max_dispatches == 1024
+        # And no raise event fires when there's nothing to raise.
+        events = [e for e in sess.task_log if e.get("type") == "dispatch_cap_raised"]
+        assert events == []
+
+    def test_floor_noop_when_contract_missing(self, started_manager, tmp_path):
+        """No contract on disk → leave the cap untouched. Architect
+        hasn't run yet; the post-phase hook will re-apply once it does.
+        """
+        from unittest.mock import patch as _patch
+
+        from aise.runtime.runtime_config import RuntimeConfig
+
+        rc = RuntimeConfig()
+        original_cap = rc.safety_limits.max_dispatches
+
+        with _patch.object(ProjectSession, "_build_pm_runtime") as mock_build:
+            pm_rt = MagicMock()
+            pm_rt.handle_message.return_value = "ok"
+            mock_build.return_value = pm_rt
+            sess = ProjectSession(
+                started_manager,
+                project_root=tmp_path,
+                runtime_config=rc,
+            )
+            sess._apply_dispatch_floor(reason="unit_test")
+
+        assert sess._config.safety_limits.max_dispatches == original_cap
 
 
 class TestProjectSessionRun:

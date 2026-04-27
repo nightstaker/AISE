@@ -47,13 +47,22 @@ class TraceLLMCallback(BaseCallbackHandler):
         trace_path: Path | None,
         lock: threading.Lock,
         on_todos_update: Callable[[list[dict[str, Any]]], None] | None = None,
+        on_token_usage: Callable[[dict[str, int]], None] | None = None,
     ) -> None:
         super().__init__()
         self._record = trace_record
         self._path = trace_path
         self._lock = lock
         self._on_todos_update = on_todos_update
+        self._on_token_usage = on_token_usage
         self._pending: dict[UUID, dict[str, Any]] = {}
+        # Aggregate per-dispatch token usage. The callback owns the
+        # running totals so a crash mid-run still leaves an accurate
+        # ``token_usage`` block on the partial trace prefix.
+        self._record.setdefault(
+            "token_usage",
+            {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "llm_calls": 0},
+        )
 
     # -- LLM start: capture the full input messages -------------------------
 
@@ -87,6 +96,9 @@ class TraceLLMCallback(BaseCallbackHandler):
 
         duration_ms = int((time.monotonic() - pending["start_time"]) * 1000)
         output = _dump_llm_result(response)
+        call_tokens = _extract_token_counts(response)
+        if any(call_tokens.values()):
+            output["token_usage_normalized"] = call_tokens
 
         entry: dict[str, Any] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -95,12 +107,29 @@ class TraceLLMCallback(BaseCallbackHandler):
             "output": output,
         }
 
+        forwarded: dict[str, int] | None = None
         with self._lock:
             calls = self._record.setdefault("llm_calls", [])
             entry["index"] = len(calls) + 1
             calls.append(entry)
             self._record["llm_call_count"] = len(calls)
+            totals = self._record.setdefault(
+                "token_usage",
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "llm_calls": 0},
+            )
+            totals["input_tokens"] += call_tokens["input_tokens"]
+            totals["output_tokens"] += call_tokens["output_tokens"]
+            totals["total_tokens"] += call_tokens["total_tokens"]
+            totals["llm_calls"] += 1
+            if any(call_tokens.values()):
+                forwarded = dict(call_tokens)
             _flush(self._path, self._record)
+
+        if forwarded is not None and self._on_token_usage is not None:
+            try:
+                self._on_token_usage(forwarded)
+            except Exception as exc:  # pragma: no cover - never let UI plumbing crash the agent
+                logger.debug("on_token_usage callback failed: %s", exc)
 
     # -- LLM error ----------------------------------------------------------
 
@@ -243,6 +272,58 @@ def _dump_tool_call(tc: Any) -> dict[str, Any]:
             "args": _safe(tc.get("args", {})),
         }
     return {"raw": str(tc)}
+
+
+def _extract_token_counts(result: LLMResult) -> dict[str, int]:
+    """Pull ``input_tokens`` / ``output_tokens`` / ``total_tokens`` from an
+    ``LLMResult``, normalizing across providers.
+
+    OpenAI exposes ``prompt_tokens`` / ``completion_tokens``; Anthropic and
+    LangChain's standardized ``UsageMetadata`` use ``input_tokens`` /
+    ``output_tokens``. We accept both and fall back to summing components
+    when ``total_tokens`` is absent.
+    """
+    counts = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    def _add(usage: Any) -> None:
+        if not isinstance(usage, dict):
+            return
+        prompt = usage.get("input_tokens") if "input_tokens" in usage else usage.get("prompt_tokens")
+        completion = usage.get("output_tokens") if "output_tokens" in usage else usage.get("completion_tokens")
+        total = usage.get("total_tokens")
+        try:
+            counts["input_tokens"] += int(prompt or 0)
+        except (TypeError, ValueError):
+            pass
+        try:
+            counts["output_tokens"] += int(completion or 0)
+        except (TypeError, ValueError):
+            pass
+        try:
+            counts["total_tokens"] += int(total or 0)
+        except (TypeError, ValueError):
+            pass
+
+    llm_output = result.llm_output
+    if isinstance(llm_output, dict):
+        _add(llm_output.get("token_usage"))
+        _add(llm_output.get("usage"))
+
+    if counts["input_tokens"] == 0 and counts["output_tokens"] == 0 and counts["total_tokens"] == 0:
+        for batch in result.generations or []:
+            for gen in batch:
+                msg = getattr(gen, "message", None)
+                if msg is None:
+                    continue
+                _add(getattr(msg, "usage_metadata", None))
+                response_metadata = getattr(msg, "response_metadata", None)
+                if isinstance(response_metadata, dict):
+                    _add(response_metadata.get("token_usage"))
+                    _add(response_metadata.get("usage"))
+
+    if counts["total_tokens"] == 0:
+        counts["total_tokens"] = counts["input_tokens"] + counts["output_tokens"]
+    return counts
 
 
 def _dump_llm_result(result: LLMResult) -> dict[str, Any]:

@@ -115,6 +115,19 @@ class ExpectedArtifact:
     - ``"dir"`` — ``path`` must be a directory (exists + is_dir).
     - ``"file"`` — ``path`` must be a regular file; if ``non_empty`` is
       true, also requires size > 0.
+    - ``"json_file"`` — ``path`` must be a regular file containing
+      valid JSON; if ``non_empty`` is true, also requires size > 0.
+    - ``"stack_contract"`` — ``path`` must be a valid
+      ``docs/stack_contract.json`` with the new two-level schema:
+      a ``subsystems[]`` array, each entry with ``name`` /
+      ``src_dir`` / ``components[]``, where every
+      ``components[].file`` is prefixed by its parent's ``src_dir``.
+      Catches the "architect produced a flat 24-component list"
+      regression that this kind exists to prevent.
+    - ``"must_not_exist"`` — ``path`` must NOT exist on disk. Used to
+      catch leftover files from prior runs (e.g. a stale
+      ``package.json`` from a previous Phaser project that was never
+      cleaned up before a new run started).
     - ``"git_repo"`` — ``path`` must contain a ``.git`` entry (dir or
       worktree reference); other fields ignored.
     - ``"git_tag"`` — ``tag_name`` (required) must be present in the
@@ -275,12 +288,52 @@ def _repair_create_phase_tag(project_root: Path, ctx: dict[str, Any]) -> None:
         raise RuntimeError(f"git tag {tag} failed: {stderr[:200]}")
 
 
+def _repair_remove_leftover(project_root: Path, ctx: dict[str, Any]) -> None:
+    """Delete a leftover file that the ``must_not_exist`` check flagged.
+
+    A previous run (typically a project that was scaffolded with a
+    different stack — e.g. Phaser ``package.json`` — and never
+    cleaned) left a file at ``ctx["path"]``. We remove it so the new
+    run can scaffold its own version freely. ``ctx["path"]`` MUST be
+    a project-relative path; absolute paths are rejected as a safety
+    measure to prevent accidental host-filesystem deletion.
+    """
+    rel = str(ctx.get("path") or "").strip()
+    if not rel:
+        return
+    if rel.startswith("/") or ".." in rel.split("/"):
+        logger.warning(
+            "safety_net: refusing to remove leftover file with unsafe path %r",
+            rel,
+        )
+        return
+    target = (project_root / rel).resolve()
+    try:
+        target.relative_to(project_root.resolve())
+    except ValueError:
+        logger.warning(
+            "safety_net: refusing to remove leftover file outside project root: %s",
+            target,
+        )
+        return
+    if not target.exists():
+        return
+    if target.is_file() or target.is_symlink():
+        target.unlink()
+    elif target.is_dir():
+        import shutil
+
+        shutil.rmtree(target)
+    logger.info("safety_net: removed leftover %s", target)
+
+
 REPAIR_ACTIONS: dict[str, Callable[[Path, dict[str, Any]], None]] = {
     "missing_git_repo": _repair_git_init,
     "missing_gitignore": _repair_seed_gitignore,
     "missing_standard_subdirs": _repair_create_standard_subdirs,
     "uncommitted_changes": _repair_autocommit,
     "missing_phase_tag": _repair_create_phase_tag,
+    "leftover_file": _repair_remove_leftover,
 }
 
 
@@ -329,6 +382,115 @@ LAYER_A_INVARIANTS: dict[str, list[Callable[[Path], str | None]]] = {
 
 
 # ---------------------------------------------------------------------------
+# Stack-contract validation
+# ---------------------------------------------------------------------------
+
+
+# Soft cap on subsystem count. The architect's job is to roll up
+# components into a small number of architecturally meaningful
+# subsystems; if more than this slip through it usually means the
+# architect went back to flat-listing components. Exceeding the cap
+# does NOT fail the check (some legitimately large projects might
+# need more) — it triggers a logged warning that the orchestrator
+# can surface for human review.
+_SUBSYSTEM_COUNT_SOFT_CAP = 10
+
+
+def _stack_contract_valid(target: Path) -> bool:
+    """Validate ``docs/stack_contract.json`` against the new
+    two-level schema:
+
+    - File exists, parseable JSON, top level is an object.
+    - Has a non-empty ``subsystems`` array.
+    - Each subsystem entry has ``name`` (snake_case str), ``src_dir``
+      (str), ``components`` (list of dicts).
+    - Each component entry has ``name`` (str) and ``file`` (str
+      starting with the parent's ``src_dir``).
+
+    Soft warnings (logged, do not fail validation):
+    - Subsystem count exceeds ``_SUBSYSTEM_COUNT_SOFT_CAP``.
+    - Subsystem with zero components.
+
+    Hard failures cause the layer-B check to mark the artifact
+    missing, which in turn re-dispatches architect with the failure
+    detail.
+    """
+    import json as _json
+
+    if not target.is_file():
+        return False
+    try:
+        data = _json.loads(target.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    subsystems = data.get("subsystems")
+    if not isinstance(subsystems, list) or not subsystems:
+        # New schema requires a non-empty subsystems[]. Reject the
+        # legacy flat ``modules[]`` schema even though the loader
+        # tolerates it for in-flight projects — at validation time
+        # we want architect to upgrade.
+        logger.warning(
+            "stack_contract: missing or empty subsystems[] in %s "
+            "(legacy modules[] schema is deprecated; architect must "
+            "produce the two-level schema)",
+            target,
+        )
+        return False
+    for ss in subsystems:
+        if not isinstance(ss, dict):
+            return False
+        name = ss.get("name")
+        src_dir = ss.get("src_dir")
+        components = ss.get("components")
+        if not isinstance(name, str) or not name:
+            return False
+        if not isinstance(src_dir, str) or not src_dir:
+            return False
+        if not isinstance(components, list):
+            return False
+        if not components:
+            logger.warning(
+                "stack_contract: subsystem %r has zero components in %s",
+                name,
+                target,
+            )
+        for comp in components:
+            if not isinstance(comp, dict):
+                return False
+            cname = comp.get("name")
+            cfile = comp.get("file")
+            if not isinstance(cname, str) or not cname:
+                return False
+            if not isinstance(cfile, str) or not cfile:
+                return False
+            # Each component file must live inside its parent
+            # subsystem's directory. This is the load-bearing check
+            # that prevents the architect from listing a "subsystem"
+            # but pointing every component at a sibling top-level
+            # path, which would re-create the flat layout under a
+            # different name.
+            if not cfile.startswith(src_dir.rstrip("/") + "/") and cfile != src_dir.rstrip("/"):
+                logger.warning(
+                    "stack_contract: component %r file %r not under subsystem src_dir %r",
+                    cname,
+                    cfile,
+                    src_dir,
+                )
+                return False
+    if len(subsystems) > _SUBSYSTEM_COUNT_SOFT_CAP:
+        logger.warning(
+            "stack_contract: %d subsystems exceeds soft cap of %d in "
+            "%s — architect may be flat-listing components again",
+            len(subsystems),
+            _SUBSYSTEM_COUNT_SOFT_CAP,
+            target,
+        )
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Layer B evaluation
 # ---------------------------------------------------------------------------
 
@@ -350,6 +512,25 @@ def _artifact_present(project_root: Path, artifact: ExpectedArtifact) -> bool:
         if artifact.non_empty and target.stat().st_size == 0:
             return False
         return True
+    if artifact.kind == "json_file":
+        if not target.is_file():
+            return False
+        if artifact.non_empty and target.stat().st_size == 0:
+            return False
+        try:
+            import json as _json
+
+            _json.loads(target.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        return True
+    if artifact.kind == "stack_contract":
+        return _stack_contract_valid(target)
+    if artifact.kind == "must_not_exist":
+        # Inverted check: present means FAIL. Catches leftover files
+        # from earlier runs (e.g. stale package.json / node_modules from
+        # a prior project that never got cleaned up).
+        return not target.exists()
     if artifact.kind == "git_repo":
         return (project_root / ".git").exists()
     if artifact.kind == "git_tag":
@@ -390,6 +571,12 @@ def _repair_action_for_artifact(artifact: ExpectedArtifact) -> str | None:
         return "uncommitted_changes"
     if artifact.kind == "git_tag":
         return "missing_phase_tag"
+    if artifact.kind == "must_not_exist":
+        return "leftover_file"
+    if artifact.kind == "json_file":
+        return "missing_or_invalid_json"
+    if artifact.kind == "stack_contract":
+        return "missing_or_invalid_stack_contract"
     return None
 
 
@@ -496,7 +683,13 @@ def run_post_step_check(
             continue
         outcome.layer_b_missing.append(artifact)
         repair_key = _repair_action_for_artifact(artifact)
-        _run_repair(project_root, repair_key, artifact.describe(), "B", outcome, repair_ctx)
+        # Per-artifact repair context: must_not_exist needs the path
+        # to delete; git_tag needs the tag name; others use the shared
+        # repair_ctx unchanged.
+        per_artifact_ctx = dict(repair_ctx)
+        if artifact.kind == "must_not_exist":
+            per_artifact_ctx["path"] = artifact.path
+        _run_repair(project_root, repair_key, artifact.describe(), "B", outcome, per_artifact_ctx)
 
     # -- Layer A ------------------------------------------------------------
     # Only run layer A if layer B passed (or had nothing to check).
@@ -607,4 +800,90 @@ def scaffolding_expectations() -> tuple[ExpectedArtifact, ...]:
         ExpectedArtifact(path="config", kind="dir"),
         ExpectedArtifact(path="artifacts", kind="dir"),
         ExpectedArtifact(path="trace", kind="dir"),
+        # Leftover-file guards: nothing scaffolds these files yet, so
+        # if any are present they're carryover from a prior run on the
+        # same project_id (e.g. a Phaser package.json + node_modules
+        # that survived because the previous run wasn't fully reset).
+        # Letting them survive into a new run with a different stack
+        # produced project_7-tower's three-stacks-coexist failure
+        # mode. Repair = delete.
+        ExpectedArtifact(
+            path="package.json", kind="must_not_exist", description="leftover package.json from prior run"
+        ),
+        ExpectedArtifact(
+            path="package-lock.json", kind="must_not_exist", description="leftover npm lockfile from prior run"
+        ),
+        ExpectedArtifact(
+            path="pnpm-lock.yaml", kind="must_not_exist", description="leftover pnpm lockfile from prior run"
+        ),
+        ExpectedArtifact(path="yarn.lock", kind="must_not_exist", description="leftover yarn lockfile from prior run"),
+        ExpectedArtifact(path="tsconfig.json", kind="must_not_exist", description="leftover tsconfig from prior run"),
+        ExpectedArtifact(
+            path="vitest.config.ts", kind="must_not_exist", description="leftover vitest config from prior run"
+        ),
+        ExpectedArtifact(
+            path="vite.config.ts", kind="must_not_exist", description="leftover vite config from prior run"
+        ),
+        ExpectedArtifact(
+            path="node_modules", kind="must_not_exist", description="leftover node_modules from prior run"
+        ),
+        ExpectedArtifact(path="Cargo.toml", kind="must_not_exist", description="leftover Cargo.toml from prior run"),
+        ExpectedArtifact(path="Cargo.lock", kind="must_not_exist", description="leftover Cargo.lock from prior run"),
+        ExpectedArtifact(path="target", kind="must_not_exist", description="leftover Rust target/ from prior run"),
+        ExpectedArtifact(path="go.mod", kind="must_not_exist", description="leftover go.mod from prior run"),
+        ExpectedArtifact(path="go.sum", kind="must_not_exist", description="leftover go.sum from prior run"),
+        ExpectedArtifact(path="vendor", kind="must_not_exist", description="leftover Go vendor/ from prior run"),
+        ExpectedArtifact(path="pom.xml", kind="must_not_exist", description="leftover Maven pom.xml from prior run"),
+        ExpectedArtifact(
+            path="build.gradle.kts", kind="must_not_exist", description="leftover Gradle build from prior run"
+        ),
+        ExpectedArtifact(
+            path="pyproject.toml",
+            kind="must_not_exist",
+            description="leftover pyproject.toml from prior run (architect re-creates if Python is the chosen stack)",
+        ),
+        ExpectedArtifact(
+            path=".coverage", kind="must_not_exist", description="leftover coverage artifact from prior run"
+        ),
+    )
+
+
+def architecture_expectations() -> tuple[ExpectedArtifact, ...]:
+    """The layer-B expectations the architect agent's Phase-2 dispatch
+    must satisfy. Currently:
+    - docs/architecture.md exists and is non-empty
+    - docs/stack_contract.json exists and is valid JSON
+
+    Callers in ``project_session.py`` invoke ``run_post_step_check``
+    with this list after the architect dispatch returns. Missing /
+    malformed contract triggers an architect re-dispatch with the
+    failure detail.
+    """
+    return (
+        ExpectedArtifact(path="docs/architecture.md", kind="file", non_empty=True, description="architecture document"),
+        ExpectedArtifact(
+            path="docs/stack_contract.json",
+            kind="stack_contract",
+            non_empty=True,
+            description="stack contract JSON with two-level subsystems[].components[] schema",
+        ),
+    )
+
+
+def qa_expectations() -> tuple[ExpectedArtifact, ...]:
+    """The layer-B expectations the qa_engineer agent's Phase-5
+    dispatch must satisfy. Currently:
+    - docs/qa_report.json exists and is valid JSON
+
+    Callers in ``project_session.py`` invoke ``run_post_step_check``
+    with this list after the QA dispatch returns. Missing /
+    malformed report triggers a QA re-dispatch with the failure
+    detail. Phase 6 reads the report verbatim — without this guard
+    a flaky pytest run in Phase 6 would silently overwrite QA's
+    real findings.
+    """
+    return (
+        ExpectedArtifact(
+            path="docs/qa_report.json", kind="json_file", non_empty=True, description="QA report JSON for Phase 6"
+        ),
     )

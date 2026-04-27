@@ -145,6 +145,18 @@ class ProjectSession:
         # for the prefix format, and architect.md / product_manager.md /
         # qa_engineer.md "Document Language" sections for the rule).
         self._ctx.original_requirement = requirement
+
+        # Auto-scale the dispatch cap to the actual architecture size.
+        # The fixed default (128) covers a typical project, but a
+        # 60-component architecture would still exhaust it before
+        # reaching delivery. Read the stack contract (if architect has
+        # already produced one — incremental runs always have one;
+        # fresh runs raise the cap again after architecture phase via
+        # this same method, see ``_apply_dispatch_floor``) and lift
+        # ``max_dispatches`` to ``Σ(1 + components) + buffer`` if the
+        # static default is smaller.
+        self._apply_dispatch_floor(reason="run_start")
+
         try:
             if global_pm_rt is not None:
                 global_pm_rt._state = AgentState.WORKING
@@ -166,6 +178,7 @@ class ProjectSession:
                     "phases": [name for name, _prompt in phases],
                     "total": total_phases,
                     "start_phase_idx": self._start_phase_idx,
+                    "max_dispatches": self._config.safety_limits.max_dispatches,
                     "timestamp": _now(),
                 }
             )
@@ -281,8 +294,25 @@ class ProjectSession:
         crashing the session, we catch the error and return empty so the
         continuation loop can retry.
         """
+
+        def _on_token_usage(counts: dict[str, int]) -> None:
+            self._ctx.emit(
+                {
+                    "type": "token_usage",
+                    "agent": self._orchestrator_name,
+                    "timestamp": _now(),
+                    "input_tokens": int(counts.get("input_tokens", 0) or 0),
+                    "output_tokens": int(counts.get("output_tokens", 0) or 0),
+                    "total_tokens": int(counts.get("total_tokens", 0) or 0),
+                }
+            )
+
         try:
-            return self._pm_runtime.handle_message(prompt, thread_id=self._session_id)
+            return self._pm_runtime.handle_message(
+                prompt,
+                thread_id=self._session_id,
+                on_token_usage=_on_token_usage,
+            )
         except Exception as exc:
             logger.warning(
                 "PM handle_message failed (will retry on next continuation): session=%s error=%s",
@@ -385,7 +415,7 @@ class ProjectSession:
             backend=backend,
             trace_dir=trace_dir,
             checkpointer=MemorySaver(),
-            max_iterations=240,
+            max_iterations=480,
         )
         rt.evoke()
         logger.info(
@@ -412,16 +442,94 @@ class ProjectSession:
         }
     )
 
+    def _apply_dispatch_floor(self, *, reason: str) -> None:
+        """Auto-scale ``max_dispatches`` to the architect's contract.
+
+        Computes ``Σ(1 + len(components)) + DISPATCH_FLOOR_BUFFER``
+        across every subsystem in ``docs/stack_contract.json`` and
+        raises the live ``SafetyLimits.max_dispatches`` if the result
+        exceeds the current cap. Called once at run start (no-op when
+        the contract isn't on disk yet) and again right after the
+        architecture phase finishes (when it just got produced).
+
+        Lowers nothing — only ratchets up — so an explicit project-
+        level override that's already higher than the dynamic floor
+        is preserved.
+        """
+        if self._project_root is None:
+            return
+        contract_path = self._project_root / "docs" / "stack_contract.json"
+        if not contract_path.is_file():
+            return
+        try:
+            import json as _json
+
+            data = _json.loads(contract_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.debug("dispatch floor: contract unreadable (%s): %s", reason, exc)
+            return
+        if not isinstance(data, dict):
+            return
+        subsystems = data.get("subsystems")
+        if not isinstance(subsystems, list) or not subsystems:
+            return
+
+        from .runtime_config import DISPATCH_FLOOR_BUFFER
+
+        total = 0
+        for ss in subsystems:
+            if not isinstance(ss, dict):
+                continue
+            comps = ss.get("components") or []
+            # 1 skeleton + N component dispatches per subsystem.
+            total += 1 + (len(comps) if isinstance(comps, list) else 0)
+        floor = total + DISPATCH_FLOOR_BUFFER
+        current = self._config.safety_limits.max_dispatches
+        if floor <= current:
+            return
+        self._config.safety_limits.max_dispatches = floor
+        logger.info(
+            "Dispatch cap raised: session=%s reason=%s floor=%d (was %d) subsystems=%d components=%d",
+            self._session_id,
+            reason,
+            floor,
+            current,
+            len(subsystems),
+            total - len(subsystems),
+        )
+        self._ctx.emit(
+            {
+                "type": "dispatch_cap_raised",
+                "reason": reason,
+                "from": current,
+                "to": floor,
+                "subsystems": len(subsystems),
+                "components": total - len(subsystems),
+                "timestamp": _now(),
+            }
+        )
+
     def _run_post_phase_hooks(self, phase_idx: int, phase_name: str) -> None:
         """Pure-Python hooks that run after each successful phase.
 
-        The only hook today is the language-idiomatic root config
-        generator (pyproject.toml / package.json / go.mod / Cargo.toml
-        / pom.xml). It's gated by phase so it doesn't run before the
-        developer has produced any source. Any failure here is logged
-        and swallowed — a broken post-phase hook must never mark the
-        whole run as failed.
+        Two hooks today:
+        - Re-apply the dispatch-cap dynamic floor after every phase so
+          a contract produced by the architect mid-run lifts the cap
+          before implementation starts.
+        - Generate the language-idiomatic root config (pyproject.toml /
+          package.json / go.mod / Cargo.toml / pom.xml) once the
+          developer has written enough source. Any failure here is
+          logged and swallowed — a broken post-phase hook must never
+          mark the whole run as failed.
         """
+        # Always re-apply the dispatch-cap floor — cheap, idempotent,
+        # and guards against the case where stack_contract.json
+        # appears mid-run (i.e. right after the architecture phase).
+        try:
+            self._apply_dispatch_floor(reason=f"post_phase_{phase_name}")
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("dispatch-floor reapplication failed: %s", exc)
+
         if phase_name not in self._POST_PHASE_LANG_CONFIG:
             return
         if self._project_root is None:
@@ -682,34 +790,43 @@ class ProjectSession:
                 "C4Component); behavioral views stay on standard Mermaid\n"
                 "types. Validate every ```mermaid block via the mermaid\n"
                 "skill and fix any syntax error before responding.\n"
-                "Pass expected_artifacts=['docs/architecture.md'].\n"
+                "Pass expected_artifacts=['docs/architecture.md',\n"
+                "'docs/stack_contract.json'] so the runtime retries once\n"
+                "if either is missing.\n"
                 "After it completes, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
             (
                 "implementation",
                 f"New requirement to integrate: {requirement}\n\n"
-                "Execute Phase 3 — Implementation (INCREMENTAL, TDD):\n"
-                "1. Read docs/architecture.md to see which modules are NEW or\n"
-                "   CHANGED because of the incremental requirement. Existing\n"
-                "   modules the requirement does not touch must stay\n"
-                "   untouched — read them only to understand interfaces.\n"
-                "2. For EACH new-or-changed module, dispatch developer via\n"
-                "   dispatch_tasks_parallel. In each task description:\n"
-                "   - Include the relevant architecture spec.\n"
-                "   - Instruct strict TDD: write tests/test_<module>.py, then\n"
-                "     src/<module>.py, then run ONLY that module's test file\n"
-                "     (python -m pytest tests/test_<module>.py -q --tb=short).\n"
-                "     Up to 3 fix attempts.\n"
-                "   - For CHANGED modules, the task description must say\n"
-                "     explicitly that the file already exists and the\n"
-                "     developer must EDIT it in place (edit_file), not\n"
-                "     rewrite. Existing tests must keep passing — new tests\n"
-                "     extend the file, not replace it.\n"
-                "   - Set expected_artifacts=['src/<module>.py',\n"
-                "     'tests/test_<module>.py'].\n"
-                "3. Do NOT run the full suite here. That is Phase 5's job.\n"
-                "4. When all dispatches return, STOP.\n"
+                "Execute Phase 3 — Implementation (INCREMENTAL, TDD,\n"
+                "per-subsystem fan-out):\n\n"
+                "Fan-out is performed by the orchestration layer, NOT by\n"
+                "you drafting tasks_json. You make ONE tool call:\n\n"
+                '    dispatch_subsystems(phase="implementation")\n\n'
+                "The primitive reads docs/stack_contract.json's\n"
+                "subsystems[] and dispatches developer in parallel (up to\n"
+                "the runtime cap). Each developer dispatch carries the\n"
+                "STACK CONTRACT and ORIGINAL USER REQUIREMENT blocks\n"
+                "automatically.\n\n"
+                "1. Verify docs/stack_contract.json exists and is valid.\n"
+                "   If the incremental requirement extended subsystems[]\n"
+                "   or added components, architect should already have\n"
+                "   updated the contract; if not, STOP and dispatch\n"
+                "   architect to bring the contract in line with\n"
+                "   docs/architecture.md.\n"
+                "2. Read docs/architecture.md briefly to understand which\n"
+                "   subsystems are NEW or CHANGED (purely informational —\n"
+                "   the dispatch primitive does not need this from you).\n"
+                '3. Call dispatch_subsystems(phase="implementation")\n'
+                "   exactly once. Each developer dispatch's task\n"
+                "   description carries the full component list for its\n"
+                "   subsystem. For CHANGED components the developer is\n"
+                "   instructed (via the rendered task) to EDIT in place.\n"
+                "4. Do NOT call dispatch_task or dispatch_tasks_parallel\n"
+                "   yourself for individual subsystems / components.\n"
+                "5. Do NOT run the full suite here — that is Phase 5's job.\n"
+                "6. When dispatch_subsystems returns, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
             (
@@ -746,15 +863,25 @@ class ProjectSession:
                 "- Instruct the QA agent to read docs/requirement.md\n"
                 "  (including the new Incremental Requirement section) and\n"
                 "  docs/architecture.md so it knows what to cover.\n"
-                "- Extend tests/test_integration.py (edit in place — do\n"
-                "  NOT recreate the file from scratch) with integration\n"
-                "  scenarios for the new requirement. Existing integration\n"
-                "  tests must keep running.\n"
-                "- RUN the FULL suite:\n"
-                '  execute(command="python -m pytest tests/ -q --tb=short")\n'
-                "  and iterate up to 3 times until all tests pass.\n"
+                "- Extend the integration test file already on disk (e.g.\n"
+                "  tests/test_integration.py for pytest,\n"
+                "  tests/integration.test.ts for vitest/jest,\n"
+                "  internal/integration_test.go for Go,\n"
+                "  tests/integration.rs for Rust,\n"
+                "  src/test/java/.../IntegrationTest.java for Java) IN\n"
+                "  PLACE — do NOT recreate the file from scratch — with\n"
+                "  integration scenarios for the new requirement.\n"
+                "  Existing integration tests must keep running.\n"
+                "- RUN the FULL suite using the project's test runner:\n"
+                "    Python:     python -m pytest tests/ -q --tb=short\n"
+                "    TypeScript: npx vitest run  (or npx jest)\n"
+                "    Go:         go test ./...\n"
+                "    Rust:       cargo test\n"
+                "    Java:       mvn test\n"
+                "  Iterate up to 3 times until all tests pass.\n"
                 "- Report final pass/fail counts in the response.\n"
-                "Pass expected_artifacts=['tests/test_integration.py'].\n"
+                "Pass expected_artifacts=[<the chosen integration test\n"
+                "file path>].\n"
                 "After it completes, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
@@ -762,43 +889,59 @@ class ProjectSession:
                 "delivery",
                 f"New requirement to integrate: {requirement}\n\n"
                 "Execute Phase 6 — Delivery Report (INCREMENTAL scope):\n\n"
-                "Collect delta metrics for this incremental run and have\n"
-                "product_manager write a scoped delivery report. Cite real\n"
-                "tool outputs — do not guess numbers.\n\n"
-                "1. Collect incremental metrics:\n"
+                "Assemble the report from the QA engineer's structured\n"
+                "findings — do NOT re-run the test suite yourself (avoids\n"
+                "flakiness covering up QA-flagged failures / product\n"
+                "bugs). Read the project's language from\n"
+                "docs/architecture.md (or docs/stack_contract.json if\n"
+                "present); do NOT default to Python.\n\n"
+                "1. Read docs/qa_report.json (REQUIRED — schema in the\n"
+                "   waterfall Phase-6 prompt; QA writes it in Phase 5).\n"
+                "   If missing or invalid, dispatch qa_engineer to\n"
+                "   produce it, then re-read.\n\n"
+                "2. Collect incremental DELTA metrics QA does not\n"
+                "   produce:\n"
                 "   a) New or modified source files since the previous\n"
                 "      baseline run. Use git where available:\n"
                 "      execute_shell('git status --short 2>/dev/null || echo not-a-git-repo')\n"
                 "      execute_shell('git diff --name-only HEAD~1 2>/dev/null || true')\n"
                 "      Fall back to find -newer if git is not in play.\n"
-                "   b) Current source file count and LOC (full project):\n"
-                "      execute_shell('find src -type f -name \"*.py\" | wc -l')\n"
-                "      execute_shell('find src -type f -name \"*.py\" -exec wc -l {} + | sort -rn | head -30')\n"
-                "   c) Test count + FULL suite result:\n"
-                "      execute_shell('find tests -type f -name \"test_*.py\" 2>/dev/null | wc -l')\n"
-                "      execute_shell('python -m pytest tests/ --collect-only -q 2>&1 | tail -5')\n"
-                "      execute_shell('python -m pytest tests/ -q --tb=line 2>&1 | tail -20')\n\n"
-                "2. Dispatch product_manager to write docs/delivery_report.md.\n"
+                "   b) Current source file count and LOC (full project).\n"
+                "      Pick the row matching your project's language. Run\n"
+                "      each find twice: once with ``| wc -l`` for the\n"
+                "      count, once with ``-exec wc -l {} + | sort -rn |\n"
+                "      head -30`` for per-file LOC.\n"
+                "      - Python:     find src -type f -name '*.py'\n"
+                "      - TypeScript: find src -type f \\( -name '*.ts' -o -name '*.tsx' \\)\n"
+                "      - Go:         find . -type f -name '*.go' -not -path './vendor/*'\n"
+                "      - Rust:       find src -type f -name '*.rs'\n"
+                "      - Java:       find src -type f -name '*.java'\n"
+                "3. Dispatch product_manager to write docs/delivery_report.md.\n"
                 "   Pass expected_artifacts=['docs/delivery_report.md'].\n"
                 "   Require the report to cover:\n"
                 "   - Executive Summary — one paragraph scoped to the new\n"
-                "     requirement and whether the project remains production-ready.\n"
+                "     requirement (production-ready iff qa_report says so).\n"
                 "   - Incremental Delta — bullet list of modules added and\n"
-                "     modules edited. Cite step a) outputs.\n"
-                "   - Full Implementation Metrics — counts from step b).\n"
-                "   - Testing Metrics — FULL-suite pass/fail/skipped from\n"
-                "     step c). Pass rate as a percentage.\n"
-                "   - Known Issues — failing tests with short descriptions,\n"
-                "     or 'none' if green.\n"
-                "   - Conclusion — one or two sentences on readiness AFTER\n"
-                "     the incremental change.\n"
-                "   EMBED the raw tool outputs into the task description so\n"
-                "   PM cites them verbatim (same protocol as initial Phase 6).\n\n"
-                "3. After product_manager returns, call mark_complete with a\n"
-                "   short paragraph that references docs/delivery_report.md.\n"
-                "   Include: project name, 'incremental', pass rate, number\n"
-                "   of new modules + edited modules, and whether the entry\n"
-                "   point verified successfully in Phase 4.",
+                "     modules edited. Cite step 2a outputs.\n"
+                "   - Full Implementation Metrics — counts from step 2b.\n"
+                "   - Testing Metrics — copy qa_report.pytest fields\n"
+                "     verbatim (passed/failed/skipped + pass rate).\n"
+                "   - UI Validation — copy qa_report.ui_validation\n"
+                "     verbatim.\n"
+                "   - Known Issues — list every entry from\n"
+                "     qa_report.product_bugs verbatim AND every test in\n"
+                "     qa_report.pytest.failed_tests verbatim, or 'none'\n"
+                "     when both are empty AND ui_validation passed.\n"
+                "   - Conclusion — one or two sentences on readiness\n"
+                "     AFTER the incremental change.\n"
+                "   EMBED the raw qa_report.json + step 2 tool outputs in\n"
+                "   the task description so PM cites them verbatim.\n\n"
+                "4. After product_manager returns, call mark_complete\n"
+                "   with a short paragraph referencing\n"
+                "   docs/delivery_report.md. Include: project name,\n"
+                "   'incremental', pass rate (from qa_report), number of\n"
+                "   new + edited modules, and whether the entry point\n"
+                "   verified successfully in Phase 4.",
             ),
         ]
 
@@ -852,28 +995,33 @@ class ProjectSession:
                 "  a future sprint.\n"
                 "- Validate every ```mermaid block via the mermaid skill and\n"
                 "  fix any syntax error before responding.\n"
-                "Pass expected_artifacts=['docs/sprint_design.md'].\n"
+                "Pass expected_artifacts=['docs/sprint_design.md',\n"
+                "'docs/stack_contract.json'].\n"
                 "After it completes, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
             (
                 "sprint_execution",
                 f"Project requirement: {requirement}\n\n"
-                "Execute Phase 2b — Sprint Execution (AGILE, rapid TDD):\n"
-                "1. Read docs/sprint_design.md to identify the MVP modules.\n"
-                "2. For EACH MVP module, dispatch developer via\n"
-                "   dispatch_tasks_parallel. Each task description must:\n"
-                "   - Include the module's spec from sprint_design.md.\n"
-                "   - Instruct strict TDD: write tests/test_<module>.py,\n"
-                "     then src/<module>.py, then run ONLY that module's test\n"
-                "     file (python -m pytest tests/test_<module>.py -q\n"
-                "     --tb=short). Up to 3 fix attempts.\n"
-                "   - Keep each module small enough to ship within the sprint.\n"
-                "     If a design element is large, reduce scope rather than\n"
-                "     stretching the sprint.\n"
-                "   - Set expected_artifacts=['src/<module>.py',\n"
-                "     'tests/test_<module>.py'].\n"
-                "3. When all dispatches return, STOP.\n"
+                "Execute Phase 2b — Sprint Execution (AGILE, per-subsystem fan-out):\n\n"
+                "Fan-out is performed by the orchestration layer, NOT by\n"
+                "you drafting tasks_json. You make ONE tool call:\n\n"
+                '    dispatch_subsystems(phase="sprint_execution")\n\n'
+                "The primitive reads docs/stack_contract.json's\n"
+                "subsystems[] and dispatches developer in parallel (up to\n"
+                "the runtime cap). Each developer dispatch carries the\n"
+                "STACK CONTRACT and ORIGINAL USER REQUIREMENT blocks\n"
+                "automatically.\n\n"
+                "1. Verify docs/stack_contract.json exists and is valid.\n"
+                "   If missing or malformed, STOP and dispatch architect.\n"
+                "2. Read docs/sprint_design.md briefly (informational).\n"
+                '3. Call dispatch_subsystems(phase="sprint_execution")\n'
+                "   exactly once. Each developer dispatch's task\n"
+                "   description includes the subsystem's components from\n"
+                "   the contract.\n"
+                "4. Do NOT call dispatch_task or dispatch_tasks_parallel\n"
+                "   yourself for individual subsystems / components.\n"
+                "5. When dispatch_subsystems returns, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
             (
@@ -883,10 +1031,14 @@ class ProjectSession:
                 "1. dispatch_task to developer: 'Write the project's main\n"
                 "   entry-point file that wires all MVP modules together so\n"
                 "   the sprint output can be demoed at review. Use the\n"
-                "   language convention (src/main.py for Python, src/index.js\n"
-                "   for Node, cmd/<app>/main.go for Go, etc.). The file MUST\n"
-                "   boot directly (python src/main.py, node src/index.js,\n"
-                "   go run …). End your response with ONE line:\n"
+                "   language convention (src/main.py for Python, src/index.ts\n"
+                "   for TypeScript, cmd/<app>/main.go for Go, src/main.rs\n"
+                "   for Rust, src/main/java/.../App.java for Java,\n"
+                "   src/Program.cs for .NET). The file MUST boot directly\n"
+                "   with a single terminal command (python src/main.py /\n"
+                "   node src/index.js / go run ./cmd/server / cargo run /\n"
+                "   java -jar ... / dotnet run). End your response with\n"
+                "   ONE line:\n"
                 "       RUN: <command to launch>'\n"
                 "2. Run the RUN command with execute_shell(timeout=5).\n"
                 "   - timeout after 5s → SUCCESS (entered main loop).\n"
@@ -904,17 +1056,23 @@ class ProjectSession:
                 "Execute Phase 3 — Sprint Review & Demo (AGILE):\n"
                 "dispatch_task to qa_engineer. Require the QA agent to:\n"
                 "- Read docs/product_backlog.md AND docs/sprint_design.md.\n"
-                "- Write tests/test_integration.py (ONLY integration tests —\n"
-                "  developers already wrote per-module unit tests). Cover\n"
-                "  every MVP user story's acceptance criteria end-to-end.\n"
-                '- RUN the FULL suite: execute(command="python -m pytest\n'
-                '  tests/ -q --tb=short") and iterate up to 3 times until\n'
-                "  tests pass.\n"
+                "- Write ONE integration test file at the path matching\n"
+                "  the project's test runner (e.g. tests/test_integration.py\n"
+                "  for pytest, tests/integration.test.ts for vitest/jest,\n"
+                "  internal/integration_test.go for Go, tests/integration.rs\n"
+                "  for Rust, src/test/java/.../IntegrationTest.java for\n"
+                "  Java). ONLY integration tests — developers already wrote\n"
+                "  per-module unit tests. Cover every MVP user story's\n"
+                "  acceptance criteria end-to-end.\n"
+                "- RUN the FULL suite using the project's test runner\n"
+                "  (python -m pytest tests/ / npx vitest run / go test ./...\n"
+                "  / cargo test / mvn test) and iterate up to 3 times\n"
+                "  until tests pass.\n"
                 "- Write docs/sprint_review.md with a per-user-story\n"
                 "  PASS/FAIL table so the product owner can verify delivery\n"
-                "  during review. Include pytest final summary.\n"
-                "Pass expected_artifacts=['tests/test_integration.py',\n"
-                "'docs/sprint_review.md'].\n"
+                "  during review. Include the final test summary.\n"
+                "Pass expected_artifacts=[<the integration test file path>,\n"
+                "'docs/sprint_review.md', 'docs/qa_report.json'].\n"
                 "After it completes, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
@@ -942,40 +1100,54 @@ class ProjectSession:
                 f"Project requirement: {requirement}\n\n"
                 "Execute Phase 5 — Sprint Delivery Report (AGILE):\n\n"
                 "Collect real metrics then have product_manager write the\n"
-                "report. Do NOT guess numbers.\n\n"
-                "1. Collect metrics via execute_shell:\n"
-                "   a) Source file count:\n"
-                "      execute_shell('find src -type f -name \"*.py\" | wc -l')\n"
-                "   b) Source LOC (top files + total):\n"
-                "      execute_shell('find src -type f -name \"*.py\" -exec wc -l {} + | sort -rn | head -30')\n"
-                "   c) Test files + collected cases:\n"
-                "      execute_shell('find tests -type f -name \"test_*.py\" 2>/dev/null | wc -l')\n"
-                "      execute_shell('python -m pytest tests/ --collect-only -q 2>&1 | tail -5')\n"
-                "   d) Final pytest summary:\n"
-                "      execute_shell('python -m pytest tests/ -q --tb=line 2>&1 | tail -20')\n\n"
-                "2. Dispatch product_manager to write docs/delivery_report.md.\n"
+                "report. Do NOT guess numbers. Read the project's language\n"
+                "from docs/architecture.md (or docs/stack_contract.json if\n"
+                "present) BEFORE picking the file globs and test runner;\n"
+                "do NOT default to Python.\n\n"
+                "1. Read docs/qa_report.json (REQUIRED — schema in the\n"
+                "   waterfall Phase-6 prompt; QA writes it during Sprint\n"
+                "   Review). If missing or invalid, dispatch qa_engineer\n"
+                "   to produce it, then re-read.\n"
+                "2. Collect non-test metrics via execute_shell. Pick the\n"
+                "   row matching the project's language. Run each find\n"
+                "   twice: once with ``| wc -l`` for the count, once with\n"
+                "   ``-exec wc -l {} + | sort -rn | head -30`` for LOC.\n"
+                "      - Python:     find src -type f -name '*.py'\n"
+                "      - TypeScript: find src -type f \\( -name '*.ts' -o -name '*.tsx' \\)\n"
+                "      - Go:         find . -type f -name '*.go' -not -path './vendor/*'\n"
+                "      - Rust:       find src -type f -name '*.rs'\n"
+                "      - Java:       find src -type f -name '*.java'\n"
+                "3. Dispatch product_manager to write docs/delivery_report.md.\n"
                 "   Pass expected_artifacts=['docs/delivery_report.md'].\n"
                 "   Require the report to cover:\n"
-                "   1. MVP Summary — one paragraph on what shipped this sprint\n"
-                "      and whether it meets the DoD of the in-scope stories.\n"
-                "   2. User Stories Shipped vs Deferred — table with story ID,\n"
-                "      title, status (shipped / deferred / blocked).\n"
+                "   1. MVP Summary — one paragraph on what shipped this\n"
+                "      sprint and whether it meets the DoD of the in-scope\n"
+                "      stories (production-ready iff qa_report says so).\n"
+                "   2. User Stories Shipped vs Deferred — table with story\n"
+                "      ID, title, status (shipped / deferred / blocked).\n"
                 "   3. Design — bullets from docs/sprint_design.md.\n"
-                "   4. Implementation Metrics — source file count, LOC, entry\n"
-                "      point RUN command.\n"
-                "   5. Test Metrics — FULL-suite pass/fail/skipped from step d,\n"
-                "      pass rate percentage.\n"
-                "   6. Retrospective Highlights — 3-5 bullets from\n"
+                "   4. Implementation Metrics — source file count, LOC,\n"
+                "      entry point RUN command.\n"
+                "   5. Test Metrics — copy qa_report.pytest fields\n"
+                "      verbatim (passed/failed/skipped + pass rate). Do\n"
+                "      NOT re-run tests yourself.\n"
+                "   6. UI Validation — copy qa_report.ui_validation\n"
+                "      verbatim.\n"
+                "   7. Known Issues — list every entry from\n"
+                "      qa_report.product_bugs verbatim AND every test in\n"
+                "      qa_report.pytest.failed_tests verbatim, or 'none'.\n"
+                "   8. Retrospective Highlights — 3-5 bullets from\n"
                 "      docs/sprint_retrospective.md.\n"
-                "   7. Next-Sprint Candidates — deferred stories + retro\n"
+                "   9. Next-Sprint Candidates — deferred stories + retro\n"
                 "      action items.\n"
-                "   EMBED the raw tool outputs verbatim so the PM cites real\n"
-                "   numbers.\n\n"
-                "3. After product_manager returns, call mark_complete with a\n"
-                "   short paragraph referencing docs/delivery_report.md.\n"
-                "   Include: project name, 'agile sprint', pass rate, shipped\n"
-                "   user stories count, deferred stories count, entry point\n"
-                "   verification outcome.",
+                "   EMBED the raw qa_report.json + step-2 tool outputs in\n"
+                "   the task description so the PM cites them verbatim.\n\n"
+                "4. After product_manager returns, call mark_complete\n"
+                "   with a short paragraph referencing\n"
+                "   docs/delivery_report.md. Include: project name,\n"
+                "   'agile sprint', pass rate (from qa_report), shipped\n"
+                "   user stories count, deferred stories count, entry\n"
+                "   point verification outcome.",
             ),
         ]
 
@@ -1013,24 +1185,32 @@ class ProjectSession:
                 "- APPEND / UPDATE only the sections the new stories touch.\n"
                 "  Existing design stays. Keep C4 for architecture views.\n"
                 "- Validate every ```mermaid block via the mermaid skill.\n"
-                "Pass expected_artifacts=['docs/sprint_design.md'].\n"
+                "Pass expected_artifacts=['docs/sprint_design.md',\n"
+                "'docs/stack_contract.json'].\n"
                 "STOP. Do NOT call mark_complete.",
             ),
             (
                 "sprint_execution",
                 f"New requirement for the next sprint: {requirement}\n\n"
-                "Execute Phase 2b — Sprint Execution (AGILE, INCREMENTAL):\n"
-                "1. Read docs/sprint_design.md. Identify NEW/CHANGED MVP\n"
-                "   modules for this sprint only.\n"
-                "2. dispatch_tasks_parallel to developer for each module:\n"
-                "   - NEW modules: strict TDD. Write tests then source then\n"
-                "     run per-module tests. Up to 3 fix attempts.\n"
-                "   - CHANGED modules: task MUST say the file exists and\n"
-                "     developer must EDIT in place (edit_file) — never\n"
-                "     rewrite. Existing tests must keep passing.\n"
-                "   - expected_artifacts=['src/<module>.py',\n"
-                "     'tests/test_<module>.py'].\n"
-                "3. STOP. Do NOT call mark_complete.",
+                "Execute Phase 2b — Sprint Execution (AGILE, INCREMENTAL,\n"
+                "per-subsystem fan-out):\n\n"
+                "Fan-out is performed by the orchestration layer. Make ONE\n"
+                "tool call:\n\n"
+                '    dispatch_subsystems(phase="sprint_execution")\n\n'
+                "1. Verify docs/stack_contract.json is up to date with the\n"
+                "   incremental sprint design. If architect should have\n"
+                "   amended subsystems[] / components[] but didn't, STOP\n"
+                "   and dispatch architect to bring the contract in line.\n"
+                "2. Read docs/sprint_design.md briefly (informational).\n"
+                '3. Call dispatch_subsystems(phase="sprint_execution")\n'
+                "   exactly once. Each developer dispatch's task\n"
+                "   description includes the subsystem's components from\n"
+                "   the contract; CHANGED components are addressed via\n"
+                "   the rendered TDD instructions (edit-in-place when the\n"
+                "   file already exists).\n"
+                "4. Do NOT call dispatch_task or dispatch_tasks_parallel\n"
+                "   yourself for individual subsystems / components.\n"
+                "5. STOP. Do NOT call mark_complete.",
             ),
             (
                 "sprint_main_entry",
@@ -1038,7 +1218,8 @@ class ProjectSession:
                 "Execute Phase 2c — Working Entry Point (AGILE,\n"
                 "INCREMENTAL, verify-only):\n"
                 "1. Check whether an entry file exists (src/main.py,\n"
-                "   src/index.js, cmd/<app>/main.go, src/main.rs). If yes,\n"
+                "   src/index.ts, cmd/<app>/main.go, src/main.rs,\n"
+                "   src/main/java/.../App.java, src/Program.cs). If yes,\n"
                 "   jump to step 3 with its RUN command; if no, dispatch\n"
                 "   developer to create one with a RUN: line.\n"
                 "2. Run RUN command via execute_shell(timeout=5). Same\n"
@@ -1055,15 +1236,21 @@ class ProjectSession:
                 "dispatch_task to qa_engineer:\n"
                 "- Read docs/product_backlog.md + docs/sprint_design.md\n"
                 "  (including the new sections).\n"
-                "- EDIT tests/test_integration.py in place (do NOT rewrite)\n"
-                "  to add scenarios for the new MVP stories.\n"
-                '- RUN the FULL suite: execute(command="python -m pytest\n'
-                '  tests/ -q --tb=short") and iterate up to 3 times until\n'
-                "  tests pass.\n"
+                "- EDIT the existing integration test file IN PLACE (e.g.\n"
+                "  tests/test_integration.py for pytest,\n"
+                "  tests/integration.test.ts for vitest/jest,\n"
+                "  internal/integration_test.go for Go,\n"
+                "  tests/integration.rs for Rust,\n"
+                "  src/test/java/.../IntegrationTest.java for Java) — do\n"
+                "  NOT rewrite — to add scenarios for the new MVP stories.\n"
+                "- RUN the FULL suite using the project's test runner\n"
+                "  (python -m pytest tests/ / npx vitest run / go test ./...\n"
+                "  / cargo test / mvn test) and iterate up to 3 times\n"
+                "  until tests pass.\n"
                 "- EDIT docs/sprint_review.md — append a new section for\n"
                 "  this sprint with per-user-story PASS/FAIL.\n"
-                "Pass expected_artifacts=['tests/test_integration.py',\n"
-                "'docs/sprint_review.md'].\n"
+                "Pass expected_artifacts=[<the integration test file path>,\n"
+                "'docs/sprint_review.md', 'docs/qa_report.json'].\n"
                 "STOP. Do NOT call mark_complete.",
             ),
             (
@@ -1083,29 +1270,45 @@ class ProjectSession:
                 f"New requirement for the next sprint: {requirement}\n\n"
                 "Execute Phase 5 — Sprint Delivery Report (AGILE,\n"
                 "INCREMENTAL):\n\n"
-                "Collect delta + full metrics:\n"
+                "Assemble the report from the QA engineer's structured\n"
+                "findings — do NOT re-run tests yourself. Read the\n"
+                "project's language from docs/architecture.md (or\n"
+                "docs/stack_contract.json if present); do NOT default to\n"
+                "Python.\n"
+                "1. Read docs/qa_report.json (REQUIRED — schema in the\n"
+                "   waterfall Phase-6 prompt; QA writes it during Sprint\n"
+                "   Review). If missing or invalid, dispatch qa_engineer\n"
+                "   to produce it, then re-read.\n"
+                "2. Collect delta + non-test metrics:\n"
                 "   a) New or modified files since baseline:\n"
                 "      execute_shell('git status --short 2>/dev/null || true')\n"
                 "      execute_shell('git diff --name-only HEAD~1 2>/dev/null || true')\n"
-                "   b) Full file / LOC count:\n"
-                "      execute_shell('find src -type f -name \"*.py\" | wc -l')\n"
-                "      execute_shell('find src -type f -name \"*.py\" -exec wc -l {} + | sort -rn | head -30')\n"
-                "   c) Test suite:\n"
-                "      execute_shell('find tests -type f -name \"test_*.py\" 2>/dev/null | wc -l')\n"
-                "      execute_shell('python -m pytest tests/ --collect-only -q 2>&1 | tail -5')\n"
-                "      execute_shell('python -m pytest tests/ -q --tb=line 2>&1 | tail -20')\n\n"
-                "Dispatch product_manager to EDIT docs/delivery_report.md\n"
-                "(append a new sprint section — do NOT recreate). Cover:\n"
-                "  1. Sprint Delta Summary — new requirement + shipped /\n"
-                "     deferred stories.\n"
-                "  2. Modules added vs modules edited (from step a).\n"
-                "  3. Updated implementation metrics (step b).\n"
-                "  4. FULL-suite test metrics (step c).\n"
-                "  5. Retrospective bullets for this sprint.\n"
+                "   b) Full file / LOC count, pick the row matching your\n"
+                "      project's language. Run each find twice: once with\n"
+                "      ``| wc -l`` for the count, once with\n"
+                "      ``-exec wc -l {} + | sort -rn | head -30`` for LOC.\n"
+                "      - Python:     find src -type f -name '*.py'\n"
+                "      - TypeScript: find src -type f \\( -name '*.ts' -o -name '*.tsx' \\)\n"
+                "      - Go:         find . -type f -name '*.go' -not -path './vendor/*'\n"
+                "      - Rust:       find src -type f -name '*.rs'\n"
+                "      - Java:       find src -type f -name '*.java'\n"
+                "3. Dispatch product_manager to EDIT docs/delivery_report.md\n"
+                "   (append a new sprint section — do NOT recreate). Cover:\n"
+                "   1. Sprint Delta Summary — new requirement + shipped /\n"
+                "      deferred stories.\n"
+                "   2. Modules added vs modules edited (from step 2a).\n"
+                "   3. Updated implementation metrics (step 2b).\n"
+                "   4. Test metrics — copy qa_report.pytest verbatim.\n"
+                "   5. UI Validation — copy qa_report.ui_validation\n"
+                "      verbatim.\n"
+                "   6. Known Issues — list every entry from\n"
+                "      qa_report.product_bugs verbatim AND every test in\n"
+                "      qa_report.pytest.failed_tests verbatim, or 'none'.\n"
+                "   7. Retrospective bullets for this sprint.\n"
                 "Pass expected_artifacts=['docs/delivery_report.md'].\n"
                 "After it returns, call mark_complete with: project name,\n"
-                "'agile sprint <incremental>', pass rate, shipped stories\n"
-                "count, entry verification outcome.",
+                "'agile sprint <incremental>', pass rate (from qa_report),\n"
+                "shipped stories count, entry verification outcome.",
             ),
         ]
 
@@ -1151,37 +1354,44 @@ class ProjectSession:
                 "After writing, the architect MUST validate every\n"
                 "```mermaid block using the ``mermaid`` skill and fix\n"
                 "any syntax error before responding.\n"
-                "Pass expected_artifacts=['docs/architecture.md'] so the\n"
-                "runtime retries once with context if the file is missing.\n"
+                "Pass expected_artifacts=['docs/architecture.md',\n"
+                "'docs/stack_contract.json'] so the runtime retries once\n"
+                "if either is missing.\n"
                 "After it completes, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
             (
                 "implementation",
                 f"Project requirement: {requirement}\n\n"
-                "Execute Phase 3 — Implementation (TDD, per-module):\n"
-                "1. Read docs/architecture.md to identify all modules.\n"
-                "2. For EACH module, dispatch developer using dispatch_tasks_parallel.\n"
-                "   In each task description, include the architecture spec AND\n"
-                "   explicitly instruct the developer to follow strict TDD:\n"
-                "   first write tests/test_<module>.py, then src/<module>.py,\n"
-                "   then run ONLY that module's test file with\n"
-                '   execute(command="python -m pytest tests/test_<module>.py -q --tb=short")\n'
-                "   and iterate (up to 3 attempts) until that module's tests pass.\n"
-                "   After the module's tests pass, the developer MUST run the\n"
-                "   ``code_inspection`` skill's language-appropriate static\n"
-                "   analyzer against each source file written (for Python:\n"
-                "   ``ruff check <file>`` + ``mypy <file>``) and fix every\n"
-                "   finding before reporting the module done.\n"
-                "   For each task object in the JSON, set\n"
-                "   expected_artifacts=['src/<module>.py', 'tests/test_<module>.py']\n"
-                "   so the runtime retries once with context if either file is missing.\n"
-                "3. Do NOT run the full pytest suite yourself — developers run\n"
-                "   their own per-module tests, and the QA engineer will run\n"
-                "   the full suite in Phase 5. Running full pytest here while\n"
-                "   parallel developer dispatches are still writing files\n"
-                "   causes races and noisy failures.\n"
-                "4. When all dispatches return, STOP.\n"
+                "Execute Phase 3 — Implementation (TDD, per-subsystem fan-out):\n\n"
+                "Fan-out is performed by the orchestration layer, NOT by you\n"
+                "drafting tasks_json. You make ONE tool call:\n\n"
+                '    dispatch_subsystems(phase="implementation")\n\n'
+                "The primitive reads docs/stack_contract.json's subsystems[]\n"
+                "(written by architect in Phase 2), builds one developer\n"
+                "task description per subsystem deterministically (from the\n"
+                "contract's language / test_runner / static_analyzer +\n"
+                "components[] list — no LLM in the loop), and dispatches\n"
+                "developer in parallel up to the runtime cap\n"
+                "(safety_limits.max_concurrent_subsystem_dispatches, default\n"
+                "4). Each developer dispatch carries the STACK CONTRACT and\n"
+                "ORIGINAL USER REQUIREMENT blocks automatically.\n\n"
+                "1. Verify docs/stack_contract.json exists and is valid by\n"
+                "   reading it once with read_file. If missing or malformed,\n"
+                "   STOP and dispatch architect to produce it; do NOT guess\n"
+                "   the stack.\n"
+                '2. Call dispatch_subsystems(phase="implementation")\n'
+                "   exactly once. The tool returns an aggregate result with\n"
+                "   per-subsystem pass/fail and component artifact verification.\n"
+                "3. Do NOT call dispatch_task or dispatch_tasks_parallel\n"
+                "   yourself for individual subsystems / components — the\n"
+                "   primitive does the fan-out so a weak orchestrator LLM\n"
+                "   that can only emit one tool call per turn still gets\n"
+                "   real parallelism on the worker side.\n"
+                "4. Do NOT run the full test suite — developers run their\n"
+                "   own per-component tests inside each subsystem dispatch,\n"
+                "   and the QA engineer runs the full suite in Phase 5.\n"
+                "5. When dispatch_subsystems returns, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
             (
@@ -1189,25 +1399,34 @@ class ProjectSession:
                 f"Project requirement: {requirement}\n\n"
                 "Execute Phase 4 — Main Entry Point (language-agnostic):\n\n"
                 "1. dispatch_task to developer with this task:\n"
-                "'Write the project's main entry-point file. Use whatever\n"
-                "path and format your language\\'s conventions dictate — e.g.\n"
-                "src/main.py (Python), src/index.js (Node), cmd/<app>/main.go\n"
-                "(Go), src/main.rs (Rust). Read the existing source files\n"
-                "first to understand the module APIs. The file MUST be a\n"
-                "real BOOT SCRIPT that can be launched directly (python\n"
-                "src/main.py, node src/index.js, go run …). It is NOT enough\n"
-                "to expose a class with a run() method — the file itself\n"
-                "must start the app. Use whatever hook your language needs\n"
-                '(``if __name__ == "__main__":`` for Python, top-level\n'
-                "invocation for Node, ``func main()`` for Go, etc.).\n"
-                "Also write the corresponding unit test file and verify it\n"
-                "passes for that module only (do NOT run the full suite).\n"
+                "'Write the project's main entry-point file. Use the path\n"
+                "and format your project's language conventions dictate —\n"
+                "e.g. src/main.py (Python), src/index.ts (TypeScript),\n"
+                "cmd/<app>/main.go (Go), src/main.rs (Rust),\n"
+                "src/main/java/.../App.java (Java), src/Program.cs (.NET).\n"
+                "Read the existing source files first to understand the\n"
+                "module APIs. The file MUST be a real BOOT SCRIPT that can\n"
+                "be launched directly with a single terminal command. It\n"
+                "is NOT enough to expose a class with a run() method —\n"
+                "the file itself must start the app. Use whatever hook\n"
+                'your language needs (e.g. ``if __name__ == "__main__":``\n'
+                "for Python, top-level invocation for Node, ``func main()``\n"
+                "for Go, ``fn main()`` for Rust, ``public static void main``\n"
+                "for Java, ``Program.Main`` for .NET).\n"
+                "Also write the corresponding unit test file (using the\n"
+                "language's test runner) and verify it passes for that\n"
+                "module only (do NOT run the full suite).\n"
                 "End your response with ONE line in the EXACT format:\n"
                 "    RUN: <command to launch the app from project root>\n"
-                "Examples:\n"
-                "    RUN: python src/main.py\n"
+                "Examples (alphabetical, pick the row matching your stack):\n"
+                "    RUN: cargo run --release\n"
+                "    RUN: dotnet run --project src/\n"
+                "    RUN: go run ./cmd/server\n"
+                "    RUN: java -jar target/app.jar\n"
                 "    RUN: node src/index.js\n"
-                "    RUN: go run ./cmd/server'\n\n"
+                "    RUN: npm run dev\n"
+                "    RUN: npx tsx src/index.ts\n"
+                "    RUN: python src/main.py'\n\n"
                 "2. After the dispatch returns, extract the RUN: line from\n"
                 "   the response's output_preview (format: ``RUN: <cmd>``).\n"
                 "   Run the extracted command with execute_shell using\n"
@@ -1218,11 +1437,14 @@ class ProjectSession:
                 "     and servers.\n"
                 "   - exit_code == 0 with normal output is also SUCCESS:\n"
                 "     the app booted and exited cleanly (CLI-style tools).\n"
-                "   - exit_code != 0 with output containing ImportError,\n"
-                "     SyntaxError, ModuleNotFoundError, NameError,\n"
-                "     AttributeError at top level, ``No such file``,\n"
-                "     ``cannot find module``, or similar startup failures\n"
-                "     is FAILURE.\n"
+                "   - exit_code != 0 with output containing ImportError /\n"
+                "     ModuleNotFoundError / NameError / AttributeError\n"
+                "     (Python), Cannot find module / TypeError\n"
+                "     (Node / TS), undefined: ... / cannot find package\n"
+                "     (Go), error[E0...] / unresolved import (Rust),\n"
+                "     ClassNotFoundException / NoSuchMethodError (Java),\n"
+                "     ``No such file``, or similar startup failures is\n"
+                "     FAILURE.\n"
                 "   - No RUN: line present in the response is FAILURE.\n\n"
                 "3. If step 2 reported FAILURE, dispatch developer AGAIN\n"
                 "   with the failure text and request a fix. Allow up to 3\n"
@@ -1236,15 +1458,25 @@ class ProjectSession:
                 f"Project requirement: {requirement}\n\n"
                 "Execute Phase 5 — Integration Testing (QA runs the suite):\n"
                 "dispatch_task to qa_engineer with this task:\n"
-                "'Write tests/test_integration.py ONLY — integration tests for\n"
-                "cross-module interactions and end-to-end flows. Do NOT write\n"
-                "per-module unit tests (developer already did that in Phase 3).\n"
-                "After writing, RUN the full suite yourself with\n"
-                'execute(command="python -m pytest tests/ -q --tb=short")\n'
-                "and iterate up to 3 times until tests pass. Report the final\n"
-                "pytest result in your response.'\n"
-                "Pass expected_artifacts=['tests/test_integration.py'] so the\n"
-                "runtime retries once with context if the file is missing.\n"
+                "'Write ONE integration test file at the path matching the\n"
+                "project's test runner — e.g. tests/test_integration.py\n"
+                "(pytest), tests/integration.test.ts (vitest / jest),\n"
+                "internal/integration_test.go (Go), tests/integration.rs\n"
+                "(Rust), src/test/java/.../IntegrationTest.java (Java).\n"
+                "Cover cross-module interactions and end-to-end flows.\n"
+                "Do NOT write per-module unit tests (developer already did\n"
+                "that in Phase 3). After writing, RUN the full suite\n"
+                "yourself using the project's full-suite test command:\n"
+                "  - Python:     python -m pytest tests/ -q --tb=short\n"
+                "  - TypeScript: npx vitest run  (or npx jest)\n"
+                "  - Go:         go test ./...\n"
+                "  - Rust:       cargo test\n"
+                "  - Java:       mvn test\n"
+                "Iterate up to 3 times until tests pass. Report the final\n"
+                "test result in your response.'\n"
+                "Pass expected_artifacts=[<the chosen integration test\n"
+                "file path>, 'docs/qa_report.json'] so the runtime\n"
+                "retries once if either is missing.\n"
                 "After it completes, STOP.\n"
                 "Do NOT call mark_complete.",
             ),
@@ -1252,60 +1484,83 @@ class ProjectSession:
                 "delivery",
                 f"Project requirement: {requirement}\n\n"
                 "Execute Phase 6 — Delivery Report:\n\n"
-                "Your job is to collect hard metrics about what was built,\n"
-                "then have the product_manager agent write them up as a\n"
-                "proper delivery report. Do NOT guess numbers — every\n"
-                "figure in the report must come from a real tool output.\n\n"
-                "1. Collect development metrics. Use execute_shell to run\n"
-                "   each command below and keep the output text. If a\n"
-                "   command fails or returns nothing, note that fact and\n"
-                "   continue — do not retry more than once per command.\n\n"
-                "   a) Source file count. Pick the right find expression\n"
-                "      for the language(s) used in this project — typical\n"
-                "      source extensions are .py .js .ts .go .rs .java\n"
-                "      .cpp .c .cs etc. Example:\n"
-                "      execute_shell('find src -type f -name \"*.py\" | wc -l')\n"
-                "   b) Source lines of code. Top files first, then total:\n"
-                "      execute_shell('find src -type f -name \"*.py\" -exec wc -l {} + | sort -rn | head -30')\n"
-                "   c) Test file list + counts:\n"
-                "      execute_shell('find tests -type f -name \"test_*.py\" 2>/dev/null | wc -l')\n"
-                "      execute_shell('python -m pytest tests/ --collect-only -q 2>&1 | tail -5')\n"
-                "   d) Test pass/fail summary (final run):\n"
-                "      execute_shell('python -m pytest tests/ -q --tb=line 2>&1 | tail -20')\n"
-                "   e) Coverage (optional — may fail if pytest-cov not installed):\n"
-                "      execute_shell('python -m pytest tests/ --cov=src --cov-report=term 2>&1 | tail -25')\n\n"
-                "2. Dispatch product_manager to write the final report.\n"
-                "   Pass expected_artifacts=['docs/delivery_report.md'] so\n"
-                "   the runtime retries once with context if the file is\n"
-                "   missing.\n"
-                "   Embed the ACTUAL tool outputs you gathered above into\n"
-                "   the task description so product_manager has the raw\n"
-                "   numbers to cite. Use a task description like:\n\n"
+                "Your job is to assemble a delivery report from the QA\n"
+                "engineer's structured findings — NOT to re-run the test\n"
+                "suite yourself. Re-running pytest / vitest / etc. here\n"
+                "introduces flakiness (a test that intermittently fails\n"
+                "may pass this time and the QA-flagged failure / product\n"
+                "bugs disappear from the final report).\n\n"
+                "1. Read docs/qa_report.json (REQUIRED). The QA engineer\n"
+                "   wrote it in Phase 5. Schema:\n"
+                "     {\n"
+                '       "pytest": {"command": str, "passed": int,\n'
+                '                  "failed": int, "skipped": int,\n'
+                '                  "failed_tests": [str, ...]},\n'
+                '       "ui_validation": {"required": bool,\n'
+                '                          "verdict": "PASS|FAILED|\n'
+                '                                       SKIPPED_HEADLESS_ONLY",\n'
+                '                          "reason": str},\n'
+                '       "product_bugs": [{"module": str, "function":\n'
+                '                          str, "summary": str}, ...],\n'
+                '       "integration_tests": {"file": str,\n'
+                '                              "scenario_count": int}\n'
+                "     }\n"
+                "   If docs/qa_report.json is MISSING or invalid JSON, do\n"
+                "   NOT fabricate numbers and do NOT silently re-run\n"
+                "   tests. Instead: dispatch qa_engineer to produce the\n"
+                "   missing report (the QA agent's prompt requires it),\n"
+                "   then re-read the file. Only after a valid report is\n"
+                "   on disk continue to step 2.\n\n"
+                "2. Collect non-test development metrics that QA does NOT\n"
+                "   produce — source file count + per-file LOC. Read the\n"
+                "   project's language from docs/architecture.md (or\n"
+                "   docs/stack_contract.json if present) BEFORE picking\n"
+                "   the file glob; do NOT default to Python. Run each\n"
+                "   find twice: once with ``| wc -l`` for the count,\n"
+                "   once with ``-exec wc -l {} + | sort -rn | head -30``\n"
+                "   for per-file LOC.\n"
+                "      - Python:     find src -type f -name '*.py'\n"
+                "      - TypeScript: find src -type f \\( -name '*.ts' -o -name '*.tsx' \\)\n"
+                "      - Go:         find . -type f -name '*.go' -not -path './vendor/*'\n"
+                "      - Rust:       find src -type f -name '*.rs'\n"
+                "      - Java:       find src -type f -name '*.java'\n"
+                "      - C# / .NET:  find . -type f -name '*.cs' -not -path './bin/*' -not -path './obj/*'\n"
+                "3. Dispatch product_manager to write the final report.\n"
+                "   Pass expected_artifacts=['docs/delivery_report.md'].\n"
+                "   Embed the qa_report.json fields VERBATIM into the\n"
+                "   task description so product_manager cannot rewrite\n"
+                "   the conclusion. Use a task description like:\n\n"
                 "   'Write docs/delivery_report.md — the project delivery\n"
-                "   report. Use the data I pass you; do not invent numbers.\n"
-                "   Required sections:\n"
+                "   report. Use the data I pass you; do not invent\n"
+                "   numbers. The Known Issues section MUST list every\n"
+                "   entry from qa_report.product_bugs verbatim AND every\n"
+                "   test in qa_report.pytest.failed_tests verbatim. If\n"
+                "   product_bugs is empty AND failed_tests is empty AND\n"
+                "   ui_validation.verdict is PASS or SKIPPED_HEADLESS_ONLY,\n"
+                '   write "none". Otherwise enumerate them. Required\n'
+                "   sections:\n"
                 "   1. Executive Summary — one paragraph, what was built\n"
-                "      and whether it is production-ready.\n"
+                "      and whether it is production-ready (DERIVE from\n"
+                "      qa_report — production-ready iff failed==0 AND\n"
+                "      product_bugs is empty AND ui_validation.verdict\n"
+                "      != FAILED).\n"
                 "   2. Design — summarize docs/architecture.md (read it\n"
                 "      yourself) in a few bullets: module decomposition,\n"
-                "      key technology choices.\n"
-                "   3. Implementation Metrics:\n"
-                "      - Source file count\n"
-                "      - Total lines of code (from wc -l output)\n"
-                "      - Per-module breakdown (top files by LOC)\n"
-                "      - Entry point location and RUN command\n"
-                "   4. Testing Metrics:\n"
-                "      - Test file count\n"
-                "      - Total test cases collected (pytest --collect-only)\n"
-                "      - Pass / fail / skipped counts (pytest final run)\n"
-                "      - Overall pass rate as a percentage\n"
-                "      - Coverage percentage IF available (otherwise\n"
-                '        explicitly state "coverage not measured")\n'
-                "   5. Known Issues — list any failing tests with short\n"
-                '      descriptions, or "none" if all green.\n'
-                "   6. Conclusion — one or two sentences on readiness.\n\n"
-                "   RAW TOOL OUTPUTS (cite these, do not fabricate):\n"
-                "   <paste the actual execute_shell outputs from step 1>'\n\n"
+                "      key technology choices (language, frameworks).\n"
+                "   3. Implementation Metrics — source file count, LOC,\n"
+                "      top files by LOC, entry point location + RUN cmd.\n"
+                "   4. Testing Metrics — copy qa_report.pytest fields\n"
+                "      verbatim: passed / failed / skipped counts and\n"
+                "      pass rate (passed / (passed+failed+skipped)).\n"
+                "      Do NOT re-run pytest yourself.\n"
+                "   5. UI Validation — copy qa_report.ui_validation\n"
+                "      verbatim (required, verdict, reason).\n"
+                "   6. Known Issues — list as required above.\n"
+                "   7. Conclusion — one or two sentences on readiness.\n\n"
+                "   RAW QA REPORT JSON (cite verbatim, do not paraphrase):\n"
+                "   <paste the contents of docs/qa_report.json>\n"
+                "   RAW LOC TOOL OUTPUTS (from step 2):\n"
+                "   <paste the find / wc -l outputs>'\n\n"
                 "3. After product_manager returns, call mark_complete with\n"
                 "   a short paragraph summary that references\n"
                 "   docs/delivery_report.md for details. The summary\n"
@@ -1382,21 +1637,28 @@ class ProjectSession:
                 return (
                     f"Implementation: {developer_dispatches} developer dispatches, "
                     f"{developer_completed} completed. "
-                    "Run execute_shell('python -m pytest tests/ -q --tb=short') to check. "
+                    "Run the project's full-suite test command to check "
+                    "(python -m pytest tests/ for Python, npx vitest run for "
+                    "TypeScript/vitest, npx jest for jest, go test ./... for Go, "
+                    "cargo test for Rust, mvn test for Java). "
                     "If tests fail, dispatch developer to fix. "
                     "Do NOT proceed until tests pass."
                 )
-            # Tests pass → dispatch main.py
+            # Tests pass → dispatch main entry point
             return (
-                "Module tests pass. Now dispatch developer to write src/main.py — "
-                "the main entry point. Call:\n"
+                "Module tests pass. Now dispatch developer to write the main "
+                "entry-point file at the path matching the project's language "
+                "(src/main.py for Python, src/index.ts for TypeScript, "
+                "cmd/<app>/main.go for Go, src/main.rs for Rust, "
+                "src/main/java/.../App.java for Java, src/Program.cs for .NET). "
+                "Call:\n"
                 "dispatch_task(agent_name='developer', "
-                "task_description='Write src/main.py — the main entry point that "
+                "task_description='Write the main entry point that "
                 "imports and uses ALL implemented modules (read src/ to see what exists). "
-                "Create a real game loop: initialize Snake, Food, Engine, GameState, Scoring etc., "
-                "then run an update loop that moves the snake, checks collisions, spawns food, "
-                "and tracks score. NOT a stub — real working game logic. "
-                "Also write tests/test_main.py to verify the game initializes and runs.', "
+                "Create real bootstrap logic — initialise the modules and run the "
+                "main loop / start the server / open the window etc. NOT a stub. "
+                "Also write the corresponding unit test file in the language\\'s "
+                "idiomatic test location to verify the entry initialises and runs.', "
                 "step_id='step_integrate_main', phase='implementation')"
             )
 
@@ -1404,15 +1666,22 @@ class ProjectSession:
             return (
                 "Main entry point done. Dispatch qa_engineer for integration testing.\n"
                 "dispatch_task(agent_name='qa_engineer', "
-                "task_description='Read src/ and tests/ to understand the system. "
-                "Write integration tests to tests/test_integration.py covering "
+                "task_description='Read src/ and tests/ (or the language\\'s "
+                "idiomatic source/test directories) to understand the system. "
+                "Write integration tests at the path matching the project\\'s "
+                "test runner (tests/test_integration.py for pytest, "
+                "tests/integration.test.ts for vitest/jest, "
+                "internal/integration_test.go for Go, tests/integration.rs for "
+                "Rust, src/test/java/.../IntegrationTest.java for Java) covering "
                 "cross-module interactions.', "
                 "step_id='step_integration_test', phase='verification')"
             )
 
         if "qa_engineer" in agents_dispatched:
             return (
-                "All phases done. Run execute_shell('python -m pytest tests/ -q --tb=short'). "
+                "All phases done. Run the project's full-suite test command "
+                "(python -m pytest tests/ / npx vitest run / npx jest / "
+                "go test ./... / cargo test / mvn test). "
                 "If all pass, call mark_complete with a delivery report. "
                 "If tests fail, dispatch developer to fix, then re-check."
             )

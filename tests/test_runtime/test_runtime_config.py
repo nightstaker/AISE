@@ -4,6 +4,7 @@ from aise.runtime.models import ProcessCaps
 from aise.runtime.runtime_config import (
     DEFAULT_MAX_CONTINUATIONS,
     DEFAULT_MAX_DISPATCHES,
+    DISPATCH_FLOOR_BUFFER,
     RuntimeConfig,
     SafetyLimits,
     ShellConfig,
@@ -15,6 +16,17 @@ class TestSafetyLimits:
         limits = SafetyLimits()
         assert limits.max_dispatches == DEFAULT_MAX_DISPATCHES
         assert limits.max_continuations == DEFAULT_MAX_CONTINUATIONS
+
+    def test_max_dispatches_default_covers_typical_architecture(self):
+        """The default must accommodate a realistic architecture: 5
+        subsystems / ~32 components → 5 + 32 + ~6 (PM/architect/main/
+        qa/delivery) ≈ 43 dispatches. Anything < 64 retroactively
+        truncates the last subsystem (project_7-tower regression).
+        """
+        assert DEFAULT_MAX_DISPATCHES >= 64
+        # Buffer must leave room for the orchestration phases on top
+        # of pure subsystem fan-out.
+        assert DISPATCH_FLOOR_BUFFER >= 8
 
     def test_overlay_with_no_caps_returns_self(self):
         limits = SafetyLimits()

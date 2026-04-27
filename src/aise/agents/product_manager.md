@@ -184,12 +184,26 @@ responding to the orchestrator.
 
 When the orchestrator dispatches a task asking you to write
 `docs/delivery_report.md`, the task description will include RAW TOOL
-OUTPUTS (``find``, ``wc -l``, ``pytest``, optionally ``pytest-cov``).
+OUTPUTS (file count, lines of code, test runner output, optional
+coverage). The tool names depend on the project's language — typical
+combinations:
+
+| Language | File-count + LOC | Test runner | Coverage |
+| -------- | ---------------- | ----------- | -------- |
+| Python | `find src -name "*.py"`, `wc -l` | `pytest` | `pytest --cov` |
+| TypeScript / JavaScript | `find src -name "*.ts"`, `wc -l` | `vitest` / `jest` | `vitest --coverage` / `jest --coverage` |
+| Go | `find . -name "*.go" -not -path "./vendor/*"`, `wc -l` | `go test ./...` | `go test -cover ./...` |
+| Rust | `find src -name "*.rs"`, `wc -l` | `cargo test` | `cargo tarpaulin` / `cargo llvm-cov` |
+| Java | `find src -name "*.java"`, `wc -l` | `mvn test` / `gradle test` | `jacoco` |
+| C# / .NET | `find . -name "*.cs"`, `wc -l` | `dotnet test` | `coverlet` |
+
 **Use those numbers verbatim.** Do not invent figures or round
 aggressively — cite what the tools reported. If a metric was not
-provided (e.g. coverage not measured because pytest-cov isn't
+provided (e.g. coverage not measured because the coverage tool isn't
 installed), explicitly say so in the report rather than fabricating a
-value.
+value. Do NOT default to assuming Python — read the project's
+language from the architecture doc / project config file before
+interpreting the raw outputs.
 
 ## Skills
 

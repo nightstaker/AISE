@@ -84,6 +84,15 @@ class WorkflowRun:
     # and lets the user walk the retry chain backwards.
     resumed_from_run_id: str = ""
     start_phase_idx: int = 0
+    # LLM token consumption aggregated across every dispatch in this run
+    # (orchestrator + every sub-agent). Populated in real time from
+    # ``token_usage`` events emitted by ``ProjectSession`` /
+    # ``dispatch_task`` so the dashboard can show live cost as a run
+    # progresses, and persisted on completion.
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_tokens: int = 0
+    llm_call_count: int = 0
 
 
 @dataclass
@@ -116,6 +125,11 @@ class WebProjectService:
         )
         self._runs_by_project: dict[str, list[WorkflowRun]] = {}
         self._requirements_by_project: dict[str, list[RequirementEntry]] = {}
+        # Scaffolding-phase LLM token usage per project. Scaffolding
+        # happens once (with possible safety-net repair retries) and
+        # is not tied to a WorkflowRun, so we accumulate it on the
+        # project itself. Keys: ``input``/``output``/``total``/``calls``.
+        self._scaffolding_tokens_by_project: dict[str, dict[str, int]] = {}
         self._lock = RLock()
         self._active_workflow_runs: set[tuple[str, str]] = set()
         self._state_path = self.project_manager._projects_root / "web_state.json"
@@ -369,7 +383,22 @@ class WebProjectService:
         if pm_runtime is None:
             raise RuntimeError("product_manager runtime not found in RuntimeManager")
         thread_id = f"scaffold-{project.project_id}"
-        pm_runtime.handle_message(prompt, thread_id=thread_id)
+
+        def _on_token_usage(counts: dict[str, int]) -> None:
+            with self._lock:
+                bucket = self._scaffolding_tokens_by_project.setdefault(
+                    project.project_id,
+                    {"input": 0, "output": 0, "total": 0, "calls": 0},
+                )
+                try:
+                    bucket["input"] += int(counts.get("input_tokens") or 0)
+                    bucket["output"] += int(counts.get("output_tokens") or 0)
+                    bucket["total"] += int(counts.get("total_tokens") or 0)
+                    bucket["calls"] += 1
+                except (TypeError, ValueError):
+                    pass
+
+        pm_runtime.handle_message(prompt, thread_id=thread_id, on_token_usage=_on_token_usage)
 
     def get_project(self, project_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -384,7 +413,38 @@ class WebProjectService:
                 "requirements": [
                     self._serialize_requirement(item) for item in self._list_requirement_history(project_id)
                 ],
+                "token_usage": self._project_token_summary(project_id),
             }
+
+    def _project_token_summary(self, project_id: str) -> dict[str, int]:
+        """Total LLM tokens consumed by this project: scaffolding + every run.
+
+        Aggregates the scaffolding bucket (created during project
+        creation) with the per-run totals so the UI can present a
+        single "what did this project cost" number.
+        """
+        scaffold = self._scaffolding_tokens_by_project.get(
+            project_id, {"input": 0, "output": 0, "total": 0, "calls": 0}
+        )
+        input_tokens = int(scaffold.get("input", 0))
+        output_tokens = int(scaffold.get("output", 0))
+        total_tokens = int(scaffold.get("total", 0))
+        llm_calls = int(scaffold.get("calls", 0))
+        for run in self._runs_by_project.get(project_id, []):
+            input_tokens += run.total_input_tokens
+            output_tokens += run.total_output_tokens
+            total_tokens += run.total_tokens
+            llm_calls += run.llm_call_count
+        return {
+            "scaffolding_input_tokens": int(scaffold.get("input", 0)),
+            "scaffolding_output_tokens": int(scaffold.get("output", 0)),
+            "scaffolding_total_tokens": int(scaffold.get("total", 0)),
+            "scaffolding_llm_calls": int(scaffold.get("calls", 0)),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "llm_calls": llm_calls,
+        }
 
     def get_run(self, project_id: str, run_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -409,6 +469,7 @@ class WebProjectService:
                 raise ValueError(f"Project {project_id} not found")
             self._runs_by_project.pop(project_id, None)
             self._requirements_by_project.pop(project_id, None)
+            self._scaffolding_tokens_by_project.pop(project_id, None)
             self._active_workflow_runs = {(pid, rid) for pid, rid in self._active_workflow_runs if pid != project_id}
             self._save_state()
             logger.info("Web project deleted: project_id=%s", project_id)
@@ -651,6 +712,14 @@ class WebProjectService:
                     # final status=completed branch resets them anyway.
                     run.failed_phase_idx = -1
                     run.failed_phase_name = ""
+                elif event_type == "token_usage":
+                    try:
+                        run.total_input_tokens += int(event.get("input_tokens") or 0)
+                        run.total_output_tokens += int(event.get("output_tokens") or 0)
+                        run.total_tokens += int(event.get("total_tokens") or 0)
+                        run.llm_call_count += 1
+                    except (TypeError, ValueError):
+                        pass
 
         # Resolve project root for file output
         project_root = None
@@ -1110,6 +1179,13 @@ class WebProjectService:
                         start_idx_val = int(start_idx_raw)
                     except (TypeError, ValueError):
                         start_idx_val = 0
+
+                    def _coerce_int(value: Any) -> int:
+                        try:
+                            return max(0, int(value))
+                        except (TypeError, ValueError):
+                            return 0
+
                     self._runs_by_project[project_id].append(
                         WorkflowRun(
                             run_id=str(item.get("run_id", "")),
@@ -1127,6 +1203,10 @@ class WebProjectService:
                             phase_total=phase_total_val,
                             resumed_from_run_id=str(item.get("resumed_from_run_id", "")),
                             start_phase_idx=max(0, start_idx_val),
+                            total_input_tokens=_coerce_int(item.get("total_input_tokens")),
+                            total_output_tokens=_coerce_int(item.get("total_output_tokens")),
+                            total_tokens=_coerce_int(item.get("total_tokens")),
+                            llm_call_count=_coerce_int(item.get("llm_call_count")),
                         )
                     )
 
@@ -1170,6 +1250,21 @@ class WebProjectService:
                 except Exception:
                     pass
 
+        scaffold_tokens = data.get("scaffolding_tokens_by_project", {})
+        if isinstance(scaffold_tokens, dict):
+            for project_id, bucket in scaffold_tokens.items():
+                if not isinstance(bucket, dict):
+                    continue
+                try:
+                    self._scaffolding_tokens_by_project[str(project_id)] = {
+                        "input": int(bucket.get("input") or 0),
+                        "output": int(bucket.get("output") or 0),
+                        "total": int(bucket.get("total") or 0),
+                        "calls": int(bucket.get("calls") or 0),
+                    }
+                except (TypeError, ValueError):
+                    continue
+
         # Persist the reaped statuses so the next restart sees clean state
         # instead of re-reaping the same runs.
         if reaped_any:
@@ -1196,6 +1291,9 @@ class WebProjectService:
                 }
                 for p in self.project_manager.list_projects()
             },
+            "scaffolding_tokens_by_project": {
+                pid: dict(bucket) for pid, bucket in self._scaffolding_tokens_by_project.items()
+            },
         }
         tmp_path = self._state_path.with_suffix(f"{self._state_path.suffix}.{uuid.uuid4().hex}.tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1219,6 +1317,10 @@ class WebProjectService:
             "phase_total": run.phase_total,
             "resumed_from_run_id": run.resumed_from_run_id,
             "start_phase_idx": run.start_phase_idx,
+            "total_input_tokens": run.total_input_tokens,
+            "total_output_tokens": run.total_output_tokens,
+            "total_tokens": run.total_tokens,
+            "llm_call_count": run.llm_call_count,
         }
 
     @staticmethod

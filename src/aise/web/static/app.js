@@ -496,6 +496,7 @@ function setupProjectReact() {
         const [projectInfo, setProjectInfo] = window.React.useState(project.info || {});
         const [requirements, setRequirements] = window.React.useState(Array.isArray(project.requirements) ? project.requirements : []);
         const [runs, setRuns] = window.React.useState(Array.isArray(project.runs) ? project.runs : []);
+        const [tokenUsage, setTokenUsage] = window.React.useState(project.token_usage || null);
         const [text, setText] = window.React.useState("");
         const [submitting, setSubmitting] = window.React.useState(false);
         const [deleting, setDeleting] = window.React.useState(false);
@@ -514,6 +515,7 @@ function setupProjectReact() {
                     ]);
                     if (!active) return;
                     if (projData && projData.info) setProjectInfo(projData.info);
+                    if (projData && projData.token_usage) setTokenUsage(projData.token_usage);
                     setRequirements(Array.isArray(requirementsData.requirements) ? requirementsData.requirements : []);
                     setRuns(Array.isArray(runsData.runs) ? runsData.runs : []);
                     setProjectMissing(false);
@@ -699,6 +701,17 @@ function setupProjectReact() {
                 const hasMoreRequirements = requirements.length > HISTORY_LIMIT;
                 const hasMoreRuns = runs.length > HISTORY_LIMIT;
                 const hasMore = hasMoreRequirements || hasMoreRuns;
+                const tokenSummary = tokenUsage || {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    llm_calls: 0,
+                    scaffolding_input_tokens: 0,
+                    scaffolding_output_tokens: 0,
+                    scaffolding_total_tokens: 0,
+                    scaffolding_llm_calls: 0,
+                };
+                const tokenFmt = (n) => Number(n || 0).toLocaleString();
                 return [
                     h(
                         "section",
@@ -726,6 +739,41 @@ function setupProjectReact() {
                             },
                             t("project.action_view_latest_run")
                         ) : null,
+                    ),
+                    h(
+                        "section",
+                        { key: "token-usage", className: "card" },
+                        h("h3", { style: { marginTop: 0 } }, t("project.token_usage_title")),
+                        h("p", { className: "muted", style: { fontSize: "12px" } }, t("project.token_usage_hint")),
+                        h(
+                            "div",
+                            { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "12px", marginTop: "8px" } },
+                            h("div", null,
+                                h("div", { className: "muted", style: { fontSize: "12px" } }, t("project.token_usage_input")),
+                                h("div", { style: { fontSize: "1.4rem", fontWeight: 600 } }, tokenFmt(tokenSummary.input_tokens))
+                            ),
+                            h("div", null,
+                                h("div", { className: "muted", style: { fontSize: "12px" } }, t("project.token_usage_output")),
+                                h("div", { style: { fontSize: "1.4rem", fontWeight: 600 } }, tokenFmt(tokenSummary.output_tokens))
+                            ),
+                            h("div", null,
+                                h("div", { className: "muted", style: { fontSize: "12px" } }, t("project.token_usage_total")),
+                                h("div", { style: { fontSize: "1.4rem", fontWeight: 600 } }, tokenFmt(tokenSummary.total_tokens))
+                            ),
+                            h("div", null,
+                                h("div", { className: "muted", style: { fontSize: "12px" } }, t("project.token_usage_calls")),
+                                h("div", { style: { fontSize: "1.4rem", fontWeight: 600 } }, tokenFmt(tokenSummary.llm_calls))
+                            ),
+                        ),
+                        (tokenSummary.scaffolding_llm_calls || tokenSummary.scaffolding_total_tokens) ? h(
+                            "p",
+                            { className: "muted", style: { fontSize: "12px", marginTop: "8px" } },
+                            t("project.token_usage_scaffolding", {
+                                input: tokenFmt(tokenSummary.scaffolding_input_tokens),
+                                output: tokenFmt(tokenSummary.scaffolding_output_tokens),
+                                calls: tokenFmt(tokenSummary.scaffolding_llm_calls),
+                            })
+                        ) : null
                     ),
                     h(
                         "section",
@@ -1175,6 +1223,13 @@ function setupRunReact() {
             "tool_call",
             "language_config",
             "workflow_complete",
+            // ``token_usage`` fires once per LLM round-trip — for a real run
+            // that's hundreds of rows of pure cost telemetry, drowning out
+            // the actual A2A dispatches the user came here to read. The
+            // numbers are already aggregated and rendered in the run-stats
+            // bar (输入 / 输出 / 累计 Token), so the raw events have no
+            // place in the timeline log.
+            "token_usage",
         ]);
         const isVisibleEvent = (e) => !!e && !HIDDEN_LOG_EVENT_TYPES.has(e.type);
         const visibleLog = taskLog.filter(isVisibleEvent);
@@ -1306,6 +1361,9 @@ function setupRunReact() {
                 h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, requests.length), h("span", { className: "run-stat-label" }, t("run.stat.dispatches"))),
                 h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, completed), h("span", { className: "run-stat-label" }, t("run.stat.completed"))),
                 failed > 0 ? h("div", { className: "run-stat run-stat-error" }, h("span", { className: "run-stat-value" }, failed), h("span", { className: "run-stat-label" }, t("run.stat.failed"))) : null,
+                h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, Number(run.total_input_tokens || 0).toLocaleString()), h("span", { className: "run-stat-label" }, t("project.token_usage_input"))),
+                h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, Number(run.total_output_tokens || 0).toLocaleString()), h("span", { className: "run-stat-label" }, t("project.token_usage_output"))),
+                h("div", { className: "run-stat" }, h("span", { className: "run-stat-value" }, Number(run.total_tokens || 0).toLocaleString()), h("span", { className: "run-stat-label" }, t("project.token_usage_total"))),
             ),
             // View switcher: "timeline" = current stage-progress + A2A log;
             // "agents" = the agent-interaction graph. Persists only for the

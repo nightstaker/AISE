@@ -277,7 +277,15 @@
     "scaffolding_failed_title": "环境准备失败",
     "scaffolding_failed_hint": "项目初始化未成功，无法继续下发需求。错误详情：",
     "scaffolding_failed_fallback_error": "未捕获到具体错误信息，请查看运行日志。",
-    "scaffolding_failed_guidance": "建议删除该项目后重新创建；如果问题反复出现，请检查 product-manager 代理日志与项目根目录权限。"
+    "scaffolding_failed_guidance": "建议删除该项目后重新创建；如果问题反复出现，请检查 product-manager 代理日志与项目根目录权限。",
+    "token_usage_title": "Token 消耗",
+    "token_usage_hint": "项目创建至今所有 LLM 调用的输入 / 输出 Token 累计（含环境准备阶段与每次工作流执行）。",
+    "token_usage_input": "输入 Token",
+    "token_usage_output": "输出 Token",
+    "token_usage_total": "累计 Token",
+    "token_usage_calls": "LLM 调用次数",
+    "token_usage_scaffolding": "环境准备阶段：输入 {{input}} / 输出 {{output}} / 调用 {{calls}} 次",
+    "token_usage_run_breakdown": "本次执行：输入 {{input}} / 输出 {{output}} / 调用 {{calls}} 次"
   },
   "monitor": {
     "title": "Agent Monitor",
