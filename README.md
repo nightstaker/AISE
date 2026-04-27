@@ -16,65 +16,104 @@ service (`aise web`) and the CLI (`aise run`, `aise demand`,
 Manager agent emits tool calls (`dispatch_task`, `dispatch_subsystems`)
 via A2A `task_request` / `task_response` envelopes to worker agents.
 
-```mermaid
-C4Container
-  title AISE runtime — container view
-  Person(human, "User", "Submits a requirement via web UI or CLI")
-  System_Boundary(aise, "AISE") {
-    Container(web, "Web service", "FastAPI", "aise web — UI, run history, retries")
-    Container(cli, "CLI", "argparse", "aise run / demand / multi-project")
-    Container(rt, "RuntimeManager", "Python", "Owns AgentRuntime per agent + LLM clients")
-    Container(session, "ProjectSession", "Python", "Drives phase loop, emits events, persists run state")
-    Container(tools, "Tool primitives", "Python + LangChain", "dispatch_task, dispatch_subsystems, execute_shell, mark_complete")
-    Container(safety, "Safety net", "Python", "expected_artifacts checks + autocommit + invariants")
-    ContainerDb(disk, "Project root", "Filesystem", "docs/, src/, runs/, safety_net_events.jsonl")
-  }
-  System_Ext(llm, "LLM provider", "OpenAI / Anthropic / Ollama / vLLM")
+### Container view
 
-  Rel(human, web, "Submits requirement", "HTTP")
-  Rel(human, cli, "Submits requirement", "argv / stdin")
-  Rel(web, session, "Calls run()")
-  Rel(cli, session, "Calls run()")
-  Rel(session, rt, "Spawns AgentRuntime per dispatch")
-  Rel(session, tools, "Exposes to PM via tool registry")
-  Rel(tools, rt, "Routes A2A task_request to worker")
-  Rel(tools, safety, "Post-dispatch artifact + invariant checks")
-  Rel(rt, llm, "Inference", "HTTPS")
-  Rel(session, disk, "Persists task_log + artifacts")
-  Rel(safety, disk, "Writes safety_net_events.jsonl")
+```
+                            ┌────────┐
+                            │  User  │
+                            └────┬───┘
+                                 │ HTTP                  argv / stdin
+                  ┌──────────────┴──────────────┐
+                  ▼                             ▼
+            ┌───────────┐                 ┌───────────┐
+            │ aise web  │                 │ aise CLI  │   run / demand /
+            │ (FastAPI) │                 │(argparse) │   multi-project
+            └─────┬─────┘                 └─────┬─────┘
+                  │      session.run(requirement)│
+                  └───────────────┬──────────────┘
+                                  ▼
+                        ┌───────────────────┐
+                        │  ProjectSession   │   drives the phase loop,
+                        │                   │   emits events, persists
+                        │                   │   task_log + run state
+                        └───┬───────────┬───┘
+                            │           │
+                spawns per  │           │  exposes the tool registry
+                dispatch    ▼           ▼
+        ┌───────────────────┐     ┌──────────────────────────┐
+        │  RuntimeManager   │     │  Tool primitives         │
+        │  one AgentRuntime │     │  · dispatch_task         │
+        │  per agent + LLM  │     │  · dispatch_subsystems   │
+        │  clients          │     │  · execute_shell         │
+        └─────────┬─────────┘     │  · mark_complete         │
+                  │ HTTPS         └──────┬───────────┬───────┘
+                  ▼                      │           │
+        ┌──────────────────┐  routes A2A │           │ post-dispatch
+        │  LLM provider    │◀────────────┘           │ checks
+        │  OpenAI / Anth-  │                         ▼
+        │  ropic / Ollama  │              ┌──────────────────┐
+        │  / vLLM          │              │   Safety net     │
+        └──────────────────┘              │  expected_arti-  │
+                                          │  facts + invar-  │
+                                          │  iants + auto-   │
+                                          │  commit          │
+                                          └────────┬─────────┘
+                                                   │  writes
+                                                   ▼
+                            ┌──────────────────────────────────┐
+                            │ Project root (filesystem)        │
+                            │ docs/  src/  runs/               │
+                            │ runs/safety_net_events.jsonl     │
+                            └──────────────────────────────────┘
 ```
 
-```mermaid
-sequenceDiagram
-  autonumber
-  participant U as User
-  participant S as ProjectSession
-  participant PM as project_manager (PM)
-  participant DS as dispatch_subsystems
-  participant DV as developer (per subsystem / component)
-  participant FS as Project root (disk)
+### Phase-3 (implementation) two-stage fan-out
 
-  U->>S: run(requirement)
-  S->>PM: phase_1 requirement
-  PM->>DV: dispatch_task(product_manager, write docs/requirement.md)
-  S->>PM: phase_2 design
-  PM->>DV: dispatch_task(architect, write docs/architecture.md + stack_contract.json)
-  S->>PM: phase_3 implementation
-  PM->>DS: dispatch_subsystems(phase="implementation")
-  par Stage 1 — skeletons (parallel across subsystems)
-    DS->>DV: skeleton(subsystem A)
-    DS->>DV: skeleton(subsystem B)
-  end
-  par Stage 2 — components (parallel across all components)
-    DS->>DV: component(A.1)
-    DS->>DV: component(A.2)
-    DS->>DV: component(B.1)
-  end
-  DS-->>PM: aggregated result
-  PM-->>S: phase_complete
-  S-->>U: delivery_report
-  Note over PM,FS: each dispatch's expected_artifacts <br/>are verified by the safety net <br/>and missing files trigger auto-repair
-```
+The flow `ProjectSession.run("…")` walks through the waterfall phases.
+Phase 3 is where the deterministic fan-out happens:
+
+1. `ProjectSession` advances to phase_3 and asks the `project_manager`
+   agent to plan implementation.
+2. `project_manager` emits a single tool call:
+   `dispatch_subsystems(phase="implementation")`.
+3. The runtime reads `docs/stack_contract.json` (produced by the
+   architect in phase 2) and builds two task lists:
+   - one *skeleton* task per subsystem (writes barrel file +
+     public-API stubs, no logic, no tests),
+   - one *component* task per `subsystems[].components[]` entry
+     (writes exactly one `(source, test)` file pair).
+4. **Stage 1 — skeletons** run in parallel across subsystems:
+
+   ```
+   skeleton(ui)        skeleton(gameplay)        skeleton(render)
+        │                    │                        │
+        ▼                    ▼                        ▼
+   src/ui/__init__   src/gameplay/__init__   src/render/__init__
+   + public API      + public API            + public API
+   stubs             stubs                   stubs
+   ```
+
+5. **Stage 2 — components** start as soon as their parent subsystem's
+   skeleton lands. All eligible components across every subsystem run
+   in parallel:
+
+   ```
+   ui.menu_ui          gameplay.player          render.map_renderer
+   ui.hud_ui           gameplay.combat          render.anim_renderer
+   …                   …                        …
+   ```
+
+   Each dispatch owns exactly one `(source, test)` file pair, so its
+   recursion budget is bounded even for a 24-component architecture.
+6. Both stages share a single semaphore bounded by
+   `safety_limits.max_concurrent_subsystem_dispatches`, so a tight cap
+   throttles total in-flight workers across both stages.
+7. After every dispatch the safety net verifies each task's
+   `expected_artifacts` (the file pair, plus the interface module for
+   skeletons) and writes any miss to `runs/safety_net_events.jsonl`;
+   missing artifacts trigger auto-repair.
+8. `dispatch_subsystems` returns an aggregated result; the orchestrator
+   marks phase_3 complete and `ProjectSession` advances to phase_4.
 
 ## Features
 
