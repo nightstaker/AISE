@@ -1,5 +1,5 @@
 """Aggregator for safety-net telemetry events emitted by
-:mod:`aise.runtime.safety_net`.
+:mod:`aise.safety_net`.
 
 Events live per-project at ``<project_root>/trace/safety_net_events.jsonl``.
 This service scans every project's file at request time, applies the
@@ -15,7 +15,7 @@ Non-goals (explicit to keep the service simple):
   dashboard UI is meant for operators poking at capability trends,
   not for ad-hoc BI queries.
 - No write path. This service only reads — events are written by
-  :func:`aise.runtime.safety_net.run_post_step_check`.
+  :func:`aise.safety_net.run_post_step_check`.
 """
 
 from __future__ import annotations

@@ -9,7 +9,7 @@ keep the feature honest:
    CSS classes the component relies on must all exist.
 2. **Derivation semantics** — the same aggregation logic the JS helper
    performs is re-implemented in Python against the same event shape
-   the backend emits (via ``tool_primitives.dispatch_task``), so we can
+   the backend emits (via ``tools.dispatch.dispatch_task``), so we can
    assert the intended behavior without a JS runtime.
 
 If either layer regresses, the view on the page will silently degrade

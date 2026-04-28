@@ -583,10 +583,8 @@ class TestPhase6DeliveryReport:
         ``static_check`` toolchain row so every developer dispatch
         gets the static-analysis step.
         """
-        from aise.runtime.tool_primitives import (
-            _LANGUAGE_TOOLCHAIN,
-            _build_subsystem_task_description,
-        )
+        from aise.tools.stack_contract import _LANGUAGE_TOOLCHAIN
+        from aise.tools.task_descriptions import _build_subsystem_task_description
 
         # Each language row must contain a static_check command — that
         # is the in-task instruction shown to the developer.

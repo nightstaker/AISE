@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from aise.runtime.safety_net import (
+from aise.safety_net import (
     _BASELINE_GITIGNORE,
     LAYER_A_INVARIANTS,
     REPAIR_ACTIONS,

@@ -39,15 +39,19 @@ from unittest.mock import MagicMock
 
 from aise.runtime.models import AgentState
 from aise.runtime.runtime_config import RuntimeConfig
-from aise.runtime.tool_primitives import (
-    _LANGUAGE_TOOLCHAIN,
+from aise.tools import (
     ToolContext,
     WorkflowState,
+    build_orchestrator_tools,
+)
+from aise.tools.stack_contract import (
+    _LANGUAGE_TOOLCHAIN,
+    _interface_module_path,
+)
+from aise.tools.task_descriptions import (
     _build_component_implementation_task,
     _build_subsystem_skeleton_task,
     _build_subsystem_task_description,
-    _interface_module_path,
-    build_orchestrator_tools,
 )
 
 

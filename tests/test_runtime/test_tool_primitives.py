@@ -7,15 +7,15 @@ from unittest.mock import MagicMock
 import pytest
 
 from aise.runtime.runtime_config import RuntimeConfig, ShellConfig
-from aise.runtime.tool_primitives import (
+from aise.tools import (
     ToolContext,
     WorkflowState,
     build_orchestrator_tools,
-    make_completion_tool,
-    make_discovery_tools,
-    make_dispatch_tools,
-    make_shell_tool,
 )
+from aise.tools.completion import make_completion_tool
+from aise.tools.discovery import make_discovery_tools
+from aise.tools.dispatch import make_dispatch_tools
+from aise.tools.shell import make_shell_tool
 
 
 def _mock_runtime(name: str, role: str = "worker", response: str = "ok"):
@@ -518,11 +518,11 @@ class TestDispatchTaskRetryWithContext:
     """
 
     def test_retry_on_empty_response(self, tmp_path, fake_manager):
-        from aise.runtime.tool_primitives import (
+        from aise.tools import (
             ToolContext,
             WorkflowState,
-            make_dispatch_tools,
         )
+        from aise.tools.dispatch import make_dispatch_tools
 
         # Fake runtime that returns empty on first call, real content on second.
         rt = fake_manager.runtimes["developer"]
@@ -547,11 +547,11 @@ class TestDispatchTaskRetryWithContext:
         assert "(empty)" in second_prompt  # previous was empty
 
     def test_no_retry_when_response_is_non_empty_and_no_artifacts_required(self, tmp_path, fake_manager):
-        from aise.runtime.tool_primitives import (
+        from aise.tools import (
             ToolContext,
             WorkflowState,
-            make_dispatch_tools,
         )
+        from aise.tools.dispatch import make_dispatch_tools
 
         rt = fake_manager.runtimes["developer"]
         rt.handle_message.return_value = "first-try success"
@@ -572,11 +572,11 @@ class TestDispatchTaskRetryWithContext:
         """If ``expected_artifacts`` includes a path that never appears,
         or that appears but is trivially small, the dispatch retries
         once with context."""
-        from aise.runtime.tool_primitives import (
+        from aise.tools import (
             ToolContext,
             WorkflowState,
-            make_dispatch_tools,
         )
+        from aise.tools.dispatch import make_dispatch_tools
 
         rt = fake_manager.runtimes["developer"]
         # Both attempts return non-empty text but the artifact is
@@ -606,11 +606,11 @@ class TestDispatchTaskRetryWithContext:
         assert "first output" in second_prompt
 
     def test_no_retry_when_artifact_is_present_and_large_enough(self, tmp_path, fake_manager):
-        from aise.runtime.tool_primitives import (
+        from aise.tools import (
             ToolContext,
             WorkflowState,
-            make_dispatch_tools,
         )
+        from aise.tools.dispatch import make_dispatch_tools
 
         (tmp_path / "docs").mkdir()
         # 200 bytes — well above the 64-byte minimum.
@@ -644,7 +644,7 @@ class TestDispatchTaskRetryWithContext:
         it applies uniformly to every agent. This test pins that
         contract: no agent name, no specific tool name, no filename
         should be baked into the template itself."""
-        from aise.runtime.tool_primitives import _build_retry_prompt
+        from aise.tools.retry import _build_retry_prompt
 
         prompt = _build_retry_prompt(
             original_task="anything",
@@ -678,11 +678,11 @@ class TestDispatchTasksParallelForwardsExpectedArtifacts:
         """``dispatch_tasks_parallel`` must forward ``expected_artifacts``
         through to each inner ``dispatch_task``, otherwise the per-task
         artifact contract is silently dropped."""
-        from aise.runtime.tool_primitives import (
+        from aise.tools import (
             ToolContext,
             WorkflowState,
-            make_dispatch_tools,
         )
+        from aise.tools.dispatch import make_dispatch_tools
 
         rt = fake_manager.runtimes["developer"]
         rt.handle_message.side_effect = ["one", "retry-one", "two", "retry-two"]

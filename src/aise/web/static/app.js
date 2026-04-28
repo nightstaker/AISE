@@ -3018,7 +3018,7 @@ function setupLogsReact() {
 
 function setupAnalyticsReact() {
     // Safety-net telemetry dashboard. Aggregates events emitted by
-    // ``aise.runtime.safety_net`` across every project and surfaces
+    // ``aise.safety_net`` across every project and surfaces
     // counts / top failing step-ids / recent events so operators can
     // spot LLM-capability drift without tailing a JSONL by hand.
     const rootNode = document.getElementById("analytics-react-root");

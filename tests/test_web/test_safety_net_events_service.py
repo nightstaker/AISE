@@ -1,7 +1,7 @@
 """Tests for the safety-net events aggregator (issue #122 backend).
 
 The service reads JSONL events written by
-:mod:`aise.runtime.safety_net` across every project directory and
+:mod:`aise.safety_net` across every project directory and
 shapes them for the dashboard. These tests pin the aggregation
 contract so the React consumer can rely on the JSON shape.
 """
