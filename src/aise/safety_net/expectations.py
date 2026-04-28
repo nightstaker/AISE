@@ -107,3 +107,47 @@ def qa_expectations() -> tuple[ExpectedArtifact, ...]:
             path="docs/qa_report.json", kind="json_file", non_empty=True, description="QA report JSON for Phase 6"
         ),
     )
+
+
+def entry_point_expectations() -> tuple[ExpectedArtifact, ...]:
+    """Layer-B expectations after ``step_integrate_main``.
+
+    Verifies that the entry file declared at
+    ``docs/stack_contract.json#/entry_point`` invokes every
+    ``lifecycle_inits[]`` entry. A miss triggers a developer
+    re-dispatch with the precise diff between contract and entry
+    file — see ``safety_net/entry_point.py`` for the AST walk.
+    """
+    return (
+        ExpectedArtifact(
+            path="docs/stack_contract.json",
+            kind="entry_point_lifecycle",
+            description="entry file invokes every lifecycle_inits[] entry",
+        ),
+    )
+
+
+def ui_smoke_expectations() -> tuple[ExpectedArtifact, ...]:
+    """Layer-B expectations after ``step_integration_test`` for
+    UI-required projects.
+
+    Two artifacts:
+    - ``artifacts/smoke_frame_0.png`` exists and is non-empty (QA
+      ran the pixel-smoke step and captured a real frame).
+    - ``docs/qa_report.json#/ui_validation/pixel_smoke/non_bg_samples``
+      is above the configured threshold (the screenshot has visible
+      content; the application did not ship a blank window).
+
+    The check is a no-op for projects whose
+    ``stack_contract.ui_required`` is ``false`` — the
+    ``ui_smoke_frame`` handler short-circuits when the contract
+    flags the project as headless.
+    """
+    return (
+        ExpectedArtifact(
+            path="artifacts/smoke_frame_0.png",
+            kind="ui_smoke_frame",
+            non_empty=True,
+            description="UI pixel-smoke screenshot from Phase-4 QA",
+        ),
+    )

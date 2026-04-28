@@ -116,6 +116,58 @@ def _stack_contract_valid(target: Path) -> bool:
             _SUBSYSTEM_COUNT_SOFT_CAP,
             target,
         )
+
+    # Optional lifecycle_inits[]. When the architect declared the
+    # field, validate it. Absent or empty list is fine — the
+    # contract treats both as "no second-phase init needed". The
+    # cross-check between this list and the entry file lives in
+    # safety_net/entry_point.py.
+    inits = data.get("lifecycle_inits")
+    if inits is not None:
+        if not isinstance(inits, list):
+            logger.warning(
+                "stack_contract: lifecycle_inits must be a list in %s",
+                target,
+            )
+            return False
+        component_files: set[str] = set()
+        for ss in subsystems:
+            for comp in ss.get("components") or []:
+                if isinstance(comp, dict):
+                    cfile = comp.get("file")
+                    if isinstance(cfile, str):
+                        component_files.add(cfile)
+        for entry in inits:
+            if not isinstance(entry, dict):
+                logger.warning(
+                    "stack_contract: lifecycle_inits entries must be objects in %s",
+                    target,
+                )
+                return False
+            attr = entry.get("attr")
+            method = entry.get("method")
+            cls = entry.get("class")
+            module = entry.get("module")
+            for field_name, value in (
+                ("attr", attr),
+                ("method", method),
+                ("class", cls),
+                ("module", module),
+            ):
+                if not isinstance(value, str) or not value:
+                    logger.warning(
+                        "stack_contract: lifecycle_inits entry missing %r in %s",
+                        field_name,
+                        target,
+                    )
+                    return False
+            if isinstance(module, str) and component_files and module not in component_files:
+                logger.warning(
+                    "stack_contract: lifecycle_inits module %r not in subsystems[].components[].file in %s",
+                    module,
+                    target,
+                )
+                return False
     return True
 
 

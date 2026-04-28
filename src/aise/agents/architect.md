@@ -90,6 +90,12 @@ own — if you don't lay down the skeleton, nobody will.
            "responsibility": "<one-sentence summary of this component>"}
         ]
       }
+    ],
+    "lifecycle_inits": [
+      {"attr": "<member name on the entry class>",
+       "method": "<public method, e.g. initialize/setup/start>",
+       "class": "<class name>",
+       "module": "<file path matching subsystems[].components[].file>"}
     ]
   }
   ```
@@ -118,6 +124,15 @@ own — if you don't lay down the skeleton, nobody will.
     check and triggers an architect re-dispatch.
   - Soft cap: aim for ≤ 10 subsystems for typical projects. If you
     exceed it, you are likely flat-listing components again.
+  - **`lifecycle_inits[]` is REQUIRED** (use `[]` explicitly when no
+    component has a public second-phase init). Every component class
+    whose API contains a non-`pass` method named `initialize` /
+    `setup` / `start` / `bootstrap` / `init_async` / `init` /
+    `prepare` / `open` / `connect` MUST appear here, in the order
+    the entry file should call them. Each entry's `module` MUST
+    match a path in `subsystems[].components[].file`. See the
+    `lifecycle_init_contract` skill for the full rationale and the
+    boot-sequence-diagram requirement that pairs with this list.
 
   This file is read directly by `dispatch_subsystems` to fan
   phase-3 out into one skeleton task + one task per component
@@ -324,7 +339,13 @@ task complete until every step has run.
    phase can verify it.
 
 3. **Create every directory + barrel file + per-component source
-   stub** with `write_file`. Barrel-file conventions per language:
+   stub** with `write_file`. Component stubs whose runtime contract
+   requires two-phase init (see step 3.5 below) MUST declare both
+   `__init__` AND the planned `initialize()` (or `setup()` / `start()`
+   / etc.) method, plus a `self._initialized: bool = False` field
+   that the eventual `initialize()` body will flip to `True`. The
+   developer in phase 3 fills in the bodies; the contract is locked
+   here. Barrel-file conventions per language:
 
    | Language | Barrel file | Typical content |
    | -------- | ----------- | --------------- |
@@ -343,13 +364,29 @@ task complete until every step has run.
    implemented")` bodies — no logic. Do NOT rely on the runtime to
    auto-create directories — the barrel file is what anchors them
    on disk.
+3.5. **Enumerate `lifecycle_inits[]` and draw the boot sequence
+   diagram.** Walk every component stub you just wrote in step 3.
+   For each class that exposes a public `initialize()` / `setup()` /
+   `start()` / `bootstrap()` / `init_async()` / `init()` /
+   `prepare()` / `open()` / `connect()` method, append one entry to
+   `lifecycle_inits[]` (see the `lifecycle_init_contract` skill for
+   the exact schema). Then add a `sequenceDiagram` block to
+   `docs/architecture.md` titled "Boot Sequence" with one
+   `Main->>Class: <method>()` arrow per entry, in declared order.
+   The two artifacts MUST agree verbatim — the safety net diffs
+   them. If no component has a second-phase init, set
+   `lifecycle_inits` to `[]` and skip the diagram.
+
 4. **Write `docs/stack_contract.json`** with the two-level schema
    documented in the "REQUIRED scaffolding" section above. The
    `subsystems[]` array MUST mirror the subsystem list from step 1
    AND the directory layout from step 3 exactly: same names, same
    `src_dir` values, every component's `file` path prefixed by its
-   parent's `src_dir`. The runtime validates these invariants — a
-   flat or malformed contract triggers an architect re-dispatch.
+   parent's `src_dir`. The `lifecycle_inits[]` array from step 3.5
+   MUST be present (possibly empty) — every entry's `module` field
+   MUST match a `subsystems[].components[].file` path. The runtime
+   validates these invariants — a flat or malformed contract
+   triggers an architect re-dispatch.
 5. **If the stack requires a project config file** (Python's
    pyproject.toml, Node's package.json, Cargo.toml, go.mod, pom.xml,
    etc.), write it now with the framework dependencies pinned to
@@ -473,6 +510,12 @@ standard Mermaid diagram types:
   system — it documents the system boundary).
 - At least ONE ``C4Component`` diagram zooming into a non-trivial
   container.
+- A ``sequenceDiagram`` block titled "Boot Sequence" describing
+  the entry file's startup path. It MUST contain one
+  ``Main->>Class: <method>()`` arrow for every entry in
+  ``stack_contract.json#/lifecycle_inits[]`` (or be omitted if that
+  array is empty). This diagram is the source of truth for the
+  developer's entry-point integration step.
 - Supplementary behavioral diagrams (``sequenceDiagram``,
   ``stateDiagram-v2``, ``erDiagram``, etc.) as needed to cover
   critical flows and data models.
@@ -509,4 +552,5 @@ useless to readers.
 - status_tracking: Track design phase progress
 - architecture_document_generation: Generate architecture documentation
 - mermaid: Validate every Mermaid code fence in the document after writing and fix any syntax errors [mermaid, diagram, validation]
+- lifecycle_init_contract: Enumerate every class with a public initialize()/setup()/start() into stack_contract.lifecycle_inits[] and draw a matching boot sequenceDiagram [architecture, lifecycle, contract]
 - pr_review: Review pull requests
