@@ -62,10 +62,15 @@ def run_post_step_check(
         got repaired, and how many telemetry events were emitted.
     """
     # Force registry side-effects to fire before we route anything.
-    # Idempotent — reimporting these does not re-register thanks to
-    # Python's module cache.
-    from . import checks as _checks  # noqa: F401
-    from . import repairs as _repairs  # noqa: F401
+    # Each domain module decorates its check/repair functions on
+    # import; the package's ``__init__`` already imported them, so
+    # re-importing is a no-op thanks to Python's module cache. The
+    # legacy ``checks`` / ``repairs`` package layout was flattened
+    # into the per-domain modules (filesystem, git, stack_contract,
+    # entry_point, ui_smoke) — we no longer need the unused stubs.
+    from . import filesystem as _filesystem  # noqa: F401
+    from . import git as _git  # noqa: F401
+    from . import stack_contract as _stack_contract  # noqa: F401
 
     outcome = CheckOutcome(step_id=step_id)
     repair_ctx = {"step_id": step_id, **(repair_context or {})}

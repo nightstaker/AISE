@@ -46,15 +46,19 @@ from __future__ import annotations
 
 # Trigger registration side-effects exactly once. Order is irrelevant;
 # every module is independent.
+from . import entry_point as _entry_point  # noqa: F401
 from . import filesystem as _filesystem  # noqa: F401
 from . import git as _git  # noqa: F401
 from . import repair_policy as _repair_policy  # noqa: F401
 from . import stack_contract as _stack_contract  # noqa: F401
+from . import ui_smoke as _ui_smoke  # noqa: F401
 from .events import _emit_event, _events_path, _make_event
 from .expectations import (
     architecture_expectations,
+    entry_point_expectations,
     qa_expectations,
     scaffolding_expectations,
+    ui_smoke_expectations,
 )
 from .gateway import _check_artifact as _artifact_present
 from .gateway import run_post_step_check
@@ -84,7 +88,9 @@ __all__ = [
     "_make_event",
     "_stack_contract_valid",
     "architecture_expectations",
+    "entry_point_expectations",
     "qa_expectations",
     "run_post_step_check",
     "scaffolding_expectations",
+    "ui_smoke_expectations",
 ]

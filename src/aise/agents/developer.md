@@ -105,6 +105,12 @@ application — TDD's "implement only what tests drive" rule is NOT
 enough. Unit tests cover importable APIs; an entry point is a
 **runnable script contract**. Both must be satisfied.
 
+**Required reading: the `entry_point_wiring` skill.** That skill
+defines the four mandatory steps (CONSTRUCT → LIFECYCLE INIT →
+MAIN LOOP → SELF-CHECK) plus the banned silent-noop pattern. Read it
+in full before writing the entry file. The summary below is just a
+reminder; the skill is authoritative.
+
 Conventions by language (rows ordered alphabetically — pick the row
 that matches the project's stack, do **not** default to Python):
 
@@ -121,6 +127,28 @@ When your task involves an entry-point file, the source file MUST
 contain whatever your language needs to be launchable as a script. It
 is **not** enough to expose a class with a `run()` method that callers
 would have to invoke — the file must boot the app by itself.
+
+**Lifecycle init is mandatory.** "Initialise every subsystem" does NOT
+mean "call its constructor". After construction, the entry file MUST
+iterate `docs/stack_contract.json#/lifecycle_inits[]` and invoke each
+listed `<attr>.<method>()` exactly once, in the order declared.
+Skipping this loop — or hand-picking a subset of components — is the
+single most common cause of "tests pass, screen blank" delivery
+failures. The minimal pattern (Python example):
+
+```python
+import json
+contract = json.loads(Path("docs/stack_contract.json").read_text())
+for entry in contract.get("lifecycle_inits", []):
+    target = getattr(self, entry["attr"])
+    getattr(target, entry["method"])()
+```
+
+If `lifecycle_inits[]` is missing from the contract, scan your own
+component code: every class with a public `initialize()` /
+`setup()` / `start()` / `bootstrap()` whose body is more than `pass`
+MUST be invoked from the entry file's boot path. Append the list to
+the contract and continue — do not skip the loop.
 
 **Required response format for entry-point tasks:**
 
@@ -181,6 +209,30 @@ engineer's responsibility in Phase 5.
 
 ### Strict Prohibitions
 
+- Do NOT write defensive `if self._<resource> is None: return` (or the
+  language equivalent) inside `render` / `update` / `draw` /
+  `handle_*` / `on_*` event handlers. Such a guard converts a wiring
+  bug (someone forgot to call `initialize()`) into invisible product
+  behaviour (blank screen, silently dropped events). If lazy
+  initialisation is genuinely required, raise `RuntimeError` with the
+  message `"<ClassName>.<method>() called before initialize()"`.
+  Unit tests that assert "calling render before initialize is a
+  graceful no-op" are themselves wiring bugs — see the `tdd` skill
+  anti-patterns. The full rationale lives in the `entry_point_wiring`
+  skill.
+- Do NOT hardcode a single font name when constructing UI fonts:
+  `pygame.font.SysFont("arial", N)`, `pygame.font.Font(None, N)`,
+  `QFont("Arial", N)`, `ImageFont.truetype("arial.ttf", N)`,
+  `font-family: Arial` (without fallback chain) — all of these are
+  forbidden. They silently render `.notdef` (tofu boxes) for any
+  character outside the chosen font's glyph table; CJK literals
+  become uniformly identical boxes that pass every "is anything
+  drawn" smoke test. Route every font construction through a single
+  project-level resolver (e.g. `src/<pkg>/shared/font_resolver.py`
+  for Python+pygame) that returns a font whose candidate list
+  covers every Unicode block your project's UI literals actually
+  use. Full rationale + per-stack templates: see the
+  `font_selection` skill.
 - Do NOT use the `task` tool (subagent). Write files directly yourself.
 - Do NOT create runner scripts (e.g. `run_tests.py`, `run_pytest.py`,
   `run_tests.sh`, `test_runner.js`, `runtests.go`, `RunAllTests.java`).
@@ -198,5 +250,7 @@ engineer's responsibility in Phase 5.
 
 - tdd: Test-Driven Development workflow with 1:1 source-to-test file mapping [tdd, testing, implementation]
 - code_inspection: Run a language-appropriate static analyzer on every source file written and fix every finding [lint, static-analysis, quality]
+- entry_point_wiring: Wire main.py / index.ts / main.rs etc. so every subsystem with a public initialize()/setup()/start() is actually invoked at boot, and ban silent-noop guards [entry-point, wiring, lifecycle]
+- font_selection: Centralise UI font construction through a resolver with a multi-name fallback chain so CJK and Latin literals both render real glyphs instead of .notdef tofu boxes [ui, font, i18n]
 - code_generation: Generate module scaffolding from architecture design
 - bug_fix: Fix bugs with root cause analysis

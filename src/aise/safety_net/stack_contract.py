@@ -116,6 +116,100 @@ def _stack_contract_valid(target: Path) -> bool:
             _SUBSYSTEM_COUNT_SOFT_CAP,
             target,
         )
+
+    # Optional event_loop_owner. When the architect declared the
+    # field as an object (not null), it must point to a real
+    # component file and carry the handler method's name. The
+    # cross-check (entry file actually dispatches every event to
+    # this owner) lives in safety_net/entry_point.py.
+    elo = data.get("event_loop_owner")
+    if isinstance(elo, dict):
+        component_files: set[str] = set()
+        for ss in subsystems:
+            for comp in ss.get("components") or []:
+                if isinstance(comp, dict):
+                    cfile = comp.get("file")
+                    if isinstance(cfile, str):
+                        component_files.add(cfile)
+        for field_name in ("attr", "handler_method", "class", "module"):
+            value = elo.get(field_name)
+            if not isinstance(value, str) or not value:
+                logger.warning(
+                    "stack_contract: event_loop_owner missing %r in %s",
+                    field_name,
+                    target,
+                )
+                return False
+        module = elo.get("module")
+        if isinstance(module, str) and component_files and module not in component_files:
+            logger.warning(
+                "stack_contract: event_loop_owner.module %r not in subsystems[].components[].file in %s",
+                module,
+                target,
+            )
+            return False
+    elif elo is not None:
+        # Anything other than a dict or null is a contract violation —
+        # the field is documented as object-or-null. A bool / list /
+        # number here means the architect mis-typed the schema.
+        logger.warning(
+            "stack_contract: event_loop_owner must be an object or null in %s, got %r",
+            target,
+            type(elo).__name__,
+        )
+        return False
+
+    # Optional lifecycle_inits[]. When the architect declared the
+    # field, validate it. Absent or empty list is fine — the
+    # contract treats both as "no second-phase init needed". The
+    # cross-check between this list and the entry file lives in
+    # safety_net/entry_point.py.
+    inits = data.get("lifecycle_inits")
+    if inits is not None:
+        if not isinstance(inits, list):
+            logger.warning(
+                "stack_contract: lifecycle_inits must be a list in %s",
+                target,
+            )
+            return False
+        component_files: set[str] = set()
+        for ss in subsystems:
+            for comp in ss.get("components") or []:
+                if isinstance(comp, dict):
+                    cfile = comp.get("file")
+                    if isinstance(cfile, str):
+                        component_files.add(cfile)
+        for entry in inits:
+            if not isinstance(entry, dict):
+                logger.warning(
+                    "stack_contract: lifecycle_inits entries must be objects in %s",
+                    target,
+                )
+                return False
+            attr = entry.get("attr")
+            method = entry.get("method")
+            cls = entry.get("class")
+            module = entry.get("module")
+            for field_name, value in (
+                ("attr", attr),
+                ("method", method),
+                ("class", cls),
+                ("module", module),
+            ):
+                if not isinstance(value, str) or not value:
+                    logger.warning(
+                        "stack_contract: lifecycle_inits entry missing %r in %s",
+                        field_name,
+                        target,
+                    )
+                    return False
+            if isinstance(module, str) and component_files and module not in component_files:
+                logger.warning(
+                    "stack_contract: lifecycle_inits module %r not in subsystems[].components[].file in %s",
+                    module,
+                    target,
+                )
+                return False
     return True
 
 

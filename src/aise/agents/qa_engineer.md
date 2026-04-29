@@ -87,6 +87,19 @@ test file: read the architecture doc and the project config file
 6. If the integration tests fail, fix the integration test file (or
    flag a real product bug in your summary) and re-run the full
    suite. At most **3 fix attempts**.
+
+   **For UI-required projects (step 3 above):** the integration
+   test MUST instantiate the entry-point class against a real
+   headless display surface — `SDL_VIDEODRIVER=dummy` + a real
+   `pygame.Surface`, `QT_QPA_PLATFORM=offscreen` + a real
+   `QImage`, headless Chromium via Playwright for web stacks,
+   etc. **Mocking the display surface itself with `MagicMock` is
+   forbidden** — it makes every `blit` / `draw` / `render` call
+   succeed against a fake, hiding wiring bugs (forgotten
+   `initialize()`, wrong coordinate space, missing font load) that
+   only manifest as a blank shipped UI. At least one integration
+   test MUST assert a pixel-level invariant (e.g. `screen.get_at((400, 80)) != bg_color`)
+   on the real headless surface.
 7. **UI validation — REQUIRED only when step 3 marked the project
    UI-required.** Skip this step entirely for headless-only projects.
    See the "UI Validation Step" section below for the exact procedure.
@@ -171,48 +184,76 @@ tick=...")` + `time.sleep(...)` in Python, `console.log(...)` +
 Go) **DOES NOT** count. If you cannot locate a real initialisation
 call, this check **FAILS**.
 
-**Check 7.3 — Entry point boots without UI-layer errors.**
-Launch the entry point with a short timeout using the `execute`
-tool. Use the command the developer declared via `RUN:` (found in
-the delivery artefacts or recovered by reading the entry file).
-Example launches by stack (pick the row matching your project):
+**Check 7.3 — Entry point renders a non-blank frame (pixel smoke).**
+"Process survived for N seconds" is NOT sufficient evidence that
+the UI works — a blank window survives just fine. You must capture
+at least one rendered frame and prove it contains visible pixels.
 
-| Stack / UI kind | Headless flag (if any) | Example launch (5s timeout) |
-| --------------- | ---------------------- | --------------------------- |
-| pygame / SDL | `SDL_VIDEODRIVER=dummy` | `SDL_VIDEODRIVER=dummy timeout 5 python src/main.py 2>&1 \|\| true` |
-| Qt (PyQt / PySide) | `QT_QPA_PLATFORM=offscreen` | `QT_QPA_PLATFORM=offscreen timeout 5 python src/main.py 2>&1 \|\| true` |
-| arcade / pyglet | `SDL_VIDEODRIVER=dummy` (often) | `timeout 5 python src/main.py 2>&1 \|\| true` |
-| Flask / FastAPI / Django | (none — a bound port is success) | `timeout 5 python src/main.py 2>&1 \|\| true` |
-| Node web (Express / Next / Nuxt) | (none) | `timeout 5 npm run dev 2>&1 \|\| true` |
-| Node game (Phaser via Vite/Webpack) | (none — boot dev server, then curl) | `(npm run dev &) ; sleep 3 ; curl -I http://localhost:5173 ; kill %1 2>/dev/null` |
-| Electron | `xvfb-run` | `xvfb-run -a timeout 5 npm run start 2>&1 \|\| true` |
-| Go (Fyne / Gio) | `xvfb-run` for desktop | `xvfb-run -a timeout 5 go run ./cmd/<app> 2>&1 \|\| true` |
-| Go (Gin / Echo) | (none — bound port is success) | `timeout 5 go run ./cmd/<app> 2>&1 \|\| true` |
-| Rust (egui / iced) | `xvfb-run` | `xvfb-run -a timeout 5 cargo run 2>&1 \|\| true` |
-| Rust (actix-web) | (none) | `timeout 5 cargo run 2>&1 \|\| true` |
-| Java / Spring Boot | (none — bound port is success) | `timeout 5 java -jar target/app.jar 2>&1 \|\| true` |
-| Unity headless build | `-batchmode -nographics` | `timeout 10 ./Build/MyGame.x86_64 -batchmode -nographics 2>&1 \|\| true` |
-| Godot | `--headless` | `timeout 5 godot --headless --quit 2>&1 \|\| true` |
+Run the pixel-smoke procedure for your stack. The script must:
 
-If your stack is not in this table, fall back to: launch the
-developer's `RUN:` command with a 5s timeout; treat "process still
-alive when killed" as PASS, "exit ≠ 0 with import / setup error in
-first 200 lines of stderr" as FAIL.
+1. Boot the application's entry class (NOT the entire main loop —
+   construct + run lifecycle init + render one or two frames).
+2. Save a screenshot to ``artifacts/smoke_frame_0.png``.
+3. Count non-background sample pixels and assert the count is above
+   a threshold (default 50).
+4. Print one summary line of the form
+   ``PIXEL_SMOKE non_bg_samples=<int> threshold=<int> verdict=<PASS|FAIL>``.
 
-Expected outcome: the process either runs until the timeout kills it
-(proves it entered its event/main loop — this is SUCCESS, same
-convention as the developer's RUN: check) OR prints lines proving UI
-setup happened (e.g. "pygame ... Hello from the pygame community",
-"Uvicorn running on http://...", "Local: http://localhost:5173/",
-a Qt warning about offscreen mode). Import errors,
-`ModuleNotFoundError`, `Cannot find module`, `NullPointerException`
-around UI objects, or immediate clean exits with no UI-layer output
-count as **FAILURE**.
+Pygame example (the canonical reference — adapt to your stack):
 
-Report the verdict explicitly in your final summary — e.g.
-`UI VALIDATION: PASS (pygame.display.set_mode reached, process
-survived 5s timeout)` or `UI VALIDATION: FAILED — package.json
-dependencies has no UI framework`.
+```bash
+mkdir -p artifacts
+SDL_VIDEODRIVER=dummy python -c "
+import sys, pygame
+sys.path.insert(0, '.')
+from src.main import GameApp
+app = GameApp()
+app._render()
+pygame.image.save(app.screen, 'artifacts/smoke_frame_0.png')
+surf = pygame.image.load('artifacts/smoke_frame_0.png')
+w, h = surf.get_size()
+bg = surf.get_at((0, 0))[:3]
+non_bg = sum(1 for x in range(0, w, 4) for y in range(0, h, 4)
+             if surf.get_at((x, y))[:3] != bg)
+threshold = 50
+verdict = 'PASS' if non_bg >= threshold else 'FAIL'
+print(f'PIXEL_SMOKE non_bg_samples={non_bg} threshold={threshold} verdict={verdict}')
+sys.exit(0 if verdict == 'PASS' else 1)
+"
+```
+
+Per-stack adaptation table (pick the row matching your project):
+
+| Stack / UI kind | Headless flag | Frame source | Sampler |
+| --------------- | ------------- | ------------ | ------- |
+| pygame / SDL | `SDL_VIDEODRIVER=dummy` | `pygame.image.save(screen, ...)` | `surf.get_at((x, y))` |
+| Qt (PyQt / PySide) | `QT_QPA_PLATFORM=offscreen` | `widget.grab().save(...)` | `QImage.pixel(x, y)` |
+| arcade / pyglet | `SDL_VIDEODRIVER=dummy` (often) | `pyglet.image.get_buffer_manager().get_color_buffer().save(...)` | PIL `getpixel` |
+| Flask / FastAPI / Django | (none) | `curl -s http://localhost:8000/ > artifacts/smoke_response.html` | grep response body for the requirement's key noun(s) |
+| Node web (React / Vue / Phaser) | (none) | `playwright/puppeteer screenshot` (see test_automation skill) | non-bg pixel count via PIL |
+| Electron | `xvfb-run` | `app.getPath('userData')` + `BrowserWindow.capturePage()` | as above |
+| Go (Fyne / Gio) | `xvfb-run` | `image.PNG.Encode(window.Capture())` | non-bg sample count |
+| Java (JavaFX / Swing) | `-Djava.awt.headless=true` (Swing only) | `Robot.createScreenCapture()` | non-bg sample count |
+| Unity / Godot | `-batchmode -nographics` (Unity), `--headless` (Godot) | engine-native screenshot API | non-bg sample count |
+
+For server-only stacks (Flask, FastAPI, Express, Spring Boot, Gin):
+"render" means the served HTML/JSON. Boot the server, hit the root
+endpoint with `curl`, save the response to
+``artifacts/smoke_frame_0.html``, and assert that the response body
+contains at least one of the user-facing nouns from
+``docs/requirement.md``. Empty body or 5xx counts as **FAIL**.
+
+If you genuinely cannot capture a frame (stack lacks any headless
+mode), fall back to the legacy "process survived 5s timeout"
+convention BUT explicitly note in your report that pixel smoke was
+skipped. The safety-net layer-B check ``ui_smoke_frame`` will then
+log a warning rather than failing the run — but do NOT use this
+fallback to avoid implementing the real check.
+
+Report the verdict in your final summary — e.g.
+`UI VALIDATION: PASS (pixel smoke non_bg_samples=49796, threshold=50)`
+or `UI VALIDATION: FAILED — non_bg_samples=0 (blank screen)`. Always
+embed the integers in the message; the orchestrator parses them.
 
 ### Required Output Artifact: `docs/qa_report.json`
 
@@ -240,7 +281,13 @@ The schema (all top-level fields are required):
   "ui_validation": {
     "required": <true|false>,
     "verdict": "PASS" | "FAILED" | "SKIPPED_HEADLESS_ONLY",
-    "reason": "<one-sentence explanation>"
+    "reason": "<one-sentence explanation>",
+    "pixel_smoke": {
+      "non_bg_samples": <int>,
+      "threshold": <int>,
+      "frame_path": "artifacts/smoke_frame_0.png",
+      "verdict": "PASS" | "FAIL" | "SKIPPED"
+    }
   },
   "product_bugs": [
     {
@@ -270,6 +317,16 @@ Field rules:
   docs/requirement.md"). If `required` is `true`, `verdict` must
   be `"PASS"` or `"FAILED"` based on the UI Validation Step
   results, and `reason` must explain why.
+- `ui_validation.pixel_smoke` is REQUIRED whenever
+  `ui_validation.required` is `true`. Fill it from the Check 7.3
+  pixel-smoke run: `non_bg_samples` is the integer the script
+  printed, `threshold` is the integer the script compared against,
+  `frame_path` is the screenshot location (relative to project
+  root), and `verdict` is `"PASS"` if `non_bg_samples >= threshold`,
+  `"FAIL"` otherwise. Use `"SKIPPED"` only if you genuinely could
+  not capture a frame (rare — document the reason in
+  `ui_validation.reason`). When `required` is `false`, omit the
+  `pixel_smoke` object or set it to `null`.
 - `product_bugs` is the list of REAL product bugs you encountered
   while writing integration tests (e.g. a function silently
   ignores an event, a method returns the wrong type). Include

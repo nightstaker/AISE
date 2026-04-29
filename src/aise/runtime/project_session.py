@@ -442,6 +442,22 @@ class ProjectSession:
         }
     )
 
+    # Phase name -> safety_net layer-B expectation factory. The
+    # orchestrator runs ``run_post_step_check`` with the phase's
+    # expectation set after the phase finishes, so a missing artifact
+    # surfaces as a structured event the next dispatch can react to.
+    # Multiple phases can share an expectation set (architecture is
+    # checked twice — once after waterfall design, once after agile
+    # sprint design — using the same factory).
+    _POST_PHASE_SAFETY_NET: dict[str, tuple[str, ...]] = {
+        "architecture": ("architecture", "entry_point"),  # entry-point list is no-op until contract has lifecycle_inits
+        "sprint_design": ("architecture",),
+        "main_entry": ("entry_point",),
+        "sprint_main_entry": ("entry_point",),
+        "qa_testing": ("qa", "ui_smoke"),
+        "sprint_review": ("qa", "ui_smoke"),
+    }
+
     def _apply_dispatch_floor(self, *, reason: str) -> None:
         """Auto-scale ``max_dispatches`` to the architect's contract.
 
@@ -512,15 +528,22 @@ class ProjectSession:
     def _run_post_phase_hooks(self, phase_idx: int, phase_name: str) -> None:
         """Pure-Python hooks that run after each successful phase.
 
-        Two hooks today:
+        Hooks today:
         - Re-apply the dispatch-cap dynamic floor after every phase so
           a contract produced by the architect mid-run lifts the cap
           before implementation starts.
         - Generate the language-idiomatic root config (pyproject.toml /
           package.json / go.mod / Cargo.toml / pom.xml) once the
-          developer has written enough source. Any failure here is
-          logged and swallowed — a broken post-phase hook must never
-          mark the whole run as failed.
+          developer has written enough source.
+        - Run the phase-specific safety-net expectations
+          (architecture / main-entry / QA / UI-smoke). Each expectation
+          set covers a distinct contract: a missing artifact triggers
+          a structured event the orchestrator surfaces back to the
+          relevant agent on the next dispatch, so wiring bugs are
+          re-dispatched rather than silently shipped.
+
+        Any failure here is logged and swallowed — a broken post-phase
+        hook must never mark the whole run as failed.
         """
         # Always re-apply the dispatch-cap floor — cheap, idempotent,
         # and guards against the case where stack_contract.json
@@ -529,6 +552,14 @@ class ProjectSession:
             self._apply_dispatch_floor(reason=f"post_phase_{phase_name}")
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("dispatch-floor reapplication failed: %s", exc)
+
+        # Run safety-net layer-B checks bound to this phase. Order is
+        # phase → expectation set; each set has its own integrity
+        # contract and re-dispatch policy.
+        try:
+            self._run_post_phase_safety_net(phase_idx, phase_name)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("safety_net post-phase hook failed: %s", exc)
 
         if phase_name not in self._POST_PHASE_LANG_CONFIG:
             return
@@ -577,6 +608,80 @@ class ProjectSession:
                 result.get("language"),
                 phase_name,
             )
+
+    def _run_post_phase_safety_net(self, phase_idx: int, phase_name: str) -> None:
+        """Run the safety-net layer-B expectations bound to ``phase_name``.
+
+        For each tag in ``_POST_PHASE_SAFETY_NET[phase_name]``, fetch
+        the matching expectation factory from ``aise.safety_net`` and
+        invoke ``run_post_step_check``. Results are emitted as
+        ``safety_net_check`` events so the dashboard + orchestrator
+        prompt can both see what's missing.
+
+        Failure mode: this hook is a strict no-op when the project
+        root isn't pinned yet, when the phase has no expectations
+        registered, or when the safety_net itself raises (we already
+        wrap the caller in a try/except to keep the run going).
+        """
+        if self._project_root is None:
+            return
+        tags = self._POST_PHASE_SAFETY_NET.get(phase_name)
+        if not tags:
+            return
+
+        from ..safety_net import (
+            architecture_expectations,
+            entry_point_expectations,
+            qa_expectations,
+            run_post_step_check,
+            ui_smoke_expectations,
+        )
+
+        factories = {
+            "architecture": architecture_expectations,
+            "entry_point": entry_point_expectations,
+            "qa": qa_expectations,
+            "ui_smoke": ui_smoke_expectations,
+        }
+
+        for tag in tags:
+            factory = factories.get(tag)
+            if factory is None:
+                continue
+            try:
+                outcome = run_post_step_check(
+                    self._project_root,
+                    step_id=f"post_phase_{phase_name}_{tag}",
+                    layer_b_expected=factory(),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "safety_net layer-B check failed (phase=%s tag=%s): %s",
+                    phase_name,
+                    tag,
+                    exc,
+                )
+                continue
+            self._ctx.emit(
+                {
+                    "type": "safety_net_check",
+                    "phase_idx": phase_idx,
+                    "phase_name": phase_name,
+                    "tag": tag,
+                    "missing": [a.describe() for a in outcome.layer_b_missing],
+                    "repaired": list(outcome.repairs_succeeded),
+                    "repair_failures": [k for k, _ in outcome.repairs_failed],
+                    "events_emitted": outcome.events_emitted,
+                    "timestamp": _now(),
+                }
+            )
+            if outcome.layer_b_missing:
+                logger.info(
+                    "safety_net: phase=%s tag=%s missing=%s",
+                    phase_name,
+                    tag,
+                    [a.describe() for a in outcome.layer_b_missing],
+                )
 
     def _extract_last_run_command(self) -> str:
         """Pull the most recent ``RUN: <cmd>`` line out of the task log.

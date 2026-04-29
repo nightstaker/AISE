@@ -121,6 +121,26 @@ For each module, always write the test file BEFORE the source file.
   `pass` / `# TODO` (Python), `// TODO` (TS / Go / Java),
   `panic!("todo")` (Rust), `throw new Error("not implemented")`
   (TS / Java) placeholders.
+- **"Silent no-op when uninitialized" tests**: NEVER write a test
+  asserting that calling `render()` / `update()` / a request
+  handler / etc. on an *uninitialized* instance is "a graceful
+  no-op". That test codifies a wiring bug as desired behaviour —
+  it lets the integration phase ship a half-constructed object
+  whose unit tests pass while the runtime UI is blank. The correct
+  test for "render before initialize" is
+  `pytest.raises(RuntimeError)` (or the language equivalent),
+  matching the loud-failure pattern the `entry_point_wiring` skill
+  mandates in the source.
+- **Mocking the display surface in integration tests**: For
+  UI-required projects (`stack_contract.ui_required == true`),
+  integration tests MUST run against a real headless surface
+  (`SDL_VIDEODRIVER=dummy` + real `pygame.Surface`,
+  `QT_QPA_PLATFORM=offscreen` + real `QImage`, headless Chromium
+  via Playwright for web stacks). `MagicMock`-ing the screen makes
+  every blit/draw call succeed against a fake — wiring bugs that
+  the integration test exists to catch then sail through. At least
+  one integration test must assert a pixel-level invariant on the
+  real surface.
 
 ## Example Session
 
