@@ -96,7 +96,13 @@ own — if you don't lay down the skeleton, nobody will.
        "method": "<public method, e.g. initialize/setup/start>",
        "class": "<class name>",
        "module": "<file path matching subsystems[].components[].file>"}
-    ]
+    ],
+    "event_loop_owner": {
+      "attr": "<member name on the entry class that owns event dispatch>",
+      "handler_method": "<method name, conventionally handle_event>",
+      "class": "<class name>",
+      "module": "<file path matching subsystems[].components[].file>"
+    }
   }
   ```
 
@@ -133,6 +139,23 @@ own — if you don't lay down the skeleton, nobody will.
     match a path in `subsystems[].components[].file`. See the
     `lifecycle_init_contract` skill for the full rationale and the
     boot-sequence-diagram requirement that pairs with this list.
+  - **`event_loop_owner` is REQUIRED** for every project whose
+    entry-point class runs an event loop (UI frameworks, game
+    engines, server frameworks with custom dispatch). Set
+    `event_loop_owner: null` ONLY when the framework's main loop
+    is fully owned by an external library that does its own
+    dispatch (e.g. `runApp(app)` in Flutter, `app.run()` in Bottle).
+    For pygame / Qt-with-custom-loop / Tk-with-custom-loop / arcade
+    / any project whose `main.run()` writes
+    `for event in pygame.event.get(): ...`, the architect MUST
+    designate exactly ONE component instance as the dispatch
+    owner. The entry file's main loop is then required to forward
+    every non-terminal event to
+    `<entry>.<event_loop_owner.attr>.<handler_method>(screen,
+    event)`. This prevents the "two-headed main loop" anti-pattern
+    where multiple components each own a half-done event loop and
+    the entry file forgets to wire dispatch. See the
+    `entry_point_wiring` skill, Step E.
 
   This file is read directly by `dispatch_subsystems` to fan
   phase-3 out into one skeleton task + one task per component

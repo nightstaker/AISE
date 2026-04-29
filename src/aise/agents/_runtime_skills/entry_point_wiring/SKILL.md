@@ -94,6 +94,90 @@ time.sleep(...)`) is **NOT** a main loop. If your framework does not
 have one of the above patterns, reread the architecture doc — the
 framework choice was probably wrong.
 
+### Step E — DISPATCH every event to the loop owner
+
+If your stack uses a hand-written event loop (pygame, Qt with custom
+loop, Tk with custom loop, arcade with `on_event`, raw SDL/GLFW),
+**every event read from the queue MUST be dispatched to a handler
+before the next iteration**. Reading an event and not dispatching
+it is the same wiring bug as forgetting `initialize()` — the user's
+clicks / keypresses / window resizes vanish silently.
+
+The architect designates exactly ONE component as the dispatch
+owner via `stack_contract.json#/event_loop_owner`:
+
+```json
+"event_loop_owner": {
+  "attr": "main_menu",
+  "handler_method": "handle_event",
+  "class": "MainMenu",
+  "module": "src/ui/main_menu.py"
+}
+```
+
+The entry file's main loop MUST forward every non-terminal event to
+this owner:
+
+```python
+owner = getattr(self, contract["event_loop_owner"]["attr"])
+handler = getattr(owner, contract["event_loop_owner"]["handler_method"])
+for event in pygame.event.get():
+    if event.type == pygame.QUIT:
+        running = False
+        break
+    handler(screen, event)            # ← REQUIRED — no exceptions
+```
+
+**Banned anti-patterns:**
+
+```python
+# BANNED — events read and silently discarded:
+for event in pygame.event.get():
+    if event.type == pygame.QUIT:
+        running = False
+    # nothing else — every click vanishes here
+```
+
+```python
+# BANNED — two-headed loop. Some events go to one handler, the rest
+# (mostly mouse) are dropped. Either delegate fully or don't write a
+# new loop at all — call the existing component's run() method.
+for event in pygame.event.get():
+    if event.type == pygame.KEYDOWN:
+        handle_key(event)
+    # MOUSEBUTTONDOWN dropped
+```
+
+If `event_loop_owner` is `null` in the contract, the framework owns
+its own dispatch (e.g. `runApp(...)` in Flutter, `app.exec()` in Qt
+without a manual loop) and Step E is satisfied automatically — but
+in that case the entry file MUST NOT write its own
+`pygame.event.get()` / equivalent loop on top of the framework's
+loop. Pick one or the other; never both.
+
+### Step F — DISPATCH renderer based on owner state
+
+If the loop owner is a state machine (i.e. has a public state field
+like `_current_screen` set by its event handler), the entry file's
+per-frame render branch MUST read that field and pick the matching
+render method. The state-name strings used by the event handler,
+the state field, and the render dispatch MUST agree exactly —
+mismatched strings produce "buttons clickable, screen never
+changes" bugs.
+
+```python
+owner = self.main_menu
+state = owner._current_screen        # set by handle_event -> _navigate_to
+if state == "main_menu":   owner.render(screen)
+elif state == "shop":      owner.render_shop(screen, ...)
+elif state == "settings":  owner.render_settings(screen)
+# ... every state the owner can navigate to MUST have a branch here
+```
+
+The architect's `state_enum` (when present in the contract) is the
+authoritative list of allowed states; the entry's render dispatch
+must cover every value.
+
 ### Step D — SELF-CHECK assertion
 
 Before `if __name__ == "__main__":` (or the language's equivalent
@@ -180,6 +264,17 @@ in your final response:
 4. Confirm no `if self._<x> is None: return` exists inside any
    `render` / `update` / `handle_*` method you can grep for. If you
    find one in a component you authored, fix it now — do not defer.
+5. Confirm Step E: grep for `pygame.event.get()` (or framework
+   equivalent) in the entry file — for every match, the for-loop
+   body MUST contain a call to
+   `<event_loop_owner.attr>.<handler_method>(...)`. Events read
+   without dispatch is a wiring bug.
+6. Confirm Step F: every value the owner's state field can take
+   (per the architect's `state_enum`, or by enumerating
+   `_navigate_to(...)` call sites) appears as a branch in the
+   entry's per-frame render dispatch. Orphan states (set by
+   navigate, never rendered) and dead branches (rendered, never
+   navigated to) both indicate a string-protocol mismatch.
 
-Report each of the four counts in your final summary so QA can
+Report each of the six counts in your final summary so QA can
 cross-check them against the contract.

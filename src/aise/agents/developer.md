@@ -220,6 +220,19 @@ engineer's responsibility in Phase 5.
   graceful no-op" are themselves wiring bugs — see the `tdd` skill
   anti-patterns. The full rationale lives in the `entry_point_wiring`
   skill.
+- Do NOT hardcode a single font name when constructing UI fonts:
+  `pygame.font.SysFont("arial", N)`, `pygame.font.Font(None, N)`,
+  `QFont("Arial", N)`, `ImageFont.truetype("arial.ttf", N)`,
+  `font-family: Arial` (without fallback chain) — all of these are
+  forbidden. They silently render `.notdef` (tofu boxes) for any
+  character outside the chosen font's glyph table; CJK literals
+  become uniformly identical boxes that pass every "is anything
+  drawn" smoke test. Route every font construction through a single
+  project-level resolver (e.g. `src/<pkg>/shared/font_resolver.py`
+  for Python+pygame) that returns a font whose candidate list
+  covers every Unicode block your project's UI literals actually
+  use. Full rationale + per-stack templates: see the
+  `font_selection` skill.
 - Do NOT use the `task` tool (subagent). Write files directly yourself.
 - Do NOT create runner scripts (e.g. `run_tests.py`, `run_pytest.py`,
   `run_tests.sh`, `test_runner.js`, `runtests.go`, `RunAllTests.java`).
@@ -238,5 +251,6 @@ engineer's responsibility in Phase 5.
 - tdd: Test-Driven Development workflow with 1:1 source-to-test file mapping [tdd, testing, implementation]
 - code_inspection: Run a language-appropriate static analyzer on every source file written and fix every finding [lint, static-analysis, quality]
 - entry_point_wiring: Wire main.py / index.ts / main.rs etc. so every subsystem with a public initialize()/setup()/start() is actually invoked at boot, and ban silent-noop guards [entry-point, wiring, lifecycle]
+- font_selection: Centralise UI font construction through a resolver with a multi-name fallback chain so CJK and Latin literals both render real glyphs instead of .notdef tofu boxes [ui, font, i18n]
 - code_generation: Generate module scaffolding from architecture design
 - bug_fix: Fix bugs with root cause analysis

@@ -319,6 +319,52 @@ def _base_contract() -> dict:
 
 
 @pytest.mark.parametrize(
+    "event_loop_owner, expect_valid",
+    [
+        (None, True),  # null is explicit "framework owns dispatch"
+        (
+            {
+                "attr": "menu",
+                "handler_method": "handle_event",
+                "class": "Menu",
+                "module": "src/ui/menu_ui.py",
+            },
+            True,
+        ),
+        (
+            {
+                "attr": "menu",
+                "handler_method": "handle_event",
+                "class": "Menu",
+                "module": "src/wrong/path.py",  # not in components[]
+            },
+            False,
+        ),
+        (
+            {  # missing handler_method
+                "attr": "menu",
+                "class": "Menu",
+                "module": "src/ui/menu_ui.py",
+            },
+            False,
+        ),
+        (True, False),  # wrong type
+        ([], False),
+    ],
+)
+def test_stack_contract_event_loop_owner_validation(
+    tmp_path: Path, event_loop_owner, expect_valid: bool
+) -> None:
+    from aise.safety_net.stack_contract import _stack_contract_valid
+
+    contract = _base_contract()
+    contract["event_loop_owner"] = event_loop_owner
+    target = tmp_path / "stack_contract.json"
+    target.write_text(json.dumps(contract))
+    assert _stack_contract_valid(target) is expect_valid
+
+
+@pytest.mark.parametrize(
     "lifecycle_inits, expect_valid",
     [
         # Absent — accepted (legacy contracts pre-skill).
