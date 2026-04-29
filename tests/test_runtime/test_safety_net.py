@@ -390,13 +390,18 @@ class TestScaffoldingExpectations:
 
 class TestInvariantRegistry:
     def test_scaffold_category_has_the_three_invariants(self) -> None:
-        """Document the current layer-A set so additions are deliberate."""
-        names = [fn.__name__ for fn in LAYER_A_INVARIANTS["scaffold"]]
-        assert names == [
+        """Document the current layer-A set so additions are deliberate.
+
+        Order is not load-bearing — invariants register at module
+        import time and the actual order depends on which domain
+        module the package's __init__ imports first. Compare as set.
+        """
+        names = {fn.__name__ for fn in LAYER_A_INVARIANTS["scaffold"]}
+        assert names == {
             "_invariant_git_repo",
             "_invariant_gitignore_present",
             "_invariant_standard_subdirs",
-        ]
+        }
 
 
 class TestCheckOutcome:
