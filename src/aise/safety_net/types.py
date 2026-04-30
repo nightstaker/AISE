@@ -26,6 +26,18 @@ class ExpectedArtifact:
       catch leftover files from prior runs (e.g. a stale
       ``package.json`` from a previous Phaser project that was never
       cleaned up before a new run started).
+    - ``"entry_point_lifecycle"`` — the runnable entry file declared
+      at ``docs/stack_contract.json#/entry_point`` must invoke every
+      ``lifecycle_inits[]`` entry. ``path`` is informational only —
+      the validator resolves the real path from the stack contract.
+      Catches the "developer forgot to call ``initialize()``" failure
+      mode that ships blank-window apps despite 100% test pass rate.
+    - ``"ui_smoke_frame"`` — ``path`` must be a non-empty PNG (or
+      other image) file produced by QA's pixel-smoke step, AND the
+      sibling ``docs/qa_report.json#/ui_validation/pixel_smoke``
+      must report ``non_bg_samples`` above the configured threshold.
+      Last-line backstop for UI projects: even if every prior layer
+      missed a wiring bug, a uniformly-blank screenshot fails this.
     - ``"git_repo"`` — ``path`` must contain a ``.git`` entry (dir or
       worktree reference); other fields ignored.
     - ``"git_tag"`` — ``tag_name`` (required) must be present in the

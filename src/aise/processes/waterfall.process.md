@@ -88,20 +88,31 @@ required_phases:
 - agents: developer
 - description: |
     After dispatch_subsystems completes, dispatch the developer
-    once more to wire the runnable entry point:
+    once more to wire the runnable entry point per the
+    `entry_point_wiring` skill:
 
       dispatch_task(developer, "Write the main entry file declared
-      at docs/stack_contract.json#/entry_point — import and
-      initialise every subsystem from src/, and provide a runnable
-      application using the framework recorded in
+      at docs/stack_contract.json#/entry_point following the
+      entry_point_wiring skill — Step A construct every subsystem
+      from src/, Step B iterate
+      docs/stack_contract.json#/lifecycle_inits[] invoking each
+      <attr>.<method>() in order, Step C enter the framework's
+      native main loop using the framework recorded in
       stack_contract.json#/framework_backend (or framework_frontend
-      for UI projects). Also add the integration test that boots
-      the entry point end-to-end.")
+      for UI projects), Step D add the lifecycle self-check
+      assertion. Do NOT write defensive `if self._<x> is None: return`
+      guards in render/update/handler methods — raise RuntimeError
+      instead. Also add the integration test that boots the entry
+      point end-to-end against a real headless surface (NOT a
+      MagicMock display) when ui_required is true.")
 
     This is a single dispatch_task — the entry point is one file
     pair, not a fan-out. The runtime exercises the chosen stack at
     boot time, which is what guarantees the framework choice is
-    real and not just declared in prose.
+    real and not just declared in prose. After the dispatch returns,
+    the post-phase safety net runs the entry_point_lifecycle layer-B
+    check; a missing initialize() call re-dispatches the developer
+    with the precise diff.
 - deliverables: src/main.<ext>, tests/test_main.<ext>
 - verification_command: python -m pytest tests/ -q --tb=short
 - on_failure: retry_with_output
@@ -110,8 +121,27 @@ required_phases:
 ### phase_4_verification: Integration & Testing
 #### step_integration_test: Integration Testing
 - agents: qa_engineer
-- description: Read src/ and tests/ to understand the system, identify integration scenarios, then write integration tests to tests/test_integration.py and a brief test plan to docs/integration_test_plan.md. Do not duplicate the developer's unit tests.
-- deliverables: tests/test_integration.py, docs/integration_test_plan.md
+- description: |
+    Read src/ and tests/ to understand the system, identify
+    integration scenarios, then write integration tests to
+    tests/test_integration.py and a brief test plan to
+    docs/integration_test_plan.md. Do not duplicate the developer's
+    unit tests.
+
+    For UI-required projects
+    (`docs/stack_contract.json#/ui_required == true`), the
+    integration tests MUST run against a real headless surface
+    (`SDL_VIDEODRIVER=dummy` + real `pygame.Surface`,
+    `QT_QPA_PLATFORM=offscreen` + real `QImage`, Playwright for
+    web), with at least one pixel-level invariant assertion.
+    `MagicMock`-ing the display surface is forbidden — see the
+    `tdd` skill anti-patterns. Then run the Check 7.3 pixel-smoke
+    procedure documented in qa_engineer.md and record the
+    `pixel_smoke` block in `docs/qa_report.json`. The post-phase
+    safety net runs the `ui_smoke_frame` layer-B check on the
+    captured screenshot; a blank frame (non_bg_samples below
+    threshold) re-dispatches the qa_engineer.
+- deliverables: tests/test_integration.py, docs/integration_test_plan.md, artifacts/smoke_frame_0.png (UI-required projects)
 - verification_command: python -m pytest tests/ -q --tb=short
 - on_failure: retry_with_output
 - max_retries: 2

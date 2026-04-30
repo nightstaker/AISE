@@ -586,8 +586,35 @@ class WebProjectService:
             self._save_state()
             logger.info("Web project deleted: project_id=%s", project_id)
 
+    # Files / directories preserved across ``restart_project``. Anything
+    # NOT in this set is removed before phase 0 re-runs. Hard-coded
+    # carve-outs that survive restart:
+    # - ``.git`` — git history is the project identity; the user's own
+    #   commits would otherwise be lost.
+    # - ``project_config.json`` — written by ``ProjectManager`` at
+    #   creation time (model selection, agent config, etc.); restoring
+    #   it would force the user to re-pick everything.
+    # The previous "preserve docs/src/tests/runs" carve-outs were the
+    # source of cross-language leftover accumulation (Python pyproject
+    # surviving into a Dart restart, etc.); they are intentionally
+    # NOT in this list.
+    _RESTART_PRESERVE: frozenset[str] = frozenset({".git", "project_config.json"})
+
     def restart_project(self, project_id: str) -> str | None:
-        """Clear all runs/requirements and re-execute the first requirement."""
+        """Clear all runs/requirements and re-execute the first requirement.
+
+        Disk cleanup: every entry under the project root is removed
+        except those listed in ``_RESTART_PRESERVE``. Earlier versions
+        of this method only wiped a hard-coded set of directories
+        (``docs / src / tests / runs / trace / home``), which let
+        cross-language leftovers pile up across restarts — e.g. a
+        Python ``pyproject.toml`` and ``node_modules/`` surviving into
+        a Dart restart, leaving the project in a stack-fork state
+        where ``stack_contract.json`` says one language and the
+        filesystem still has manifests from another. Wiping everything
+        but ``.git`` and ``project_config.json`` makes the restart
+        idempotent regardless of how the previous run mutated layout.
+        """
         with self._lock:
             project = self.project_manager.get_project(project_id)
             if project is None:
@@ -613,22 +640,43 @@ class WebProjectService:
             self._requirements_by_project[project_id] = []
             self._active_workflow_runs = {(pid, rid) for pid, rid in self._active_workflow_runs if pid != project_id}
 
-            # Clear project output directories on disk
+            # Wipe the project root except for ``_RESTART_PRESERVE``.
             project_root = Path(project.project_root) if project.project_root else None
             if project_root and project_root.is_dir():
-                for subdir in ("docs", "src", "tests", "runs"):
-                    target = project_root / subdir
-                    if target.is_dir():
-                        shutil.rmtree(target)
-                    target.mkdir(parents=True, exist_ok=True)
-                # Also clean stale dirs from old layout
-                for stale in ("trace", "home"):
-                    target = project_root / stale
-                    if target.is_dir():
-                        shutil.rmtree(target)
+                projects_root = self.project_manager._projects_root.resolve()
+                resolved_root = project_root.resolve()
+                # Refuse to wipe outside the projects root — a
+                # symlinked or misconfigured project_root must not
+                # turn restart into ``rm -rf /``.
+                if not resolved_root.is_relative_to(projects_root):
+                    raise ValueError(f"Refuse to wipe project root outside projects directory: {resolved_root}")
+                removed_names: list[str] = []
+                preserved_names: list[str] = []
+                for entry in resolved_root.iterdir():
+                    if entry.name in self._RESTART_PRESERVE:
+                        preserved_names.append(entry.name)
+                        continue
+                    try:
+                        if entry.is_symlink() or entry.is_file():
+                            entry.unlink(missing_ok=True)
+                        elif entry.is_dir():
+                            shutil.rmtree(entry)
+                    except OSError as exc:
+                        logger.warning(
+                            "restart_project: failed to remove %s: %s",
+                            entry,
+                            exc,
+                        )
+                        continue
+                    removed_names.append(entry.name)
+                logger.info(
+                    "Project restarted: project_id=%s removed=%d preserved=%s",
+                    project_id,
+                    len(removed_names),
+                    sorted(preserved_names),
+                )
 
             self._save_state()
-            logger.info("Project restarted: project_id=%s (disk cleaned)", project_id)
 
         # Re-submit the original requirement
         return self.run_requirement(project_id, original_text)
