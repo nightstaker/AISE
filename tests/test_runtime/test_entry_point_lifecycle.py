@@ -352,9 +352,7 @@ def _base_contract() -> dict:
         ([], False),
     ],
 )
-def test_stack_contract_event_loop_owner_validation(
-    tmp_path: Path, event_loop_owner, expect_valid: bool
-) -> None:
+def test_stack_contract_event_loop_owner_validation(tmp_path: Path, event_loop_owner, expect_valid: bool) -> None:
     from aise.safety_net.stack_contract import _stack_contract_valid
 
     contract = _base_contract()
