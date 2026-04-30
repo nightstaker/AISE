@@ -123,6 +123,18 @@ _LANGUAGE_TOOLCHAIN: dict[str, dict[str, str]] = {
         "src_path_pattern": "src/main/java/{subsystem}/{Component}.java",
         "static_check": "mvn -q compile",
     },
+    # Dart / Flutter convention. Source under ``lib/`` (NOT ``src/``) is
+    # mandatory: ``package:`` imports only resolve against ``lib/``, and
+    # ``flutter run`` looks for ``lib/main.dart``. The architect's
+    # contract may declare ``src/foo.dart`` paths, but the toolchain
+    # row pins ``lib/`` so downstream component dispatches are
+    # correct-by-construction even when the contract drifts.
+    "dart": {
+        "test_cmd": "dart test {test_path}",
+        "test_path_pattern": "test/{subsystem}/{component}_test.dart",
+        "src_path_pattern": "lib/{subsystem}/{component}.dart",
+        "static_check": "dart analyze {src_path}",
+    },
 }
 
 
@@ -141,6 +153,13 @@ _INTERFACE_FILENAME: dict[str, str] = {
     "go": "doc.go",
     "rust": "mod.rs",
     "java": "package-info.java",
+    # Dart's library-barrel convention: ``lib/<subsystem>/<subsystem>.dart``
+    # is the public surface that sibling subsystems / the entry file
+    # ``import 'package:<app>/<subsystem>/<subsystem>.dart'`` against.
+    # We synthesise the filename from the subsystem name in the
+    # path helper below since Dart has no fixed ``index.dart`` /
+    # ``__init__.py`` filename.
+    "dart": "<subsystem>.dart",
 }
 
 
@@ -150,9 +169,15 @@ def _interface_module_path(language: str, subsystem_name: str, src_dir: str) -> 
     The skeleton phase writes this file so component dispatches and
     sibling subsystems can ``import`` against a single declared API
     surface instead of fishing through individual component files.
+
+    Dart has no fixed barrel filename, so the table holds the
+    placeholder ``<subsystem>.dart`` which we substitute here. Other
+    languages return the literal filename as-is.
     """
     base = (src_dir or f"src/{subsystem_name}").rstrip("/")
     fname = _INTERFACE_FILENAME.get(language.lower(), "__init__.py")
+    if fname == "<subsystem>.dart":
+        fname = f"{subsystem_name}.dart"
     return f"{base}/{fname}"
 
 
@@ -262,6 +287,18 @@ _UI_FRAMEWORK_RECIPES: dict[str, dict[str, str]] = {
         "runtime_setup": "app = Flask(__name__)",
         "main_loop_hint": "app.run(host='0.0.0.0', port=5000)",
         "surface_type": "flask.Request",
+    },
+    "flutter": {
+        "import": "import 'package:flutter/material.dart';",
+        "runtime_setup": (
+            "WidgetsFlutterBinding.ensureInitialized();\n"
+            "// Build the root widget that owns the app's MaterialApp /\n"
+            "// CupertinoApp shell. The bootstrap component must declare\n"
+            "// it as a StatefulWidget so subsystem managers can mount\n"
+            "// in initState() and tear down in dispose()."
+        ),
+        "main_loop_hint": "runApp(<RootWidget>());",
+        "surface_type": "BuildContext",
     },
 }
 

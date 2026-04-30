@@ -195,12 +195,48 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
             if stack_block:
                 worker_prompt = f"{stack_block}\n\n{worker_prompt}"
 
-            # First attempt.
-            result = dispatch_rt.handle_message(
-                worker_prompt,
-                on_todos_update=_on_todos_update,
-                on_token_usage=_on_token_usage,
-            )
+            # First attempt. A path-policy rejection inside the agent
+            # loop surfaces as an exception with the sentinel
+            # "outside this project's root" in its message — that is
+            # not a model failure, it's a sandbox guardrail tripping
+            # because the LLM emitted a host-absolute path
+            # (``/home/...`` / ``/tmp/...``). Re-dispatch ONCE with a
+            # corrective preface that names the failure and reminds
+            # the worker to use project-relative paths, instead of
+            # marking the whole task failed (the prior behaviour
+            # silently dropped core components in project_0-tower).
+            try:
+                result = dispatch_rt.handle_message(
+                    worker_prompt,
+                    on_todos_update=_on_todos_update,
+                    on_token_usage=_on_token_usage,
+                )
+            except Exception as first_exc:
+                if "outside this project's root" not in str(first_exc):
+                    raise
+                logger.info(
+                    "Retrying task=%s after path-policy rejection: %s",
+                    task_id,
+                    first_exc,
+                )
+                corrective_prompt = (
+                    "[Path-policy retry]\n"
+                    "Your previous attempt was aborted by the project "
+                    "sandbox because a tool call used an absolute host "
+                    "path. The sandbox accepts only project-relative "
+                    "paths (e.g. ``docs/foo.md``) or virtual-rooted "
+                    "paths (``/docs/foo.md``). Re-issue every "
+                    "``write_file`` / ``edit_file`` / ``read_file`` "
+                    "with such a path. Never emit any path that starts "
+                    "with /home, /tmp, /etc, /var, /usr, /opt, /root, "
+                    "/mnt, /proc, /sys, /dev, /boot.\n\n"
+                    f"Original task:\n{worker_prompt}"
+                )
+                result = dispatch_rt.handle_message(
+                    corrective_prompt,
+                    on_todos_update=_on_todos_update,
+                    on_token_usage=_on_token_usage,
+                )
 
             # Context-augmented retry loop. Triggers in two cases, both
             # role-neutral:

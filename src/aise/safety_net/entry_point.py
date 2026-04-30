@@ -84,6 +84,57 @@ def _python_has_lifecycle_loop(entry_text: str) -> bool:
 _NON_PYTHON_CALL_RE = re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
+# Flutter-specific entry-file shape check. ``lib/main.dart`` MUST hand
+# control to the Flutter runtime via ``runApp(...)``; the
+# project_0-tower 2026-04-29 re-run produced a CLI loop that imported
+# ``dart:io`` and read ``stdin`` byte-by-byte, satisfying the lifecycle
+# contract syntactically but defeating the framework's main loop.
+_DART_RUN_APP_RE = re.compile(r"\brunApp\s*\(")
+_DART_IO_IMPORT_RE = re.compile(r"^\s*import\s+['\"]dart:io['\"]\s*;\s*$", re.MULTILINE)
+
+
+def _is_flutter_contract(contract: dict) -> bool:
+    """True when the contract declares a Flutter UI runtime.
+
+    Matches on ``framework_frontend`` or ``ui_kind`` exactly equal to
+    ``flutter`` (case-insensitive). ``language=dart`` alone is not
+    sufficient because dart projects can be CLI-only — Fix 1 already
+    pins the source root to ``lib/`` for those, but the entry-shape
+    check would mis-fire on a legitimate ``dart run`` CLI.
+    """
+    if not isinstance(contract, dict):
+        return False
+    for key in ("framework_frontend", "ui_kind"):
+        value = contract.get(key)
+        if isinstance(value, str) and value.strip().lower() == "flutter":
+            return True
+    return False
+
+
+def _flutter_entry_shape_problems(entry_text: str) -> list[str]:
+    """Return human-readable problems with a Flutter ``main.dart``.
+
+    Empty list ⇒ shape is acceptable. The two checks pair: presence of
+    ``runApp(`` proves the file does hand control to Flutter, and
+    absence of ``import 'dart:io'`` rules out the CLI-loop anti-pattern
+    even when ``runApp`` happens to also be present somewhere.
+    """
+    problems: list[str] = []
+    if _DART_RUN_APP_RE.search(entry_text) is None:
+        problems.append(
+            "Flutter entry must call runApp(...). Add 'runApp(<RootWidget>())' "
+            "after constructing subsystems and invoking lifecycle_inits[]; "
+            "a CLI text loop is not a valid Flutter entry."
+        )
+    if _DART_IO_IMPORT_RE.search(entry_text) is not None:
+        problems.append(
+            "Flutter entry must not import 'dart:io' for an interactive loop. "
+            "stdin/stdout text-mode rendering bypasses the Flutter runtime; "
+            "delete the dart:io import and use Flutter widgets instead."
+        )
+    return problems
+
+
 def _generic_entry_methods(entry_text: str) -> set[str]:
     """Fallback for non-Python entries: collect ``.method(`` tokens.
 
@@ -132,6 +183,15 @@ def _entry_point_valid(project_root: Path) -> tuple[bool, list[str]]:
         return False, [f"entry file {entry_rel} unreadable: {exc}"]
 
     missing: list[str] = []
+    # Framework-shape check: when the contract names Flutter, the
+    # entry file must hand control to ``runApp(...)`` instead of
+    # running a stdin/stdout CLI loop. Run this before the generic
+    # method-presence check so a CLI-loop entry is rejected even if
+    # it happened to call every lifecycle method by name.
+    if _is_flutter_contract(contract) and entry_path.suffix == ".dart":
+        for problem in _flutter_entry_shape_problems(entry_text):
+            missing.append(f"{entry_rel}: {problem}")
+
     if entry_path.suffix == ".py":
         if _python_has_lifecycle_loop(entry_text):
             return True, []

@@ -59,3 +59,32 @@ def _make_event(
         "detail": detail[:500] if detail else "",
         "ts": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _make_skip_event(
+    *,
+    step_id: str,
+    layer: str,
+    expected: str,
+    reason: str,
+    detail: str = "",
+) -> dict[str, Any]:
+    """Build a graceful-skip event with a distinct ``event_type``.
+
+    Used when a layer-B check decides the artifact is **not required
+    in this environment** (e.g. a Flutter UI smoke frame on a host
+    with no ``flutter`` binary). Differentiating ``ui_smoke_unavailable``
+    from ``llm_fallback_triggered`` lets the dashboard render these
+    as informational instead of as repair triggers — and stops the
+    orchestrator from re-dispatching QA in a loop that can't possibly
+    succeed.
+    """
+    return {
+        "event_type": "ui_smoke_unavailable",
+        "step_id": step_id,
+        "layer": layer,
+        "expected": expected,
+        "reason": reason,
+        "detail": detail[:500] if detail else "",
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }

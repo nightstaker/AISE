@@ -70,3 +70,46 @@ class TestQAEngineerAgent:
         artifact = qa.execute_skill("test_review", {})
         assert "approved" in artifact.content
         assert "metrics" in artifact.content
+
+
+class TestQAEngineerToolchainCheckPrompt:
+    """``qa_engineer.md`` must instruct the QA agent to run a
+    toolchain availability check BEFORE executing the test suite, and
+    must forbid fabricating pass/fail counts when the runner is
+    missing. The 2026-04-29 ``project_0-tower`` re-run shipped a
+    Flutter project on a host with no ``flutter`` binary; QA wrote
+    ``pytest.passed=822`` despite never running anything. Pin the
+    prompt language so a future edit can't quietly remove the rule.
+    """
+
+    def _md(self) -> str:
+        from pathlib import Path
+
+        import aise
+
+        md_path = Path(aise.__file__).resolve().parent / "agents" / "qa_engineer.md"
+        return md_path.read_text(encoding="utf-8")
+
+    def test_workflow_step_zero_runs_which(self) -> None:
+        body = self._md()
+        # The new mandatory step 0 must explicitly mention ``which`` and
+        # the ``toolchain_check`` field where its result is recorded.
+        assert "Toolchain availability check" in body
+        assert "which" in body
+        assert "toolchain_check" in body
+
+    def test_forbids_inventing_passed_failed_when_runner_missing(self) -> None:
+        body = self._md()
+        # The phrase "FORBIDDEN" appears only when the prompt names
+        # this exact rule; pin both the gate wording and the
+        # cross-reference to the project_0-tower regression.
+        assert "FORBIDDEN" in body
+        assert "passed" in body and "failed" in body
+        assert "project_0-tower" in body
+
+    def test_schema_documents_ran_field(self) -> None:
+        body = self._md()
+        # ``ran`` must appear inside the ``pytest`` schema block,
+        # paired with the requirement to OMIT counts when ran=false.
+        assert '"ran":' in body
+        assert "OMIT" in body
