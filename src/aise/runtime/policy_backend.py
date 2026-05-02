@@ -204,11 +204,23 @@ def make_policy_backend(
         return path
 
     def _escape_error(file_path: str) -> str:
+        # NOTE: do not include any concrete host-path example string in
+        # this message. Small local LLMs pattern-match the *example*
+        # verbatim into their next ``write_file`` call (observed on
+        # project_0-tower 2026-04-29: the rejection echoed
+        # ``/home/user/workspace/...`` and the next dispatch literally
+        # tried to write to ``/home/user``). Describe the rule
+        # abstractly so there's nothing to copy.
         return (
-            f"Path '{file_path}' is outside this project's root. "
-            "Use relative paths (e.g. 'docs/requirement.md') or paths "
-            "rooted at the project (e.g. '/docs/requirement.md'). Do "
-            "NOT use absolute host paths like /home/user/workspace/..."
+            f"Path '{file_path}' is outside this project's root and was "
+            "rejected. All file paths MUST be either relative "
+            "(e.g. 'docs/requirement.md', 'src/foo.dart') or rooted at "
+            "the project's virtual root with a leading slash "
+            "(e.g. '/docs/requirement.md'). Absolute host paths are "
+            "forbidden — that includes any path starting with /home, "
+            "/tmp, /etc, /var, /usr, /opt, /root, /mnt, /proc, /sys, "
+            "/dev, or /boot. Re-issue the call with a project-relative "
+            "path."
         )
 
     # Summarization middleware replaces past ``write_file.content`` /

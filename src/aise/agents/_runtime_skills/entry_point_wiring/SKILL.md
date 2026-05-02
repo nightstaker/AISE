@@ -94,6 +94,44 @@ time.sleep(...)`) is **NOT** a main loop. If your framework does not
 have one of the above patterns, reread the architecture doc — the
 framework choice was probably wrong.
 
+#### Flutter / Dart entry pattern (mandatory when ui_kind=flutter)
+
+For a Flutter project, `lib/main.dart` MUST hand control to the
+Flutter runtime via `runApp(...)`. The minimal acceptable shape:
+
+```dart
+import 'package:flutter/material.dart';
+// import every component the lifecycle_inits[] list references...
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Step A — construct subsystem managers.
+  final settings = SettingsMgr();
+  final audio    = AudioMgr();
+  // ...one line per component...
+
+  // Step B — call every lifecycle_inits[] entry, in order.
+  settings.initialize();
+  audio.initialize();
+  // ...
+
+  // Step C — hand control to the Flutter runtime.
+  runApp(const SnakeApp());
+}
+```
+
+**Banned in a Flutter `main.dart`:**
+
+- `import 'dart:io';` paired with a `stdin.readByteSync()` /
+  `stdout.write(...)` text-mode loop. That bypasses the Flutter
+  runtime entirely; widgets never mount, no window opens, the app
+  is unshipable. The 2026-04-29 ``project_0-tower`` re-run produced
+  exactly this shape — the safety net now rejects it.
+- A `main()` body that constructs widgets without ever calling
+  `runApp(...)`. The build tool will let you do this; the framework
+  will not boot.
+
 ### Step E — DISPATCH every event to the loop owner
 
 If your stack uses a hand-written event loop (pygame, Qt with custom

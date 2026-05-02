@@ -139,6 +139,25 @@ own — if you don't lay down the skeleton, nobody will.
     match a path in `subsystems[].components[].file`. See the
     `lifecycle_init_contract` skill for the full rationale and the
     boot-sequence-diagram requirement that pairs with this list.
+  - **Framework-mandated source root.** Some frameworks / build
+    tools only resolve files under a fixed prefix; if you violate
+    this the contract type-checks but the build tool can't find
+    anything. The safety net rejects mismatches and re-dispatches
+    you with the failure detail. Use this table:
+
+    | Stack signal | Required `src_dir` prefix | Required `entry_point` |
+    | ------------ | ------------------------- | ---------------------- |
+    | `framework_frontend = flutter` (or `language = dart`) | `lib/` | `lib/main.dart` |
+    | `package_manager = maven` (or `gradle`) | `src/main/java/` | `src/main/java/.../App.java` |
+    | `language = go` | `internal/` | `cmd/<app>/main.go` |
+    | (anything else) | `src/` is the safe default | matching language convention |
+
+    For Flutter projects every `subsystems[].src_dir`, every
+    `components[].file`, every `lifecycle_inits[].module`, and the
+    `event_loop_owner.module` (when not null) MUST start with `lib/`.
+    Mixing `src/` and `lib/` is the single most common cause of
+    "three parallel source trees" deliveries
+    (project_0-tower 2026-04-29).
   - **`event_loop_owner` is REQUIRED** for every project whose
     entry-point class runs an event loop (UI frameworks, game
     engines, server frameworks with custom dispatch). Set

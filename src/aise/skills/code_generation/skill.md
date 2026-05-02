@@ -29,47 +29,51 @@ The skill reads from the artifact store:
 
 **Artifact Type:** `ArtifactType.SOURCE_CODE`
 
+The schema below is **language-neutral**. ``language`` /  ``framework``
+and every ``path`` MUST mirror the architect's
+``docs/stack_contract.json`` choices — do NOT default to Python /
+FastAPI just because the example below shows them. The illustrative row
+is one valid concrete instance; the table further down lists the
+canonical layout per stack.
+
 ```json
 {
   "modules": [
     {
       "name": "feature_name",
       "component_id": "COMP-001",
-      "language": "Python",
-      "framework": "FastAPI",
+      "language": "<from stack_contract.language>",
+      "framework": "<from stack_contract.framework_backend or framework_frontend>",
       "files": [
-        { "path": "app/feature_name/models.py", "description": "Data models", "content": "..." },
-        { "path": "app/feature_name/routes.py", "description": "API routes", "content": "..." },
-        { "path": "app/feature_name/service.py", "description": "Business logic", "content": "..." }
-      ]
-    },
-    {
-      "name": "app",
-      "component_id": "COMP-API",
-      "language": "Python",
-      "framework": "FastAPI",
-      "files": [
-        { "path": "app/main.py", "description": "Application entry point", "content": "..." }
+        { "path": "<lang-canonical path>", "description": "...", "content": "..." }
       ]
     }
   ],
-  "language": "Python",
-  "framework": "FastAPI",
-  "total_files": 10
+  "language": "<as above>",
+  "framework": "<as above>",
+  "total_files": <int>
 }
 ```
 
 ## Generated File Structure
 
-For each service component:
-- `app/{module}/models.py` — Dataclass-based models with `id`, `created_at`, `updated_at`
-- `app/{module}/routes.py` — FastAPI router with endpoint handlers
-- `app/{module}/service.py` — Service class with CRUD methods
+The path layout is determined by the project's stack, NOT by this
+skill. Read ``docs/stack_contract.json`` first; pick the row matching
+``language`` (and for UI projects ``framework_frontend`` / ``ui_kind``):
 
-Application entry point:
-- `app/main.py` — FastAPI app with all routers included
+| Stack | Source layout | Entry file | Notes |
+| ----- | ------------- | ---------- | ----- |
+| Python (FastAPI / Flask / pygame) | `src/<pkg>/<module>.py` or `app/<module>/{models,routes,service}.py` | `src/main.py` or `app/main.py` | dataclass models / router / service split for backends |
+| TypeScript / JavaScript | `src/<module>.ts` (or `.js`) | `src/index.ts` | Vite/Next/etc. layouts override; defer to contract |
+| Go | `internal/<pkg>/<module>.go` | `cmd/<app>/main.go` | tests live next to source as `<module>_test.go` |
+| Rust | `src/<module>.rs` | `src/main.rs` | tests under `tests/` or `#[cfg(test)]` blocks |
+| Java (Maven) | `src/main/java/.../<Module>.java` | `src/main/java/.../App.java` | tests under `src/test/java/...` |
+| Dart / Flutter | `lib/<subsystem>/<module>.dart` | `lib/main.dart` | source MUST be under `lib/` (not `src/`) — `package:` imports and `flutter run` only resolve there |
 
-Supports both Python (FastAPI) and Go (Gin) output.
+For backend / API frameworks the typical per-component file split is
+models + routes + service; for UI / app frameworks the split follows
+the architect's component decomposition. In both cases the
+**directory** is fixed by the stack row above.
 
 ## Integration
 

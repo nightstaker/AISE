@@ -46,6 +46,30 @@ test file: read the architecture doc and the project config file
 
 ### QA Workflow — MANDATORY ORDER
 
+0. **Toolchain availability check — MUST run first.** Before doing
+   anything else, run `which` (one `execute` call per binary) for
+   every executable your project's stack requires. The set comes from
+   `docs/stack_contract.json` — `test_runner`, the static analyzers,
+   and any framework runner like `flutter` / `dart` / `go` / `cargo` /
+   `npx` / `mvn`. Examples:
+
+   ```
+   execute(command="which flutter")
+   execute(command="which dart")
+   execute(command="which python")
+   ```
+
+   Record the results in a `toolchain_check` object you'll write into
+   `docs/qa_report.json` — value is `"present"` for binaries on PATH,
+   `"missing"` otherwise.
+
+   **If a required test runner is missing, `qa_report.<runner>.ran`
+   MUST be `false` and you are FORBIDDEN from writing
+   `passed` / `failed` / `skipped` counts.** Inventing pass/fail
+   numbers when you never actually ran the suite is a delivery-blocking
+   bug — the 2026-04-29 ``project_0-tower`` re-run wrote
+   `pytest.passed=822` for a Flutter project on a host that had no
+   `flutter` binary. Do not do this.
 1. Read 2–3 key source files in `src/` (enough to identify the main
    integration seams — typically the entry point plus 1–2 core modules).
    Do NOT read every file.
@@ -271,12 +295,17 @@ The schema (all top-level fields are required):
 {
   "phase": "qa",
   "completed_at": "<ISO-8601 UTC timestamp>",
+  "toolchain_check": {
+    "<binary name, e.g. flutter|dart|pytest|go|cargo|npx|mvn>": "present" | "missing"
+  },
   "pytest": {
     "command": "<the exact full-suite command you ran>",
-    "passed": <int>,
-    "failed": <int>,
-    "skipped": <int>,
-    "failed_tests": ["<test_id>", ...]
+    "ran": <true|false>,
+    "reason": "<required when ran=false: e.g. 'flutter not on PATH'>",
+    "passed": <int>,        // OMIT when ran=false
+    "failed": <int>,        // OMIT when ran=false
+    "skipped": <int>,       // OMIT when ran=false
+    "failed_tests": ["<test_id>", ...]   // OMIT when ran=false
   },
   "ui_validation": {
     "required": <true|false>,
@@ -305,11 +334,22 @@ The schema (all top-level fields are required):
 
 Field rules:
 
+- `toolchain_check` is REQUIRED. Populate it from the step-0
+  `which` calls. Keys are binary names; values are exactly
+  `"present"` or `"missing"`. Phase 6 reads this to decide whether
+  pass/fail numbers in this report can be trusted.
 - The `pytest` object name is historical — fill it for whichever
   test runner you actually used (pytest / vitest / jest / `go test`
-  / `cargo test` / `mvn test`). `command` records the exact
-  invocation; `passed + failed + skipped` MUST equal the test
-  collector total.
+  / `cargo test` / `mvn test` / `flutter test`). `command` records
+  the exact invocation; **when `ran` is `true`,
+  `passed + failed + skipped` MUST equal the test collector total**.
+- When the required test runner was missing in `toolchain_check`,
+  set `pytest.ran` to `false`, fill `reason` with a one-sentence
+  explanation (`"flutter not on PATH"`), and OMIT
+  `passed` / `failed` / `skipped` / `failed_tests` entirely. Do
+  NOT fabricate counts. Phase 6 will surface this as
+  "tests not executed in this environment" rather than a green
+  build.
 - `ui_validation.required` MUST equal whether step 3 of the
   workflow marked the project UI-required. If `required` is
   `false`, set `verdict` to `"SKIPPED_HEADLESS_ONLY"` and `reason`
