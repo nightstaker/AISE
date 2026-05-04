@@ -402,13 +402,23 @@ class PhaseExecutor:
     # -- Phase machinery (private) ---------------------------------------
 
     def _run_single_producer(self, phase: PhaseSpec, prompt: str) -> str:
-        # Collect the union of all kind=document/contract paths as
-        # expected_artifacts so the producer's own dispatch_task retry
-        # has something to gate against.
-        expected = tuple(
-            d.path for d in phase.deliverables if d.path
-        )
-        return self.produce_fn(phase.producer, prompt, expected)
+        # Collect every deliverable's resolved path. For
+        # kind=document/contract that's just deliverable.path; for
+        # kind=derived (e.g. entry_point in main_entry phase) we
+        # resolve via the derived-path helper so the producer is told
+        # exactly what file to write.
+        expected: list[str] = []
+        for d in phase.deliverables:
+            if d.kind in ("document", "contract") and d.path:
+                expected.append(d.path)
+            elif d.kind == "derived":
+                for resolved in self._resolve_derived_paths(d):
+                    try:
+                        rel = resolved.relative_to(self.project_root)
+                        expected.append(str(rel))
+                    except ValueError:
+                        expected.append(str(resolved))
+        return self.produce_fn(phase.producer, prompt, tuple(expected))
 
     def _run_fanout(self, phase: PhaseSpec, base_prompt: str) -> Any:
         assert phase.fanout is not None
@@ -509,6 +519,12 @@ class PhaseExecutor:
         return "unknown fanout failure"
 
     def _evaluate_deliverables(self, phase: PhaseSpec) -> tuple[DeliverableReport, ...]:
+        # Re-load contracts from disk before AUTO_GATE — the producer
+        # we just ran may have written the contract files for the first
+        # time (this is exactly what the architect phase does for
+        # stack_contract.json / behavioral_contract.json).
+        self._refresh_contracts_from_disk()
+
         reports: list[DeliverableReport] = []
         for deliverable in phase.deliverables:
             paths = self._resolve_deliverable_paths(deliverable)
@@ -522,6 +538,23 @@ class PhaseExecutor:
                 )
                 reports.append(evaluate_deliverable(deliverable, ctx))
         return tuple(reports)
+
+    def _refresh_contracts_from_disk(self) -> None:
+        """Re-read docs/{stack,behavioral,requirement}_contract.json so
+        AUTO_GATE sees the just-produced state. Idempotent — silent on
+        missing files (predicates handle that themselves)."""
+        for attr, fname in (
+            ("stack_contract", "stack_contract.json"),
+            ("behavioral_contract", "behavioral_contract.json"),
+            ("requirement_contract", "requirement_contract.json"),
+        ):
+            path = self.project_root / "docs" / fname
+            if not path.is_file():
+                continue
+            try:
+                setattr(self, attr, json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError):
+                pass  # leave whatever was already on the executor
 
     def _resolve_deliverable_paths(self, deliverable: Deliverable) -> list[Path]:
         """For kind=document/contract: one path. For kind=derived: many."""
