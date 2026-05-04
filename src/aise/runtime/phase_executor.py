@@ -750,7 +750,7 @@ class PhaseExecutor:
                         # (or writing the contract under ``schemas/``).
                         example = _CONTRACT_EXAMPLES.get(str(rel).split("/")[-1], "")
                         if example:
-                            lines.append(f"      content MUST be valid JSON like this example:")
+                            lines.append("      content MUST be valid JSON like this example:")
                             for ex_line in example.splitlines():
                                 lines.append(f"        {ex_line}")
                     elif a.kind == "min_bytes":

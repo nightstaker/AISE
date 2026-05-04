@@ -601,10 +601,28 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning("Subsystem worker raised: %s", exc)
 
-        skel_ok = sum(1 for r in skeleton_results if r.get("status") == "completed")
-        skel_fail = sum(1 for r in skeleton_results if r.get("status") == "failed")
-        comp_ok = sum(1 for r in component_results if r.get("status") == "completed")
-        comp_fail = sum(1 for r in component_results if r.get("status") == "failed")
+        # c5 added a third terminal status — "incomplete" — for tasks
+        # whose retry budget exhausted with shortfalls still present.
+        # For the legacy v1 ``dispatch_subsystems`` aggregator there's
+        # no useful distinction between "incomplete after 3 retries" and
+        # "failed with exception" (both mean: deliverable not produced),
+        # so we lump incomplete into ``skeleton_failed`` /
+        # ``components_failed``. Callers that need the breakdown can
+        # read the per-status counts below.
+        def _count(results: list[dict[str, Any]], status: str) -> int:
+            return sum(1 for r in results if r.get("status") == status)
+
+        skel_ok = _count(skeleton_results, "completed")
+        skel_fail_only = _count(skeleton_results, "failed")
+        skel_incomplete = _count(skeleton_results, "incomplete")
+        comp_ok = _count(component_results, "completed")
+        comp_fail_only = _count(component_results, "failed")
+        comp_incomplete = _count(component_results, "incomplete")
+
+        # Backward-compat: pre-c5 callers read skeleton_failed expecting
+        # it to cover every "did not complete" case. Lump incomplete in.
+        skel_fail = skel_fail_only + skel_incomplete
+        comp_fail = comp_fail_only + comp_incomplete
 
         return json.dumps(
             {
@@ -615,8 +633,10 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
                 "max_concurrent": max_workers,
                 "skeleton_completed": skel_ok,
                 "skeleton_failed": skel_fail,
+                "skeleton_incomplete": skel_incomplete,  # subset of skeleton_failed
                 "components_completed": comp_ok,
                 "components_failed": comp_fail,
+                "components_incomplete": comp_incomplete,  # subset of components_failed
                 # Aggregate roll-up across both stages so callers that just
                 # want pass/fail counts don't have to add the four numbers
                 # themselves.
