@@ -330,7 +330,7 @@ class WebProjectService:
             raise ValueError("Project name cannot be empty")
         mode = "github" if development_mode == "github" else "local"
         raw_process = str(process_type or "waterfall").strip().lower()
-        process = raw_process if raw_process in ("waterfall", "agile") else "waterfall"
+        process = raw_process if raw_process in ("waterfall", "agile", "waterfall_v2") else "waterfall"
         config = self.project_manager.create_default_project_config(project_name)
         config.development_mode = mode
         config.process_type = process
@@ -800,7 +800,7 @@ class WebProjectService:
             has_baseline = any(r.status == "completed" and (r.result or "").strip() for r in prior_runs)
             mode = "incremental" if has_baseline else "initial"
             process_type = getattr(project.config, "process_type", "waterfall") or "waterfall"
-            if process_type not in ("waterfall", "agile"):
+            if process_type not in ("waterfall", "agile", "waterfall_v2"):
                 process_type = "waterfall"
             run_id = f"run_{uuid.uuid4().hex[:10]}"
             run = WorkflowRun(
@@ -1415,7 +1415,7 @@ class WebProjectService:
                     if raw_mode not in ("initial", "incremental"):
                         raw_mode = "initial"
                     raw_process = str(item.get("process_type", "waterfall")).strip().lower()
-                    if raw_process not in ("waterfall", "agile"):
+                    if raw_process not in ("waterfall", "agile", "waterfall_v2"):
                         raw_process = "waterfall"
                     failed_idx_raw = item.get("failed_phase_idx", -1)
                     try:
@@ -2104,6 +2104,95 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"restarted": True, "project_id": project_id, "run_id": run_id}
+
+    @app.post("/api/projects/{project_id}/resume")
+    async def api_resume_project(request: Request, project_id: str) -> dict[str, Any]:
+        """Resume a halted waterfall_v2 run. Reads
+        ``<project_root>/runs/HALTED.json`` (created by
+        ``WaterfallV2Driver`` when a phase produces an unrecoverable
+        AUTO_GATE failure) and re-dispatches the run from the halted
+        phase. Errors:
+          * 400 if the project is not halted (no HALTED.json present)
+          * 400 if the project is not configured with
+            ``process_type=waterfall_v2``
+          * 404 if the project does not exist
+        """
+        require_permission(request, PERM_RUN_PROJECTS)
+        from pathlib import Path as _Path
+
+        from ..runtime.halt_resume import is_halted, load_halt_state
+
+        project = service.get_project(project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        project_root = _Path(project.get("project_root") or project.get("root", ""))
+        if not project_root.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail=f"project_root not found on disk: {project_root}",
+            )
+        if not is_halted(project_root):
+            raise HTTPException(
+                status_code=400,
+                detail="Project is not halted (no runs/HALTED.json present)",
+            )
+        halt = load_halt_state(project_root)
+        if halt is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Halt state file present but unparseable",
+            )
+        # Re-dispatch the run with the existing requirement; the
+        # WaterfallV2Driver will detect and clear the halt file at
+        # start, then resume from halted_at_phase.
+        existing_req = ""
+        try:
+            requirements = project.get("requirements") or []
+            if isinstance(requirements, list) and requirements:
+                last = requirements[-1]
+                existing_req = last.get("text", "") if isinstance(last, dict) else str(last)
+        except Exception:
+            existing_req = ""
+        try:
+            run_id = service.run_requirement(project_id, existing_req or "(resume halted run)")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "resumed": True,
+            "project_id": project_id,
+            "run_id": run_id,
+            "halted_at_phase": halt.halted_at_phase,
+            "halt_reason": halt.halt_reason,
+        }
+
+    @app.get("/api/tasks/active")
+    async def api_active_tasks(request: Request) -> dict[str, Any]:
+        """Live snapshot of in-flight tasks across all projects.
+        Backed by ``runtime.observability.TaskRegistry`` (process-global).
+        Returns ``{"active_tasks": [...]}`` where each entry is a
+        ``TaskSnapshot.to_dict()``."""
+        require_login(request)
+        from ..runtime.observability import get_registry
+
+        snaps = get_registry().active_tasks()
+        return {"active_tasks": [s.to_dict() for s in snaps]}
+
+    @app.post("/api/tasks/{task_id}/abort")
+    async def api_abort_task(request: Request, task_id: str) -> dict[str, Any]:
+        """Operator abort of a running task. Sets the abort flag in the
+        registry; the task's hot-path (PhaseExecutor / dispatch_task)
+        observes the flag at its next ``check_abort`` point and raises
+        ``AbortRequested``. Returns 404 if no such task is registered
+        (likely already completed or never started)."""
+        require_permission(request, PERM_RUN_PROJECTS)
+        from ..runtime.observability import get_registry
+
+        if not get_registry().request_abort(task_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"task {task_id} not registered (already completed or never started)",
+            )
+        return {"aborted": True, "task_id": task_id}
 
     @app.get("/api/projects/{project_id}/requirements")
     async def api_get_requirements(request: Request, project_id: str) -> dict[str, Any]:

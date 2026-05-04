@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 # Maximum number of context-augmented retries a single ``dispatch_task``
-# will issue after an empty response or missing artifacts. One retry is
-# enough in practice: if a fresh context-augmented attempt still fails,
-# looping further usually burns tokens without recovering.
-_MAX_DISPATCH_RETRIES = 1
+# will issue after an empty response or missing artifacts. Bumped from 1
+# to 3 in commit c5 of the waterfall_v2 PR: with the new ALL_PASS join
+# policy in fanout stages, a single transient LLM hiccup can fail an
+# entire phase. Three attempts gives the small local model a fighting
+# chance to recover from the typical "wrote test but forgot the source
+# file" / "produced empty response" patterns observed in
+# project_1-tower without burning excessive tokens.
+_MAX_DISPATCH_RETRIES = 3
 
 # Text prepended to the task description on a context-augmented retry.
 # Deliberately agent-, tool-, skill-, and file-neutral so it applies

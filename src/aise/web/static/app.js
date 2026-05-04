@@ -347,12 +347,15 @@ function setupDashboardReact() {
                                 onChange: (e) => setFormData((prev) => ({ ...prev, process_type: e.target.value })),
                             },
                             h("option", { value: "waterfall" }, t("dashboard.modal.process_type_waterfall")),
-                            h("option", { value: "agile" }, t("dashboard.modal.process_type_agile"))
+                            h("option", { value: "agile" }, t("dashboard.modal.process_type_agile")),
+                            h("option", { value: "waterfall_v2" }, t("dashboard.modal.process_type_waterfall_v2"))
                         ),
                         h("p", { style: { margin: "4px 0 12px", color: "#888", fontSize: "12px" } },
                             formData.process_type === "agile"
                                 ? t("dashboard.modal.process_type_agile_hint")
-                                : t("dashboard.modal.process_type_waterfall_hint")),
+                                : formData.process_type === "waterfall_v2"
+                                    ? t("dashboard.modal.process_type_waterfall_v2_hint")
+                                    : t("dashboard.modal.process_type_waterfall_hint")),
                         h("label", null, t("dashboard.modal.field_initial_requirement")),
                         h("textarea", {
                             rows: 4,

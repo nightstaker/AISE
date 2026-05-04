@@ -1,0 +1,164 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "process_v2",
+  "title": "Waterfall v2 process spec (parsed YAML frontmatter)",
+  "type": "object",
+  "required": ["process_id", "phases"],
+  "properties": {
+    "process_id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string" },
+    "work_type": { "type": "string" },
+    "keywords": { "type": "string" },
+    "summary": { "type": "string" },
+    "schema_version": { "type": "integer", "const": 2 },
+    "terminal_phase": { "type": "string" },
+    "quality_profile": {
+      "type": "string",
+      "enum": ["fast", "balanced", "thorough"]
+    },
+    "phases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/phase" }
+    }
+  },
+  "additionalProperties": true,
+
+  "definitions": {
+    "phase": {
+      "type": "object",
+      "required": ["id", "producer", "deliverables"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string" },
+        "producer": { "type": "string", "minLength": 1 },
+        "reviewer": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+          ]
+        },
+        "inputs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "deliverables": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/deliverable" }
+        },
+        "fanout": { "$ref": "#/definitions/fanout" },
+        "review": { "$ref": "#/definitions/review" }
+      },
+      "additionalProperties": true
+    },
+
+    "deliverable": {
+      "type": "object",
+      "required": ["kind", "acceptance"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["document", "contract", "derived"]
+        },
+        "path": { "type": "string" },
+        "from": { "type": "string" },
+        "rule": { "type": "string" },
+        "acceptance": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/acceptance_predicate" }
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "acceptance_predicate": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1
+        }
+      ]
+    },
+
+    "fanout": {
+      "type": "object",
+      "required": ["strategy", "source_jsonpath", "stages"],
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": ["subsystem_dag", "scenario_parallel", "flat_parallel"]
+        },
+        "source_jsonpath": { "type": "string", "minLength": 1 },
+        "stages": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/fanout_stage" }
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "fanout_stage": {
+      "type": "object",
+      "required": ["id", "concurrency"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "tier": {
+          "type": "string",
+          "enum": ["T1", "T2", "T3"]
+        },
+        "depends_on": { "type": "string" },
+        "group_by": { "type": "string" },
+        "concurrency": { "$ref": "#/definitions/concurrency" },
+        "mode_when_runner_unavailable": {
+          "type": "string",
+          "enum": ["write_only", "skip", "fail"]
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "concurrency": {
+      "type": "object",
+      "required": ["max_workers", "per_task_retries", "join_policy"],
+      "properties": {
+        "max_workers": { "type": "integer", "minimum": 1 },
+        "per_task_retries": { "type": "integer", "minimum": 0 },
+        "join_policy": {
+          "type": "string",
+          "enum": ["ALL_PASS"]
+        },
+        "on_task_failure_after_retries": {
+          "type": "string",
+          "enum": ["phase_halt", "stage_halt"]
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "review": {
+      "type": "object",
+      "required": ["consensus", "revise_budget"],
+      "properties": {
+        "consensus": {
+          "type": "string",
+          "enum": ["ALL_PASS"]
+        },
+        "revise_budget": { "type": "integer", "minimum": 0 },
+        "on_revise_exhausted": {
+          "type": "string",
+          "enum": ["continue_with_marker", "halt"]
+        },
+        "reviewer_questions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

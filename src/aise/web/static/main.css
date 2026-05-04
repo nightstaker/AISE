@@ -67,10 +67,25 @@
   --transition: 0.2s ease;
   --transition-fast: 0.15s ease;
 
-  /* Fonts */
-  --font-heading: "Manrope", "Noto Sans SC", "PingFang SC", sans-serif;
-  --font-body: "Inter", "Noto Sans SC", "PingFang SC", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Fonts.
+     Latin display faces (Inter/Manrope) load from Google Fonts when
+     reachable; the CJK fallback chain is intentionally long so the
+     page renders Chinese text correctly even when:
+       - fonts.googleapis.com is blocked or slow (common in CN), so
+         Inter/Manrope never load and we fall through to system CJK;
+       - the user is on a Linux host without ``Noto Sans CJK SC``
+         installed (typical bare-bones container default).
+     Order: Latin display → cross-platform CJK in OS priority order →
+     system-ui / sans-serif as the final safety net. */
+  --font-cjk: "Noto Sans SC", "Noto Sans CJK SC", "Source Han Sans CN",
+              "PingFang SC", "Hiragino Sans GB",
+              "Microsoft YaHei", "Microsoft JhengHei",
+              "WenQuanYi Micro Hei", "WenQuanYi Zen Hei",
+              "Heiti SC", "STHeiti", system-ui, sans-serif;
+  --font-heading: "Manrope", var(--font-cjk);
+  --font-body: "Inter", var(--font-cjk);
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo,
+               Consolas, "Liberation Mono", monospace;
 }
 
 /* ── Reset ── */

@@ -86,9 +86,9 @@ class Project:
 
     @property
     def process_type(self) -> str:
-        """Get the development process (waterfall or agile)."""
+        """Get the development process (waterfall, agile, or waterfall_v2)."""
         value = getattr(self.config, "process_type", "waterfall")
-        return value if value in ("waterfall", "agile") else "waterfall"
+        return value if value in ("waterfall", "agile", "waterfall_v2") else "waterfall"
 
     def finish_scaffolding(self) -> None:
         """Flip from SCAFFOLDING to ACTIVE on a successful scaffold.

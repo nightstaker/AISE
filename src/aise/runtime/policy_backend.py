@@ -252,6 +252,38 @@ def make_policy_backend(
     _orig_glob = base.glob_info
     _orig_grep = base.grep_raw
 
+    def _read_to_str(result: Any, offset: int) -> str:
+        """Coerce a backend.read() return into a line-numbered string.
+
+        deepagents 0.4.x returned a line-numbered `str` directly.
+        0.5.x returns a `ReadResult` dataclass with raw content (the
+        middleware applies line-number formatting). To keep both call
+        paths uniform — and to match what tests + downstream consumers
+        already expect from 0.4.x — we extract raw content from a
+        ReadResult and re-apply the cat -n formatting with the same
+        utility deepagents itself uses.
+        """
+        if isinstance(result, str):
+            return result
+        err = getattr(result, "error", None)
+        if err:
+            return f"Error: {err}"
+        fd = getattr(result, "file_data", None)
+        if fd is None:
+            return ""
+        if isinstance(fd, dict):
+            content = fd.get("content", "") or ""
+        else:
+            content = getattr(fd, "content", "") or ""
+        try:
+            from deepagents.backends.utils import format_content_with_line_numbers
+        except ImportError:
+            return content
+        lines = content.splitlines()
+        if not lines:
+            return ""
+        return format_content_with_line_numbers(lines, start_line=offset + 1)
+
     # Session-scoped loop detector. Weak local LLMs can get stuck emitting
     # the same ``write_file``/``edit_file`` tool call regardless of what
     # the tool returned — neither success nor error breaks the generation
@@ -264,6 +296,38 @@ def make_policy_backend(
     _NOOP_STREAK_LIMIT = 3
     _last_noop_sig: dict[str, tuple[str, str]] = {}  # path → (tool, content_hash)
     _noop_streak: int = 0  # consecutive no-ops matching _last_noop_sig
+
+    # c8 extension: generic call-signature dedup for read_file / ls /
+    # execute. Repeating the same tool call with identical args 5+ times
+    # in a row is a loop the LLM cannot break out of by reading the
+    # tool result (the result is the same each time). We track per-tool
+    # streaks separately so a healthy interleave of write_file +
+    # read_file resets independently.
+    _GENERIC_CALL_LIMIT = 5
+    _generic_streaks: dict[str, tuple[str, int]] = {}  # tool_name → (sig, count)
+
+    def _track_generic(tool: str, sig: str) -> bool:
+        """Record a generic tool call. Return True if the streak hit the
+        per-tool limit. Resets when the signature changes for that tool."""
+        last_sig, last_count = _generic_streaks.get(tool, ("", 0))
+        if last_sig == sig:
+            count = last_count + 1
+        else:
+            count = 1
+        _generic_streaks[tool] = (sig, count)
+        if count >= _GENERIC_CALL_LIMIT:
+            logger.warning(
+                "Loop detected: %s called %d× with identical args (%s) — returning error",
+                tool,
+                count,
+                sig[:80],
+            )
+            return True
+        return False
+
+    def _reset_generic(tool: str) -> None:
+        """Drop a tool's signature tracker so the next call starts fresh."""
+        _generic_streaks.pop(tool, None)
 
     def _track_noop(tool: str, file_path: str, content: str) -> bool:
         """Record a no-op call. Return True if the streak exceeded the limit."""
@@ -344,7 +408,16 @@ def make_policy_backend(
         normalized = _normalize(file_path)
         if normalized is None:
             return _escape_error(file_path)
-        return _orig_read(normalized, offset, limit)
+        sig = f"{normalized}|{offset}|{limit}"
+        if _track_generic("read_file", sig):
+            return (
+                f"LOOP_DETECTED: read_file called {_GENERIC_CALL_LIMIT}× "
+                f"in a row with identical args ({sig}). The file content has "
+                "not changed between calls. Stop re-reading the same file "
+                "and act on the content you already have, or call a "
+                "different tool."
+            )
+        return _read_to_str(_orig_read(normalized, offset, limit), offset)
 
     def norm_edit(file_path: str, old_string: str, new_string: str, replace_all: bool = False):
         normalized = _normalize(file_path)
@@ -397,6 +470,13 @@ def make_policy_backend(
             # same escape path. Deepagents' tool wrapper converts this
             # exception to a ToolMessage the LLM can see and learn from.
             raise PermissionError(_escape_error(path))
+        if _track_generic("ls", normalized):
+            raise RuntimeError(
+                f"LOOP_DETECTED: ls called {_GENERIC_CALL_LIMIT}× in a row "
+                f"on the same path ({normalized}). The directory listing has "
+                "not changed between calls. Stop re-listing the same directory "
+                "and act on the contents you already have."
+            )
         return _orig_ls(normalized)
 
     def norm_glob(pattern: str, path: str = "/") -> Any:
@@ -424,6 +504,29 @@ def make_policy_backend(
     # class itself — no patching needed. The ``isinstance(backend,
     # SandboxBackendProtocol)`` check in deepagents' FilesystemMiddleware
     # now succeeds, so the ``execute`` tool is registered automatically.
+
+    # c8: wrap execute() so identical shell commands repeated 5× get
+    # the same LOOP_DETECTED treatment as read/ls. The base class
+    # SandboxFilesystemBackend.execute is a method; we override it on
+    # the instance with a closure that consults _track_generic.
+    _orig_execute = base.execute
+
+    def norm_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        sig = command.strip()
+        if _track_generic("execute", sig):
+            return ExecuteResponse(
+                output=(
+                    f"LOOP_DETECTED: execute called {_GENERIC_CALL_LIMIT}× in "
+                    f"a row with identical command ({sig[:120]}). Output is "
+                    "stable; running it again will give the same result. "
+                    "Stop calling this command and act on the output you "
+                    "already have."
+                ),
+                exit_code=-1,
+            )
+        return _orig_execute(command, timeout=timeout)
+
+    base.execute = norm_execute  # type: ignore[method-assign]
 
     base.write = norm_write
     base.read = norm_read

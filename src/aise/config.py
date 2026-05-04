@@ -537,7 +537,8 @@ class ProjectConfig:
             config.development_mode = str(data["development_mode"])
         if "process_type" in data:
             raw_process = str(data["process_type"]).strip().lower()
-            config.process_type = raw_process if raw_process in ("waterfall", "agile") else config.process_type
+            if raw_process in ("waterfall", "agile", "waterfall_v2"):
+                config.process_type = raw_process
         if "ui_language" in data:
             raw_lang = str(data["ui_language"]).strip().lower()
             # Clamp to the two supported values; fall back to the default

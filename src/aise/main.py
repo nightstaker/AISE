@@ -380,6 +380,41 @@ def main() -> None:
     retry_parser.add_argument("--poll-interval", type=float, default=2.0, help="Polling interval seconds")
     retry_parser.add_argument("--show-task-state", action="store_true", help="Print task memory state after completion")
 
+    # waterfall_v2: resume a halted run
+    resume_parser = subparsers.add_parser(
+        "resume_project",
+        help="Resume a waterfall_v2 project that halted at a phase failure",
+    )
+    resume_parser.add_argument("project_id", help="Project ID to resume")
+    resume_parser.add_argument(
+        "--web-url",
+        default="http://127.0.0.1:8000",
+        help="Base URL of the running aise web server (default: http://127.0.0.1:8000)",
+    )
+
+    # waterfall_v2: abort a running task
+    abort_parser = subparsers.add_parser(
+        "abort_task",
+        help="Send an abort signal to a running task in the aise web server",
+    )
+    abort_parser.add_argument("task_id", help="Task ID to abort (from /api/tasks/active)")
+    abort_parser.add_argument(
+        "--web-url",
+        default="http://127.0.0.1:8000",
+        help="Base URL of the running aise web server (default: http://127.0.0.1:8000)",
+    )
+
+    # waterfall_v2: list active tasks (no LLM impact, just observability)
+    active_parser = subparsers.add_parser(
+        "active_tasks",
+        help="List in-flight tasks tracked by the aise web server",
+    )
+    active_parser.add_argument(
+        "--web-url",
+        default="http://127.0.0.1:8000",
+        help="Base URL of the running aise web server (default: http://127.0.0.1:8000)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "run":
@@ -541,9 +576,113 @@ def main() -> None:
                     break
                 time.sleep(poll_interval)
 
+    elif args.command == "resume_project":
+        _cmd_resume_project(args.project_id, args.web_url)
+    elif args.command == "abort_task":
+        _cmd_abort_task(args.task_id, args.web_url)
+    elif args.command == "active_tasks":
+        _cmd_active_tasks(args.web_url)
     else:
         parser.print_help()
         sys.exit(1)
+
+
+# -- waterfall_v2 CLI helpers ------------------------------------------
+
+
+def _http_post(url: str, json_body: dict | None = None) -> dict:
+    """POST to local aise web server. Login is via cookie session;
+    the dev-login auth path is the path of least resistance for CLI
+    users on a single-user dev install."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+            # Best-effort dev login (no-op when auth is disabled or
+            # already logged in).
+            try:
+                client.get(f"{url.rstrip('/')}/auth/dev-login")
+            except Exception:
+                pass
+            r = client.post(url, json=json_body or {})
+        return {"status_code": r.status_code, "body": r.text}
+    except httpx.HTTPError as exc:
+        return {"status_code": -1, "error": str(exc)}
+
+
+def _http_get(url: str) -> dict:
+    import httpx
+
+    try:
+        with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+            try:
+                client.get(f"{url.rstrip('/')}/auth/dev-login")
+            except Exception:
+                pass
+            r = client.get(url)
+        return {"status_code": r.status_code, "body": r.text}
+    except httpx.HTTPError as exc:
+        return {"status_code": -1, "error": str(exc)}
+
+
+def _cmd_resume_project(project_id: str, web_url: str) -> None:
+    url = f"{web_url.rstrip('/')}/api/projects/{project_id}/resume"
+    result = _http_post(url)
+    if result["status_code"] == -1:
+        print(f"resume_project failed: {result['error']}")
+        print(f"  is the aise web server running at {web_url}?")
+        sys.exit(1)
+    if result["status_code"] >= 400:
+        print(f"resume_project rejected ({result['status_code']}): {result['body']}")
+        sys.exit(2)
+    print(f"resume_project accepted: {result['body']}")
+
+
+def _cmd_abort_task(task_id: str, web_url: str) -> None:
+    url = f"{web_url.rstrip('/')}/api/tasks/{task_id}/abort"
+    result = _http_post(url)
+    if result["status_code"] == -1:
+        print(f"abort_task failed: {result['error']}")
+        sys.exit(1)
+    if result["status_code"] == 404:
+        print(f"task {task_id} not registered (already completed or never started)")
+        sys.exit(2)
+    if result["status_code"] >= 400:
+        print(f"abort_task rejected ({result['status_code']}): {result['body']}")
+        sys.exit(2)
+    print(f"abort_task signal sent: {result['body']}")
+
+
+def _cmd_active_tasks(web_url: str) -> None:
+    url = f"{web_url.rstrip('/')}/api/tasks/active"
+    result = _http_get(url)
+    if result["status_code"] == -1:
+        print(f"active_tasks failed: {result['error']}")
+        sys.exit(1)
+    if result["status_code"] >= 400:
+        print(f"active_tasks rejected ({result['status_code']}): {result['body']}")
+        sys.exit(2)
+    try:
+        import json as _json
+
+        data = _json.loads(result["body"])
+        tasks = data.get("active_tasks", [])
+    except Exception:
+        print(result["body"])
+        return
+    if not tasks:
+        print("(no in-flight tasks)")
+        return
+    print(f"{'TASK':12s}  {'AGENT':18s}  {'STEP':35s}  {'ELAPSED':>9s}  {'LLM':>5s}  {'LOOP':>5s}")
+    for t in tasks:
+        print(
+            f"{str(t.get('task_id', ''))[:12]:12s}  "
+            f"{str(t.get('agent', ''))[:18]:18s}  "
+            f"{str(t.get('step', ''))[:35]:35s}  "
+            f"{t.get('elapsed_seconds', 0):>9.1f}  "
+            f"{t.get('llm_call_count', 0):>5d}  "
+            f"{t.get('loop_detector_hits', 0):>5d}"
+        )
 
 
 if __name__ == "__main__":

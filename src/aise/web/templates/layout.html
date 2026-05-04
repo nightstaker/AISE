@@ -6,10 +6,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title or "AISE Web" }}</title>
   <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
+  <!-- Google Fonts. Loaded with media="print" + onload swap so a slow /
+       blocked CDN never blocks the page render. The CJK fallback chain
+       in main.css renders Chinese text via system fonts immediately;
+       Inter/Manrope swap in once Google Fonts arrives (or never, on
+       offline / blocked networks — that's fine). -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@500;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap">
-  <link rel="stylesheet" href="/static/main.css?v=20260422e">
+  <link rel="stylesheet"
+        media="print" onload="this.media='all'"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@500;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@500;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap"></noscript>
+  <link rel="stylesheet" href="/static/main.css?v=20260504a">
 </head>
 <body>
   <div class="app-shell">

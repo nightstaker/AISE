@@ -801,8 +801,16 @@ class TestDispatchCapDynamicFloor:
 
 class TestProjectSessionRun:
     def test_run_calls_pm_runtime(self, session):
-        # Simulate a phased workflow. mark_complete is only honored in the
-        # last phase, so we call it on the 6th invocation (the delivery phase).
+        # Simulate a phased workflow. mark_complete is only honored in
+        # the final phase. The legacy ``_build_initial_phase_prompts``
+        # flow has grown beyond the original 6 phases (now 7:
+        # requirements / architecture / implementation / main_entry /
+        # scenario_implementation / qa_testing / delivery), so we
+        # discover the count from the session itself rather than hard
+        # coding it — that way a future phase-count change doesn't
+        # silently re-break this test.
+        expected_phase_count = len(session._build_phase_prompts("Build a REST API"))
+        assert expected_phase_count >= 5  # sanity: the flow must be plural
         call_count = [0]
         report = (
             "Project delivery report: all phases completed successfully. "
@@ -811,8 +819,8 @@ class TestProjectSessionRun:
 
         def mock_handle(msg, **kwargs):
             call_count[0] += 1
-            # On the LAST phase (delivery), call mark_complete
-            if call_count[0] == 6:
+            # On the LAST phase, call mark_complete
+            if call_count[0] == expected_phase_count:
                 tools = session._make_tools()
                 mark = next(t for t in tools if t.name == "mark_complete")
                 mark.invoke({"report": report})
@@ -823,5 +831,4 @@ class TestProjectSessionRun:
 
         result = session.run("Build a REST API")
         assert "delivery report" in result.lower()
-        # 6 phases should have been invoked
-        assert call_count[0] == 6
+        assert call_count[0] == expected_phase_count
