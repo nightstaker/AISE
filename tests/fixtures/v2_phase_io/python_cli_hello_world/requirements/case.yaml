@@ -1,0 +1,92 @@
+# Phase-contract test case: requirements phase (phase 1) against the
+# hello-world Python CLI scenario.
+#
+# Input: empty (PM starts from the user's natural-language requirement).
+# Output expected: docs/requirement.md + docs/requirement_contract.json
+# that capture the asks and pass schema validation.
+#
+# Run with:
+#   aise v2-phase-test --case tests/fixtures/v2_phase_io/python_cli_hello_world/requirements/case.yaml
+
+aise_version: "0.1.0"
+scenario_id: python_cli_hello_world
+phase: requirements
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a Python CLI tool that prints 'hello, world' when run.
+
+max_review_iterations: 1
+timeout_sec: 600
+
+assertions:
+  # -- File existence + size guards --
+  - name: requirement_md_present
+    path: docs/requirement.md
+    predicate: file_exists
+
+  - name: requirement_md_substantial
+    path: docs/requirement.md
+    predicate:
+      min_bytes: 800  # one PM-grade requirement doc — below this is a stub
+
+  - name: requirement_contract_present
+    path: docs/requirement_contract.json
+    predicate: file_exists
+
+  # -- Schema gate (same predicate kind AUTO_GATE uses) --
+  - name: requirement_contract_schema_valid
+    path: docs/requirement_contract.json
+    predicate:
+      schema: schemas/requirement_contract.schema.json
+
+  # -- requirement.md content checks --
+  # The PM should preserve the literal user phrase verbatim somewhere
+  # (other phases re-inject the original requirement, but the PM doc
+  # itself ought to mention it too).
+  - name: mentions_hello_world
+    path: docs/requirement.md
+    predicate:
+      contains_keywords:
+        all_of: ["hello, world"]
+
+  - name: mentions_python_cli
+    path: docs/requirement.md
+    predicate:
+      contains_keywords:
+        all_of: [Python]
+
+  # The doc should be sectioned (功能需求 / 非功能需求 are the canonical
+  # waterfall_v2 PM headers).
+  - name: contains_canonical_sections
+    path: docs/requirement.md
+    predicate:
+      contains_sections:
+        ["功能需求", "非功能需求"]
+
+  # At least 1 functional requirement enumerated as FR-NNN.
+  - name: at_least_one_functional_requirement
+    path: docs/requirement.md
+    predicate:
+      regex_count:
+        pattern: "FR-\\d+"
+        min: 1
+
+  # -- requirement_contract.json structural checks --
+  # Contract must list at least one functional requirement entry.
+  - name: contract_lists_functional_requirements
+    path: docs/requirement_contract.json
+    predicate:
+      count_at_least:
+        field: functional_requirements
+        min: 1
+
+  # -- Reverse guard: hello_world should not generate a Flutter
+  #    requirement (catches PM over-eagerness on minimal CLI inputs). --
+  - name: not_a_mobile_app
+    path: docs/requirement.md
+    predicate:
+      forbidden_patterns:
+        patterns: ["Flutter", "Dart", "Android", "iOS"]

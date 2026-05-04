@@ -1,0 +1,144 @@
+# Phase-contract test case: architecture phase against the Flutter mobile-
+# game scenario (魔塔 / Magic Tower commercial APP — simplified).
+#
+# Input: docs/requirement.md + docs/requirement_contract.json (frozen
+# snapshot from the 2026-05-04 magic_tower e2e). Output expected:
+# architect produces docs/architecture.md + stack_contract.json that
+# correctly target Flutter, including event_loop_owner=null (the schema
+# branch fixed in PR #139).
+#
+# Run with:
+#   aise v2-phase-test --case tests/fixtures/v2_phase_io/flutter_mobile_game/architecture/case.yaml
+
+aise_version: "0.1.0"
+scenario_id: flutter_mobile_game
+phase: architecture
+
+input_dir: input/
+project_config_file: project_config.json
+
+# Mirrors the magic_tower e2e requirement (kept inline so the case is
+# fully self-describing and easy to diff when prompts evolve).
+requirement: |
+  开发一款可以上架商店的商用魔塔（Magic Tower）手机游戏 APP。
+
+  - Flutter 3.x + Dart，跨 Android + iOS 单代码库
+  - 11×11 网格地图、HP/ATK/DEF/Gold/EXP/Lv 玩家属性、回合制战斗
+  - 至少 10 层楼、黄/蓝/红钥匙开门、血瓶宝石、商店、BOSS、NPC
+  - 中英双语、自动+手动存档、设置项、内购占位
+  - 状态管理 Riverpod 或 Bloc 任选
+
+max_review_iterations: 1
+timeout_sec: 1800
+
+assertions:
+  # -- File existence + size guards --
+  - name: arch_md_present
+    path: docs/architecture.md
+    predicate: file_exists
+
+  - name: arch_md_substantial
+    path: docs/architecture.md
+    predicate:
+      min_bytes: 3000  # complex spec → expect richer architecture doc
+
+  - name: stack_contract_present
+    path: docs/stack_contract.json
+    predicate: file_exists
+
+  - name: behavioral_contract_present
+    path: docs/behavioral_contract.json
+    predicate: file_exists
+
+  # -- Schema gate (must accept event_loop_owner=null after PR #139) --
+  - name: stack_schema_valid
+    path: docs/stack_contract.json
+    predicate:
+      schema: schemas/stack_contract.schema.json
+
+  # -- Flutter stack-choice invariants --
+  - name: language_is_dart
+    path: docs/stack_contract.json
+    predicate:
+      json_field_equals:
+        field: language
+        expected: dart
+
+  - name: framework_frontend_flutter
+    path: docs/stack_contract.json
+    predicate:
+      json_field_equals:
+        field: framework_frontend
+        expected: flutter
+
+  - name: package_manager_pub
+    path: docs/stack_contract.json
+    predicate:
+      json_field_equals:
+        field: package_manager
+        expected: pub
+
+  - name: test_runner_flutter_or_dart
+    path: docs/stack_contract.json
+    predicate:
+      json_field_one_of:
+        field: test_runner
+        allowed: ["flutter test", "dart test"]
+
+  - name: ui_required_true
+    path: docs/stack_contract.json
+    predicate:
+      json_field_equals:
+        field: ui_required
+        expected: true
+
+  # -- The PR #139 regression point --
+  # Flutter's `runApp(app)` owns the loop, so architect MUST set
+  # event_loop_owner=null. This was the literal halt cause that
+  # blocked magic_tower at architecture before the schema fix.
+  - name: event_loop_owner_null_for_flutter
+    path: docs/stack_contract.json
+    predicate:
+      json_field_equals:
+        field: event_loop_owner
+        expected: null
+
+  # -- Subsystem shape: a non-trivial spec should beget multi-subsystem
+  #    layout, but we cap the upper bound to catch over-fragmentation
+  #    (the architect.md soft cap is 10). --
+  - name: at_least_two_subsystems
+    path: docs/stack_contract.json
+    predicate:
+      count_at_least:
+        field: subsystems
+        min: 2
+
+  - name: subsystems_within_soft_cap
+    path: docs/stack_contract.json
+    predicate:
+      count_at_most:
+        field: subsystems
+        max: 10
+
+  # -- architecture.md content must reflect the Flutter choice --
+  - name: arch_mentions_flutter_stack
+    path: docs/architecture.md
+    predicate:
+      contains_keywords:
+        all_of: [Flutter, Dart]
+
+  - name: arch_mentions_state_management
+    path: docs/architecture.md
+    predicate:
+      contains_keywords:
+        any_of: [Riverpod, Bloc, Provider]
+
+  # -- Flutter requires lib/ source tree, not src/ — catches the most
+  #    common architect regression on Flutter projects. --
+  - name: no_python_src_paths
+    path: docs/architecture.md
+    predicate:
+      forbidden_patterns:
+        # \bsrc/  matches a "src/" path token but lets prose like
+        # "source code" / "directory structure" pass freely.
+        patterns: ["\\bsrc/"]

@@ -425,28 +425,56 @@ class TestRunPhaseTestPipeline:
 # -- Bundled fixture sanity ----------------------------------------------
 
 
-class TestBundledFixture:
-    """Make sure the python_cli_hello_world × architecture fixture
-    parses with the current loader. This is a guard against silent
-    drift when someone edits case.yaml or the loader."""
+class TestBundledFixtures:
+    """Discover every bundled ``case.yaml`` under tests/fixtures/v2_phase_io/
+    and verify it round-trips through the loader and only uses
+    registered predicate kinds. Guards against silent drift when
+    someone edits a case.yaml, adds a new scenario, or renames a
+    predicate kind."""
 
-    FIXTURE = Path(__file__).resolve().parents[1] / (
-        "fixtures/v2_phase_io/python_cli_hello_world/architecture/case.yaml"
-    )
+    FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "v2_phase_io"
 
-    def test_fixture_loads(self):
-        if not self.FIXTURE.is_file():
-            pytest.skip(f"bundled fixture missing: {self.FIXTURE}")
-        case = pt.load_case(self.FIXTURE)
-        assert case.scenario_id == "python_cli_hello_world"
-        assert case.phase == "architecture"
-        assert case.aise_version == INSTALLED_AISE_VERSION, (
-            "fixture aise_version drifted from package version; bump or re-record the snapshot"
+    def _discover(self) -> list[Path]:
+        if not self.FIXTURE_ROOT.is_dir():
+            return []
+        return sorted(self.FIXTURE_ROOT.rglob("case.yaml"))
+
+    def test_at_least_one_fixture_bundled(self):
+        cases = self._discover()
+        assert cases, (
+            f"no bundled case.yaml found under {self.FIXTURE_ROOT} — "
+            "the directory should never be empty (P2 ships at least the "
+            "python_cli_hello_world × architecture fixture)"
         )
-        # Sanity: every assertion's predicate kind must be registered.
+
+    def test_every_fixture_loads_and_uses_registered_predicates(self):
         from aise.runtime.predicates import is_registered
 
-        for spec in case.assertions:
-            assert is_registered(spec.predicate.kind), (
-                f"assertion {spec.name!r} uses unregistered predicate kind {spec.predicate.kind!r}"
+        cases = self._discover()
+        for case_path in cases:
+            case = pt.load_case(case_path)
+            assert case.aise_version == INSTALLED_AISE_VERSION, (
+                f"{case_path}: aise_version={case.aise_version!r} drifted from "
+                f"installed {INSTALLED_AISE_VERSION!r}; bump after re-recording "
+                "the input snapshot from a successful run on current code"
+            )
+            for spec in case.assertions:
+                assert is_registered(spec.predicate.kind), (
+                    f"{case_path}: assertion {spec.name!r} uses unregistered predicate kind {spec.predicate.kind!r}"
+                )
+
+    def test_scenarios_and_phases_well_formed(self):
+        """``scenario_id`` and ``phase`` should match the directory layout
+        ``v2_phase_io/<scenario>/<phase>/case.yaml`` so fixtures are
+        discoverable by glob without parsing the YAML."""
+        cases = self._discover()
+        for case_path in cases:
+            case = pt.load_case(case_path)
+            phase_dir = case_path.parent
+            scenario_dir = phase_dir.parent
+            assert case.phase == phase_dir.name, (
+                f"{case_path}: case.phase={case.phase!r} != dir name {phase_dir.name!r}"
+            )
+            assert case.scenario_id == scenario_dir.name, (
+                f"{case_path}: case.scenario_id={case.scenario_id!r} != dir name {scenario_dir.name!r}"
             )
