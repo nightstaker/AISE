@@ -252,6 +252,38 @@ def make_policy_backend(
     _orig_glob = base.glob_info
     _orig_grep = base.grep_raw
 
+    def _read_to_str(result: Any, offset: int) -> str:
+        """Coerce a backend.read() return into a line-numbered string.
+
+        deepagents 0.4.x returned a line-numbered `str` directly.
+        0.5.x returns a `ReadResult` dataclass with raw content (the
+        middleware applies line-number formatting). To keep both call
+        paths uniform — and to match what tests + downstream consumers
+        already expect from 0.4.x — we extract raw content from a
+        ReadResult and re-apply the cat -n formatting with the same
+        utility deepagents itself uses.
+        """
+        if isinstance(result, str):
+            return result
+        err = getattr(result, "error", None)
+        if err:
+            return f"Error: {err}"
+        fd = getattr(result, "file_data", None)
+        if fd is None:
+            return ""
+        if isinstance(fd, dict):
+            content = fd.get("content", "") or ""
+        else:
+            content = getattr(fd, "content", "") or ""
+        try:
+            from deepagents.backends.utils import format_content_with_line_numbers
+        except ImportError:
+            return content
+        lines = content.splitlines()
+        if not lines:
+            return ""
+        return format_content_with_line_numbers(lines, start_line=offset + 1)
+
     # Session-scoped loop detector. Weak local LLMs can get stuck emitting
     # the same ``write_file``/``edit_file`` tool call regardless of what
     # the tool returned — neither success nor error breaks the generation
@@ -385,7 +417,7 @@ def make_policy_backend(
                 "and act on the content you already have, or call a "
                 "different tool."
             )
-        return _orig_read(normalized, offset, limit)
+        return _read_to_str(_orig_read(normalized, offset, limit), offset)
 
     def norm_edit(file_path: str, old_string: str, new_string: str, replace_all: bool = False):
         normalized = _normalize(file_path)

@@ -72,9 +72,10 @@ class TestCliSubcommands:
         """Smoke test: the argparse help output mentions the 3 new
         subcommands. This catches argparse mis-registration."""
         import subprocess
+        import sys
 
         result = subprocess.run(
-            [".venv/bin/python", "-m", "aise.main", "--help"],
+            [sys.executable, "-m", "aise.main", "--help"],
             capture_output=True,
             text=True,
             timeout=20,
