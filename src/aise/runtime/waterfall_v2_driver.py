@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -53,6 +54,10 @@ from .waterfall_v2_loader import (
 from .waterfall_v2_models import WaterfallV2Spec
 
 logger = get_logger(__name__)
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 # -- Result types ---------------------------------------------------------
@@ -102,6 +107,11 @@ class WaterfallV2Driver:
     contracts_loader: Callable[[Path], dict[str, Any]] | None = None
     spec_path: Path | None = None
     spec: WaterfallV2Spec | None = None  # injectable for tests
+    # Optional event sink so the web UI / monitor can render the phase
+    # stepper. The legacy v1 ``ProjectSession.run()`` emits ``phase_plan``
+    # at start and ``phase_start`` / ``phase_complete`` per phase; the
+    # v2 driver mirrors that contract through this callback when set.
+    on_event: Callable[[dict[str, Any]], None] | None = None
 
     def __post_init__(self) -> None:
         if self.spec is None:
@@ -122,6 +132,7 @@ class WaterfallV2Driver:
                 logger.warning("halt file present but unparseable; starting fresh")
                 phases_to_run = self.spec.phases
                 completed = ()
+                start_phase_idx = 0
             else:
                 logger.info(
                     "Resuming from halted phase: %s (%d already completed)",
@@ -130,10 +141,27 @@ class WaterfallV2Driver:
                 )
                 phases_to_run = remaining_phases(self.spec, existing)
                 completed = existing.completed_phases
+                start_phase_idx = self.spec.phase_index(existing.halted_at_phase) or 0
                 clear_halt_state(self.project_root)
         else:
             phases_to_run = self.spec.phases
             completed = ()
+            start_phase_idx = 0
+
+        # Emit ``phase_plan`` BEFORE running so the web UI stepper can
+        # render the full 6-phase layout up front. v1 emits this at
+        # session start; v2 used to emit it post-hoc which left the UI
+        # stuck on a single fallback row until the run finished.
+        self._emit_event(
+            {
+                "type": "phase_plan",
+                "phases": [p.id for p in self.spec.phases],
+                "total": len(self.spec.phases),
+                "start_phase_idx": start_phase_idx,
+                "process_type": "waterfall_v2",
+                "timestamp": _iso_now(),
+            }
+        )
 
         contracts = self._load_contracts()
 
@@ -149,7 +177,19 @@ class WaterfallV2Driver:
 
         phase_results: list[PhaseResult] = []
         for phase in phases_to_run:
+            phase_idx = self.spec.phase_index(phase.id) or 0
             logger.info("=== Phase %s starting ===", phase.id)
+            self._emit_event(
+                {
+                    "type": "phase_start",
+                    "phase_idx": phase_idx,
+                    "phase_name": phase.id,
+                    "total": len(self.spec.phases),
+                    "process_type": "waterfall_v2",
+                    "timestamp": _iso_now(),
+                }
+            )
+
             # Re-load contracts before each phase — earlier phases (esp.
             # phase 2 architecture) produce stack_contract.json /
             # behavioral_contract.json which downstream phases need.
@@ -176,6 +216,20 @@ class WaterfallV2Driver:
                     "Phase %s halted; halt state saved at runs/HALTED.json",
                     phase.id,
                 )
+                # Emit phase_complete with halted status so the UI can
+                # mark this phase as failed (not "still running").
+                self._emit_event(
+                    {
+                        "type": "phase_complete",
+                        "phase_idx": phase_idx,
+                        "phase_name": phase.id,
+                        "total": len(self.spec.phases),
+                        "phase_status": "failed",
+                        "halted": True,
+                        "process_type": "waterfall_v2",
+                        "timestamp": _iso_now(),
+                    }
+                )
                 return RunResult(
                     completed_phases=completed,
                     halted=True,
@@ -189,7 +243,18 @@ class WaterfallV2Driver:
                 "Phase %s done with status=%s; tag=%s",
                 phase.id,
                 result.status.value,
-                result.phase_tag(self.spec.phase_index(phase.id) or 0),
+                result.phase_tag(phase_idx),
+            )
+            self._emit_event(
+                {
+                    "type": "phase_complete",
+                    "phase_idx": phase_idx,
+                    "phase_name": phase.id,
+                    "total": len(self.spec.phases),
+                    "phase_status": result.status.value,
+                    "process_type": "waterfall_v2",
+                    "timestamp": _iso_now(),
+                }
             )
 
         return RunResult(
@@ -197,6 +262,16 @@ class WaterfallV2Driver:
             halted=False,
             phase_results=tuple(phase_results),
         )
+
+    def _emit_event(self, event: dict[str, Any]) -> None:
+        """Forward an event to the optional sink. Swallows callback
+        exceptions so a buggy UI doesn't crash the run."""
+        if self.on_event is None:
+            return
+        try:
+            self.on_event(event)
+        except Exception as exc:  # defensive
+            logger.warning("on_event callback raised: %s", exc)
 
     # -- Helpers ---------------------------------------------------------
 

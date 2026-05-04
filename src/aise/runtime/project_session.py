@@ -343,21 +343,13 @@ class ProjectSession:
             project_root=self._project_root,
             produce_fn=produce_fn,
             dispatch_reviewer=reviewer_dispatch,
+            # Forward phase_plan / phase_start / phase_complete events
+            # through the project's ToolContext so the web UI's phase
+            # stepper renders correctly. Without this the UI sees only
+            # one fallback row because v2 used to be opaque.
+            on_event=self._ctx.emit,
         )
         result = driver.run(requirement)
-        # Emit a final summary event so the web UI sees the run resolution.
-        self._ctx.emit(
-            {
-                "type": "phase_plan",
-                "phases": [p for p in result.completed_phases],
-                "total": len(result.phase_results),
-                "start_phase_idx": 0,
-                "max_dispatches": self._config.safety_limits.max_dispatches,
-                "timestamp": _now(),
-                "process_type": "waterfall_v2",
-                "halted": result.halted,
-            }
-        )
         if result.halted:
             return (
                 f"[waterfall_v2 HALTED at phase={result.halt_state.halted_at_phase}]\n"
