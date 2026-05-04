@@ -53,13 +53,91 @@ def _load_module_from_file(name: str, rel_path: str):
 _stack_contract_mod = _load_module_from_file(
     "_c12_stack_contract", "tools/stack_contract.py"
 )
-_LANGUAGE_TOOLCHAIN: dict[str, dict[str, str]] = _stack_contract_mod._LANGUAGE_TOOLCHAIN
-_INTERFACE_FILENAME: dict[str, str] = _stack_contract_mod._INTERFACE_FILENAME
-_interface_module_path = _stack_contract_mod._interface_module_path
 
-# safety_net is package-importable cleanly (no circular import through
-# project_session), so a normal import works for scenario_gate.
-from ..safety_net.scenario_gate import _LANGUAGE_TEST_EXT  # noqa: E402
+# Start from the legacy table (which has python / typescript / javascript /
+# go / rust / java / dart). We overlay csharp / kotlin / swift here so this
+# PR is self-contained even if the legacy ``aise.tools.stack_contract`` is
+# never edited to add those rows. Until the legacy module is also updated,
+# ``aise.tools.dispatch`` callers (legacy flow) still hit the silent Python
+# fallback for csharp — that fallback will be removed in a follow-up
+# cleanup PR after all callers have migrated to ``stack_strict``.
+_LANGUAGE_TOOLCHAIN: dict[str, dict[str, str]] = dict(
+    _stack_contract_mod._LANGUAGE_TOOLCHAIN
+)
+_LANGUAGE_TOOLCHAIN.setdefault(
+    "csharp",
+    {
+        "test_cmd": "dotnet test --filter FullyQualifiedName~{Component}Tests",
+        "test_path_pattern": "Assets/Scripts/{subsystem}/Tests/{Component}Tests.cs",
+        "src_path_pattern": "Assets/Scripts/{subsystem}/{Component}.cs",
+        "static_check": "dotnet build --no-restore",
+    },
+)
+_LANGUAGE_TOOLCHAIN.setdefault(
+    "kotlin",
+    {
+        "test_cmd": "gradle test --tests {Component}Test",
+        "test_path_pattern": "src/test/kotlin/{subsystem}/{Component}Test.kt",
+        "src_path_pattern": "src/main/kotlin/{subsystem}/{Component}.kt",
+        "static_check": "gradle compileKotlin",
+    },
+)
+_LANGUAGE_TOOLCHAIN.setdefault(
+    "swift",
+    {
+        "test_cmd": "swift test --filter {Component}Tests",
+        "test_path_pattern": "Tests/{subsystem}/{Component}Tests.swift",
+        "src_path_pattern": "Sources/{subsystem}/{Component}.swift",
+        "static_check": "swift build",
+    },
+)
+
+_INTERFACE_FILENAME: dict[str, str] = dict(_stack_contract_mod._INTERFACE_FILENAME)
+# csharp / kotlin / swift have no per-folder barrel file convention.
+# Empty string is the sentinel "no interface deliverable required".
+for _no_barrel_lang in ("csharp", "cs", "kotlin", "swift"):
+    _INTERFACE_FILENAME.setdefault(_no_barrel_lang, "")
+
+def _interface_module_path(language: str, subsystem_name: str, src_dir: str) -> str:
+    """Resolve the per-language barrel file path. Mirrors the legacy
+    helper but reads from this module's overlaid ``_INTERFACE_FILENAME``
+    so csharp / kotlin / swift correctly return the empty sentinel
+    even when the legacy stack_contract.py hasn't been updated yet."""
+    base = (src_dir or f"src/{subsystem_name}").rstrip("/")
+    fname = _INTERFACE_FILENAME.get(language.lower(), "")
+    if not fname:
+        return ""  # caller treats empty as "skip this deliverable entry"
+    if fname == "<subsystem>.dart":
+        fname = f"{subsystem_name}.dart"
+    return f"{base}/{fname}"
+
+# Per-language scenario test-file extension. Must mirror the table in
+# the scenario verification phase. The previous ``project_1-tower``
+# regression ran a Unity (csharp) project's verification phase against
+# this table missing csharp → silently fell back to ``.py`` and the
+# developer was asked to write Python tests for a C# project.
+#
+# Inlined here (instead of imported from ``aise.safety_net.scenario_gate``)
+# so this PR is self-contained — the scenario_gate module is part of an
+# in-progress safety_net rewrite that lives outside this PR's scope.
+# When that module lands, this dict can be deleted in favor of a
+# single-source-of-truth import without any callers needing to change.
+_LANGUAGE_TEST_EXT: dict[str, str] = {
+    "python": ".py",
+    "py": ".py",
+    "typescript": ".ts",
+    "ts": ".ts",
+    "javascript": ".js",
+    "js": ".js",
+    "go": ".go",
+    "rust": ".rs",
+    "java": ".java",
+    "dart": ".dart",
+    "csharp": ".cs",
+    "cs": ".cs",
+    "kotlin": ".kt",
+    "swift": ".swift",
+}
 
 # csharp/kotlin/swift use empty string in _INTERFACE_FILENAME ("" means
 # "no barrel file convention"). Exclude them from the "must be in
