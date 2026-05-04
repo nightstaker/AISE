@@ -500,3 +500,220 @@ class TestEvaluateDeliverable:
         )
         report = evaluate_deliverable(d, _ctx(tmp_path, "x.md"))
         assert report.passed
+
+
+# -- json_field_equals (phase-test catalog) -------------------------------
+
+
+def _write_json(tmp_path: Path, name: str, data: dict | list) -> None:
+    (tmp_path / name).write_text(json.dumps(data), encoding="utf-8")
+
+
+class TestJsonFieldEquals:
+    def test_passes_on_match(self, tmp_path: Path):
+        _write_json(tmp_path, "stack.json", {"language": "python"})
+        r = evaluate_predicate(
+            _pred("json_field_equals", {"field": "language", "expected": "python"}),
+            _ctx(tmp_path, "stack.json"),
+        )
+        assert r.passed and "python" in r.detail
+
+    def test_fails_on_mismatch(self, tmp_path: Path):
+        _write_json(tmp_path, "stack.json", {"language": "go"})
+        r = evaluate_predicate(
+            _pred("json_field_equals", {"field": "language", "expected": "python"}),
+            _ctx(tmp_path, "stack.json"),
+        )
+        assert not r.passed and "'go'" in r.detail and "'python'" in r.detail
+
+    def test_resolves_dotted_path(self, tmp_path: Path):
+        _write_json(tmp_path, "stack.json", {"subsystems": [{"name": "core"}]})
+        r = evaluate_predicate(
+            _pred("json_field_equals", {"field": "subsystems.0.name", "expected": "core"}),
+            _ctx(tmp_path, "stack.json"),
+        )
+        assert r.passed
+
+    def test_null_expected_matches_python_none(self, tmp_path: Path):
+        # Regression for the same Flutter-event_loop_owner issue PR #139
+        # fixed in the schema: null must round-trip from YAML through JSON
+        # and compare equal to Python None.
+        _write_json(tmp_path, "stack.json", {"event_loop_owner": None})
+        r = evaluate_predicate(
+            _pred("json_field_equals", {"field": "event_loop_owner", "expected": None}),
+            _ctx(tmp_path, "stack.json"),
+        )
+        assert r.passed
+
+    def test_fails_on_unresolvable_field(self, tmp_path: Path):
+        _write_json(tmp_path, "stack.json", {"language": "python"})
+        r = evaluate_predicate(
+            _pred("json_field_equals", {"field": "missing.field", "expected": "x"}),
+            _ctx(tmp_path, "stack.json"),
+        )
+        assert not r.passed and "not resolvable" in r.detail
+
+    def test_fails_on_invalid_arg(self, tmp_path: Path):
+        _write_json(tmp_path, "stack.json", {})
+        r = evaluate_predicate(_pred("json_field_equals", "bad"), _ctx(tmp_path, "stack.json"))
+        assert not r.passed and "invalid arg" in r.detail
+
+
+# -- json_field_one_of ----------------------------------------------------
+
+
+class TestJsonFieldOneOf:
+    def test_passes_when_in_allowed(self, tmp_path: Path):
+        _write_json(tmp_path, "stack.json", {"package_manager": "poetry"})
+        r = evaluate_predicate(
+            _pred(
+                "json_field_one_of",
+                {"field": "package_manager", "allowed": ["pip", "poetry", "uv"]},
+            ),
+            _ctx(tmp_path, "stack.json"),
+        )
+        assert r.passed
+
+    def test_fails_when_not_in_allowed(self, tmp_path: Path):
+        _write_json(tmp_path, "stack.json", {"package_manager": "npm"})
+        r = evaluate_predicate(
+            _pred(
+                "json_field_one_of",
+                {"field": "package_manager", "allowed": ["pip", "poetry"]},
+            ),
+            _ctx(tmp_path, "stack.json"),
+        )
+        assert not r.passed and "expected one of" in r.detail
+
+    def test_fails_on_non_list_allowed(self, tmp_path: Path):
+        _write_json(tmp_path, "stack.json", {"x": 1})
+        r = evaluate_predicate(
+            _pred("json_field_one_of", {"field": "x", "allowed": "not-a-list"}),
+            _ctx(tmp_path, "stack.json"),
+        )
+        assert not r.passed
+
+
+# -- contains_keywords ----------------------------------------------------
+
+
+class TestContainsKeywords:
+    def test_all_of_passes_case_insensitive(self, tmp_path: Path):
+        (tmp_path / "arch.md").write_text("# Architecture\n\nWe use Python and pip with pytest.", encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("contains_keywords", {"all_of": ["python", "PIP", "pytest"]}),
+            _ctx(tmp_path, "arch.md"),
+        )
+        assert r.passed
+
+    def test_all_of_reports_missing(self, tmp_path: Path):
+        (tmp_path / "arch.md").write_text("just python", encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("contains_keywords", {"all_of": ["python", "flutter"]}),
+            _ctx(tmp_path, "arch.md"),
+        )
+        assert not r.passed and "flutter" in r.detail
+
+    def test_any_of_passes_when_at_least_one(self, tmp_path: Path):
+        (tmp_path / "arch.md").write_text("we picked Bloc", encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("contains_keywords", {"any_of": ["Riverpod", "Bloc", "Provider"]}),
+            _ctx(tmp_path, "arch.md"),
+        )
+        assert r.passed
+
+    def test_any_of_fails_when_none(self, tmp_path: Path):
+        (tmp_path / "arch.md").write_text("plain markdown", encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("contains_keywords", {"any_of": ["Riverpod", "Bloc"]}),
+            _ctx(tmp_path, "arch.md"),
+        )
+        assert not r.passed and "none of" in r.detail
+
+    def test_case_sensitive_mode(self, tmp_path: Path):
+        (tmp_path / "arch.md").write_text("Python is great", encoding="utf-8")
+        r = evaluate_predicate(
+            _pred(
+                "contains_keywords",
+                {"all_of": ["python"], "case_sensitive": True},  # lowercase, won't match
+            ),
+            _ctx(tmp_path, "arch.md"),
+        )
+        assert not r.passed
+
+
+# -- forbidden_patterns ---------------------------------------------------
+
+
+class TestForbiddenPatterns:
+    def test_passes_when_clean(self, tmp_path: Path):
+        (tmp_path / "arch.md").write_text("Python project under src/", encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("forbidden_patterns", {"patterns": ["pubspec\\.yaml", "lib/main\\.dart"]}),
+            _ctx(tmp_path, "arch.md"),
+        )
+        assert r.passed
+
+    def test_fails_when_pattern_present(self, tmp_path: Path):
+        (tmp_path / "arch.md").write_text("see pubspec.yaml", encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("forbidden_patterns", {"patterns": ["pubspec\\.yaml"]}),
+            _ctx(tmp_path, "arch.md"),
+        )
+        assert not r.passed and "pubspec" in r.detail
+
+    def test_fails_when_any_pattern_matches(self, tmp_path: Path):
+        # Two patterns; only second matches — still fails.
+        (tmp_path / "arch.md").write_text("Flutter is here", encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("forbidden_patterns", {"patterns": ["Cargo\\.toml", "Flutter"]}),
+            _ctx(tmp_path, "arch.md"),
+        )
+        assert not r.passed and "Flutter" in r.detail
+
+
+# -- count_at_least / count_at_most --------------------------------------
+
+
+class TestCountAtLeast:
+    def test_passes(self, tmp_path: Path):
+        _write_json(tmp_path, "stack.json", {"subsystems": [1, 2, 3, 4]})
+        r = evaluate_predicate(
+            _pred("count_at_least", {"field": "subsystems", "min": 3}),
+            _ctx(tmp_path, "stack.json"),
+        )
+        assert r.passed
+
+    def test_fails_below_min(self, tmp_path: Path):
+        _write_json(tmp_path, "stack.json", {"subsystems": [1]})
+        r = evaluate_predicate(
+            _pred("count_at_least", {"field": "subsystems", "min": 3}),
+            _ctx(tmp_path, "stack.json"),
+        )
+        assert not r.passed and "1 < 3" in r.detail
+
+    def test_fails_when_value_not_list(self, tmp_path: Path):
+        _write_json(tmp_path, "stack.json", {"language": "python"})
+        r = evaluate_predicate(
+            _pred("count_at_least", {"field": "language", "min": 1}),
+            _ctx(tmp_path, "stack.json"),
+        )
+        assert not r.passed and "expected list" in r.detail
+
+
+class TestCountAtMost:
+    def test_passes(self, tmp_path: Path):
+        _write_json(tmp_path, "stack.json", {"subsystems": [1, 2]})
+        r = evaluate_predicate(
+            _pred("count_at_most", {"field": "subsystems", "max": 5}),
+            _ctx(tmp_path, "stack.json"),
+        )
+        assert r.passed
+
+    def test_fails_above_max(self, tmp_path: Path):
+        _write_json(tmp_path, "stack.json", {"subsystems": list(range(15))})
+        r = evaluate_predicate(
+            _pred("count_at_most", {"field": "subsystems", "max": 10}),
+            _ctx(tmp_path, "stack.json"),
+        )
+        assert not r.passed and "15 > 10" in r.detail

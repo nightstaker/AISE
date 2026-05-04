@@ -1,0 +1,110 @@
+# Phase-contract test case: architecture phase against the hello-world Python
+# CLI scenario.
+#
+# Input: docs/requirement.md + docs/requirement_contract.json (frozen
+# snapshot from a successful 2026-05-04 e2e — hello, world Python CLI).
+# Output expected: architect produces docs/architecture.md +
+# stack_contract.json + behavioral_contract.json that meet the assertions
+# below.
+#
+# Run with:
+#   aise v2-phase-test --case tests/fixtures/v2_phase_io/python_cli_hello_world/architecture/case.yaml
+
+aise_version: "0.1.0"
+scenario_id: python_cli_hello_world
+phase: architecture
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a Python CLI tool that prints 'hello, world' when run.
+
+# Production runs use 3 review iterations; phase-tests run with 1 to keep
+# wall-clock low (architect produce + 1 reviewer pass).
+max_review_iterations: 1
+timeout_sec: 1200
+
+assertions:
+  # -- File existence + size guards --
+  - name: arch_md_present
+    path: docs/architecture.md
+    predicate: file_exists
+
+  - name: arch_md_substantial
+    path: docs/architecture.md
+    predicate:
+      min_bytes: 1500
+
+  - name: stack_contract_present
+    path: docs/stack_contract.json
+    predicate: file_exists
+
+  - name: behavioral_contract_present
+    path: docs/behavioral_contract.json
+    predicate: file_exists
+
+  # -- Schema gate (must match what AUTO_GATE enforces in production) --
+  - name: stack_schema_valid
+    path: docs/stack_contract.json
+    predicate:
+      schema: schemas/stack_contract.schema.json
+
+  # -- Stack-choice content checks --
+  - name: language_is_python
+    path: docs/stack_contract.json
+    predicate:
+      json_field_equals:
+        field: language
+        expected: python
+
+  - name: package_manager_python_stdlib
+    path: docs/stack_contract.json
+    predicate:
+      json_field_one_of:
+        field: package_manager
+        allowed: [pip, poetry, hatch, setuptools, uv]
+
+  - name: test_runner_pytest
+    path: docs/stack_contract.json
+    predicate:
+      json_field_equals:
+        field: test_runner
+        expected: pytest
+
+  - name: ui_required_false
+    path: docs/stack_contract.json
+    predicate:
+      json_field_equals:
+        field: ui_required
+        expected: false
+
+  # -- Subsystem shape: small but not vacuous --
+  - name: at_least_one_subsystem
+    path: docs/stack_contract.json
+    predicate:
+      count_at_least:
+        field: subsystems
+        min: 1
+
+  - name: no_excessive_fanout_for_a_hello_world
+    path: docs/stack_contract.json
+    predicate:
+      count_at_most:
+        field: subsystems
+        max: 5
+
+  # -- architecture.md must mention the canonical pieces --
+  - name: arch_mentions_python
+    path: docs/architecture.md
+    predicate:
+      contains_keywords:
+        all_of: [Python]
+
+  # -- Flutter-specific reverse guard: hello_world should NOT pick Flutter
+  #    (catches over-eager-architect regressions on minimal CLI inputs) --
+  - name: not_a_flutter_project
+    path: docs/architecture.md
+    predicate:
+      forbidden_patterns:
+        patterns: ["pubspec\\.yaml", "lib/main\\.dart", "Flutter"]
