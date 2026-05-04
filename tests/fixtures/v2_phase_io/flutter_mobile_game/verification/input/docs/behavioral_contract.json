@@ -1,0 +1,154 @@
+{
+  "scenarios": [
+    {
+      "id": "combat_formula",
+      "name": "战斗公式验证",
+      "description": "验证战斗公式 max(ATK−DEF, 1) 正确计算伤害。当玩家 ATK ≤ 怪物 DEF 时，玩家每回合造成 1 点最低伤害；怪物 ATK > 玩家 DEF 时，怪物按差值造成伤害。",
+      "preconditions": ["PlayerState: hp=100, atk=5, def=5, gold=0, exp=0, level=1", "MonsterState: hp=50, atk=8, def=10, expReward=10, goldReward=5"],
+      "trigger": {"action": "move", "target": "adjacent_monster"},
+      "effect": {"player_damage_per_turn": 1, "monster_damage_per_turn": 3, "result": "player_wins"},
+      "test_file": "test/gameplay/battle_engine_test.dart",
+      "covers_requirements": ["FR-003"]
+    },
+    {
+      "id": "floor_switch_auto_save",
+      "name": "楼层切换自动存档",
+      "description": "玩家通过楼梯切换楼层时，系统自动保存当前游戏状态到本地 JSON 文件。存档包含玩家状态和楼层信息。",
+      "preconditions": ["Player on floor 1", "Save directory exists via path_provider"],
+      "trigger": {"action": "move", "target": "down_stairs"},
+      "effect": {"auto_save_file_exists": true, "current_floor": 2, "save_data_includes_player_state": true},
+      "test_file": "test/system/save_mgr_test.dart",
+      "covers_requirements": ["FR-011"]
+    },
+    {
+      "id": "boss_fight_multi_phase",
+      "name": "BOSS多阶段战斗",
+      "description": "验证 BOSS 在 HP 降至 250（初始 500 的 50%）时进入狂暴阶段，ATK 从 30 提升至 40，DEF 从 10 提升至 15。",
+      "preconditions": ["Player at floor 10", "Boss initial HP=500, ATK=30, DEF=10"],
+      "trigger": {"action": "move", "target": "boss_tile"},
+      "effect": {"phase_change_at_hp": 250, "phase_2_atk": 40, "phase_2_def": 15, "phase_2_special": "rage"},
+      "test_file": "test/gameplay/boss_engine_test.dart",
+      "covers_requirements": ["FR-006"]
+    },
+    {
+      "id": "shop_purchase",
+      "name": "商店购买道具",
+      "description": "验证商店购买流程：玩家金币足够时扣除对应金额并增加道具；金币不足时购买失败。",
+      "preconditions": ["Player gold >= 8", "Standing on shop tile"],
+      "trigger": {"action": "tap", "target": "red_potion_button"},
+      "effect": {"gold_decreased_by": 8, "red_potion_added": 1, "purchase_success": true},
+      "test_file": "test/gameplay/shop_engine_test.dart",
+      "covers_requirements": ["FR-008"]
+    },
+    {
+      "id": "death_rebirth",
+      "name": "死亡复活到上层入口",
+      "description": "验证 HP 归零后扣除 50 金币（不足则扣为 0），在上一层入口重生，HP 恢复为初始值的 50%。",
+      "preconditions": ["Player HP=10", "Monster damage=50"],
+      "trigger": {"action": "combat", "result": "player_defeated"},
+      "effect": {"gold_deducted": 50, "rebirth_floor": "current_floor - 1", "rebirth_hp": "initial_hp * 0.5"},
+      "test_file": "test/gameplay/battle_engine_test.dart",
+      "covers_requirements": ["FR-003"]
+    },
+    {
+      "id": "manual_save_load",
+      "name": "手动存档读档",
+      "description": "验证手动保存到指定槽位（至少 3 个槽位）并读取恢复完整游戏状态。",
+      "preconditions": ["Player in game state", "Save slot 1 is empty"],
+      "trigger": {"action": "menu", "target": "manual_save"},
+      "effect": {"save_slot_1_populated": true, "loaded_state_matches": true},
+      "test_file": "test/system/save_mgr_test.dart",
+      "covers_requirements": ["FR-011"]
+    },
+    {
+      "id": "npc_dialogue",
+      "name": "NPC剧情对话",
+      "description": "验证与剧情 NPC 对话显示多页剧情文本，包含线索提示。",
+      "preconditions": ["Player adjacent to NPC tile"],
+      "trigger": {"action": "move", "target": "npc_tile"},
+      "effect": {"dialogue_shown": true, "pages_available": 3, "has_hint": true},
+      "test_file": "test/gameplay/npc_mgr_test.dart",
+      "covers_requirements": ["FR-007"]
+    },
+    {
+      "id": "i18n_language_switch",
+      "name": "语言切换",
+      "description": "验证切换语言后 UI 文字更新，中英文翻译正确映射。",
+      "preconditions": ["Player in settings", "Current language is zh"],
+      "trigger": {"action": "tap", "target": "language_switch_button"},
+      "effect": {"language_changed": "en", "ui_text_updated": true, "start_game_translation": "Start Game"},
+      "test_file": "test/system/i18n_mgr_test.dart",
+      "covers_requirements": ["FR-010"]
+    },
+    {
+      "id": "menu_shows_start_continue",
+      "name": "主菜单显示开始/继续按钮",
+      "description": "验证主菜单界面正确显示'开始游戏'和'继续游戏'按钮，且文字符合当前语言设置。有存档时'继续'按钮可用。",
+      "preconditions": ["App freshly launched", "No active game state"],
+      "trigger": {"action": "launch", "command": "flutter run"},
+      "effect": {"menu_visible": true, "start_button_text": "开始游戏", "continue_button_visible": false, "settings_button_visible": true, "about_button_visible": true},
+      "test_file": "test/ui/menu_screen_test.dart",
+      "covers_requirements": ["FR-009"]
+    },
+    {
+      "id": "hud_displays_player_stats",
+      "name": "HUD 显示玩家四维属性",
+      "description": "验证游戏内 HUD 正确显示玩家 HP、ATK、DEF、Gold、EXP、Lv 和当前楼层号。数值与 PlayerState 一致。",
+      "preconditions": ["Player in game on floor 1", "PlayerState: hp=100, atk=10, def=5, gold=50, exp=0, level=1"],
+      "trigger": {"action": "enter_game"},
+      "effect": {"hud_visible": true, "hp_displayed": "HP: 100", "atk_displayed": "ATK: 10", "def_displayed": "DEF: 5", "gold_displayed": "Gold: 50", "floor_displayed": "Floor 1", "level_displayed": "Lv 1"},
+      "test_file": "test/ui/hud_ui_test.dart",
+      "covers_requirements": ["FR-001"]
+    },
+    {
+      "id": "game_screen_render_floor",
+      "name": "游戏界面渲染楼层地图",
+      "description": "验证游戏主界面正确渲染 11×11 网格地图，包括墙壁、地板、门、楼梯、怪物、道具、NPC 等 Tile 类型的占位颜色。",
+      "preconditions": ["Floor 1 data loaded from floor_1.json", "Player at position (5,10)"],
+      "trigger": {"action": "load_floor", "floor_id": 1},
+      "effect": {"grid_rendered": true, "grid_size": "11x11", "wall_tiles_visible": true, "floor_tiles_visible": true, "player_sprite_at_correct_pos": true, "stair_up_visible": true, "stair_down_visible": true},
+      "test_file": "test/ui/game_screen_test.dart",
+      "covers_requirements": ["FR-001", "FR-002"]
+    },
+    {
+      "id": "battle_screen_show_combat",
+      "name": "战斗界面显示战斗过程",
+      "description": "验证进入战斗后战斗界面显示怪物信息、玩家与怪物的 HP 条、每回合伤害数值和战斗日志。",
+      "preconditions": ["Player adjacent to monster", "Monster: hp=50, atk=8, def=5"],
+      "trigger": {"action": "move_to_monster"},
+      "effect": {"battle_screen_shown": true, "monster_name_shown": true, "player_hp_bar_visible": true, "monster_hp_bar_visible": true, "combat_log_entries": ["Player deals 3 dmg", "Monster deals 3 dmg"], "turn_count_shown": true},
+      "test_file": "test/ui/battle_screen_test.dart",
+      "covers_requirements": ["FR-003"]
+    },
+    {
+      "id": "shop_screen_show_items",
+      "name": "商店界面显示可购买道具",
+      "description": "验证商店界面显示所有可购买道具（钥匙、血瓶、宝石）及其价格，玩家金币不足时购买按钮禁用。",
+      "preconditions": ["Player standing on shop tile", "Player gold=20"],
+      "trigger": {"action": "enter_shop"},
+      "effect": {"shop_screen_shown": true, "items_listed": ["Yellow Key - 8G", "Blue Key - 8G", "Red Key - 10G", "Red Potion - 8G", "Blue Potion - 15G", "Ruby - 20G", "Sapphire - 20G"], "buy_buttons_enabled": true, "gold_displayed": "Gold: 20"},
+      "test_file": "test/ui/shop_screen_test.dart",
+      "covers_requirements": ["FR-008"]
+    },
+    {
+      "id": "dialogue_screen_show_npc_text",
+      "name": "对话界面显示 NPC 剧情文本",
+      "description": "验证与剧情 NPC 对话时弹出多页对话框，显示剧情文本和线索提示，支持翻页。",
+      "preconditions": ["Player adjacent to NPC tile", "NPC has 3 pages of dialogue"],
+      "trigger": {"action": "move_to_npc"},
+      "effect": {"dialogue_screen_shown": true, "npc_name_displayed": true, "page_number": "1/3", "dialogue_text_visible": true, "next_button_available": true, "page_turning_works": true},
+      "test_file": "test/ui/dialogue_screen_test.dart",
+      "covers_requirements": ["FR-007"]
+    },
+    {
+      "id": "settings_screen_volume_language",
+      "name": "设置界面音量与语言切换",
+      "description": "验证设置界面可调整 BGM 和 SFX 独立音量滑块，支持中英文切换，有清除存档按钮。",
+      "preconditions": ["Player in settings screen"],
+      "trigger": {"action": "open_settings"},
+      "effect": {"bgm_slider_visible": true, "sfx_slider_visible": true, "language_button_visible": true, "clear_save_button_visible": true, "bgm_value_adjustable": true, "sfx_value_adjustable": true, "language_switches_between_zh_and_en": true},
+      "test_file": "test/ui/settings_screen_test.dart",
+      "covers_requirements": ["FR-009", "FR-010"]
+    }
+  ]
+}

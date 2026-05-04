@@ -1,0 +1,100 @@
+# Phase-contract test case: requirements phase against the Flutter
+# magic-tower mobile-game scenario.
+#
+# Input: empty (PM phase 1 starts from the natural-language requirement).
+# Output expected: docs/requirement.md + docs/requirement_contract.json
+# capturing all the commercial-mobile-app concerns and passing schema.
+#
+# Run with:
+#   aise v2-phase-test --case tests/fixtures/v2_phase_io/flutter_mobile_game/requirements/case.yaml
+
+aise_version: "0.1.0"
+scenario_id: flutter_mobile_game
+phase: requirements
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  开发一款可以上架商店的商用魔塔（Magic Tower）手机游戏 APP。
+
+  - Flutter 3.x + Dart，跨 Android + iOS 单代码库
+  - 11×11 网格地图、HP/ATK/DEF/Gold/EXP/Lv 玩家属性、回合制战斗
+  - 至少 10 层楼、黄/蓝/红钥匙开门、血瓶宝石、商店、BOSS、NPC
+  - 中英双语、自动+手动存档、设置项、内购占位
+  - 状态管理 Riverpod 或 Bloc 任选
+
+max_review_iterations: 1
+timeout_sec: 1200
+
+assertions:
+  - name: requirement_md_present
+    path: docs/requirement.md
+    predicate: file_exists
+
+  - name: requirement_md_substantial
+    path: docs/requirement.md
+    predicate:
+      min_bytes: 3000  # complex commercial spec → expect richer doc
+
+  - name: requirement_contract_present
+    path: docs/requirement_contract.json
+    predicate: file_exists
+
+  - name: requirement_contract_schema_valid
+    path: docs/requirement_contract.json
+    predicate:
+      schema: schemas/requirement_contract.schema.json
+
+  # -- Domain coverage: PM must capture the major game systems mentioned
+  #    in the requirement. We use any_of for synonyms / Chinese-English
+  #    mix tolerance. --
+  - name: covers_grid_map
+    path: docs/requirement.md
+    predicate:
+      contains_keywords:
+        any_of: ["11×11", "11x11", "网格", "grid"]
+
+  - name: covers_combat
+    path: docs/requirement.md
+    predicate:
+      contains_keywords:
+        any_of: ["战斗", "回合制", "combat", "battle"]
+
+  - name: covers_save_load
+    path: docs/requirement.md
+    predicate:
+      contains_keywords:
+        any_of: ["存档", "save", "load"]
+
+  - name: covers_i18n
+    path: docs/requirement.md
+    predicate:
+      contains_keywords:
+        any_of: ["双语", "中英", "i18n", "国际化", "internationalization"]
+
+  - name: covers_iap_placeholder
+    path: docs/requirement.md
+    predicate:
+      contains_keywords:
+        any_of: ["内购", "IAP", "in-app purchase", "in app purchase"]
+
+  - name: contains_canonical_sections
+    path: docs/requirement.md
+    predicate:
+      contains_sections:
+        ["功能需求", "非功能需求"]
+
+  - name: at_least_ten_functional_requirements
+    path: docs/requirement.md
+    predicate:
+      regex_count:
+        pattern: "FR-\\d+"
+        min: 10
+
+  - name: contract_lists_many_functional_requirements
+    path: docs/requirement_contract.json
+    predicate:
+      count_at_least:
+        field: functional_requirements
+        min: 8

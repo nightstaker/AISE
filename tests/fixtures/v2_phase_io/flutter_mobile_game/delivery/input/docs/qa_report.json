@@ -1,0 +1,35 @@
+{
+  "toolchain_check": {
+    "flutter": "missing",
+    "dart": "missing",
+    "pub": "missing",
+    "dart_analyzer": "missing"
+  },
+  "flutter": {
+    "ran": false,
+    "passed": null,
+    "failed": null,
+    "skipped": 15,
+    "reason": "flutter and dart binaries not found on PATH — cannot execute tests"
+  },
+  "scenario_files": {
+    "combat_formula.dart": {"file_exists": true, "size_bytes": 6906, "min_bytes_ok": true},
+    "floor_switch_auto_save.dart": {"file_exists": true, "size_bytes": 8121, "min_bytes_ok": true},
+    "boss_fight_multi_phase.dart": {"file_exists": true, "size_bytes": 8284, "min_bytes_ok": true},
+    "shop_purchase.dart": {"file_exists": true, "size_bytes": 6517, "min_bytes_ok": true},
+    "death_rebirth.dart": {"file_exists": true, "size_bytes": 5867, "min_bytes_ok": true},
+    "manual_save_load.dart": {"file_exists": true, "size_bytes": 5397, "min_bytes_ok": true},
+    "npc_dialogue.dart": {"file_exists": true, "size_bytes": 4077, "min_bytes_ok": true},
+    "i18n_language_switch.dart": {"file_exists": true, "size_bytes": 5465, "min_bytes_ok": true},
+    "menu_shows_start_continue.dart": {"file_exists": true, "size_bytes": 3933, "min_bytes_ok": true},
+    "hud_displays_player_stats.dart": {"file_exists": true, "size_bytes": 4824, "min_bytes_ok": true},
+    "game_screen_render_floor.dart": {"file_exists": true, "size_bytes": 5316, "min_bytes_ok": true},
+    "battle_screen_show_combat.dart": {"file_exists": true, "size_bytes": 5148, "min_bytes_ok": true},
+    "shop_screen_show_items.dart": {"file_exists": true, "size_bytes": 6416, "min_bytes_ok": true},
+    "dialogue_screen_show_npc_text.dart": {"file_exists": true, "size_bytes": 6033, "min_bytes_ok": true},
+    "settings_screen_volume_language.dart": {"file_exists": true, "size_bytes": 6513, "min_bytes_ok": true}
+  },
+  "total_scenario_files": 15,
+  "all_files_exist": true,
+  "all_files_above_min_bytes": true
+}

@@ -1,0 +1,444 @@
+{
+  "project_name": "魔塔 (Magic Tower)",
+  "summary": "一款商用级魔塔（Magic Tower）手机游戏 APP，采用经典回合制 RPG 玩法，基于 Flutter 3.x + Dart 跨平台开发，支持 Android 8.0+ 与 iOS 13+，包含至少 10 层关卡、战斗系统、道具系统、存档系统、双语支持及内购占位，目标上架应用商店。",
+  "functional_requirements": [
+    {
+      "id": "FR-001",
+      "title": "移动系统",
+      "description": "玩家在 11×11 网格地图上按方向键移动一格，不能穿过墙壁、未解锁的门或不可通行障碍物；与可交互对象接触时触发对应事件。",
+      "acceptance_criteria": [
+        "玩家可通过虚拟方向按钮（上/下/左/右）控制角色移动",
+        "玩家无法穿过墙壁或颜色不匹配的门",
+        "玩家移动到怪物/道具/NPC/楼梯格时触发对应交互事件"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-002",
+      "title": "楼层系统",
+      "description": "游戏至少包含 10 层楼，每层为 11×11 网格，通过楼梯连接。部分楼梯需要特定道具或击败 BOSS 才能解锁。",
+      "acceptance_criteria": [
+        "游戏初始至少包含 10 层可玩楼层",
+        "每层地图数据通过 JSON 文件驱动（floor_*.json）",
+        "上/下楼梯可切换相邻楼层",
+        "至少 1 个楼梯需要道具或 BOSS 条件解锁"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-003",
+      "title": "战斗系统",
+      "description": "玩家与怪物按回合制自动战斗，玩家先攻。伤害公式为 max(ATK−DEF, 1)，双方每回合至少各造成 1 点伤害。玩家胜利获得 EXP 和金币；玩家死亡后扣除金币在上一层入口复活，HP 恢复 50%。",
+      "acceptance_criteria": [
+        "伤害公式统一使用 max(ATK−DEF, 1)，确保 ATK≤DEF 时仍造成 1 点伤害",
+        "玩家先攻（先对怪物造成伤害，怪物再反击）",
+        "战斗胜利后自动获得 EXP 和金币",
+        "玩家 HP 归零后扣除 50 金币（不足则扣为 0），在上一层入口重生，HP 恢复初始值的 50%",
+        "战斗日志显示每回合伤害、总回合数、战斗结果"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-004",
+      "title": "升级系统",
+      "description": "玩家通过击败怪物获得 EXP，达到升级阈值后自动升级，提升 HP、ATK 或 DEF。升级公式为无等级上限的二次函数。",
+      "acceptance_criteria": [
+        "升级所需 EXP 公式：50 + (Lv × 30) + (Lv × Lv × 5)",
+        "升级时自动提升 HP（+20）、ATK（+1）、DEF（+1）",
+        "升级动画/提示在 HUD 上显示",
+        "等级无上限，公式适用于任意 Lv"
+      ],
+      "priority": "P1"
+    },
+    {
+      "id": "FR-005",
+      "title": "道具系统",
+      "description": "包含黄/蓝/红钥匙（开对应颜色门）、红/蓝血瓶（恢复 HP）、宝石（提升 ATK 或 DEF）等道具，玩家拾取或使用后生效。",
+      "acceptance_criteria": [
+        "黄/蓝/红钥匙各 3 把，打开对应颜色门消耗 1 把",
+        "红血瓶恢复 50 HP，蓝血瓶恢复 100 HP",
+        "红宝石提升 ATK +1，蓝宝石提升 DEF +1",
+        "道具栏显示当前持有道具数量，支持点击使用"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-006",
+      "title": "BOSS 战系统",
+      "description": "至少包含 1 个 BOSS 战，BOSS 具有多阶段机制：第一阶段普通攻击，HP 降至 50% 后进入第二阶段（ATK/DEF 提升）。击败 BOSS 后解锁终局楼层或推进剧情。",
+      "acceptance_criteria": [
+        "BOSS 至少拥有 500 HP、ATK 30、DEF 10",
+        "BOSS HP 降至 250 时进入第二阶段，ATK 提升至 40，DEF 提升至 15，释放恐惧技能",
+        "击败 BOSS 后获得专属道具/剧情推进",
+        "BOSS 战有独立战斗界面，显示阶段转换提示",
+        "BOSS 战不可逃跑"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-007",
+      "title": "隐藏房间与剧情 NPC",
+      "description": "地图中至少包含 1 个隐藏房间（需要特定条件触发）和 1 个剧情 NPC，提供线索、任务或奖励。",
+      "acceptance_criteria": [
+        "至少 1 个隐藏房间，需特定路径或条件触发",
+        "至少 1 个剧情 NPC，与 NPC 对话可获取剧情文本",
+        "隐藏房间和 NPC 在地图上以占位颜色标识"
+      ],
+      "priority": "P1"
+    },
+    {
+      "id": "FR-008",
+      "title": "商店系统",
+      "description": "至少包含 1 个商店，玩家可购买钥匙、血瓶、宝石或升级服务。",
+      "acceptance_criteria": [
+        "商店界面显示可购买道具及价格",
+        "玩家金币不足时购买按钮禁用并提示",
+        "购买成功后扣除金币并增加对应道具"
+      ],
+      "priority": "P1"
+    },
+    {
+      "id": "FR-009",
+      "title": "主菜单系统",
+      "description": "启动后显示主菜单，包含开始新游戏、继续游戏、设置、关于四个选项。",
+      "acceptance_criteria": [
+        "启动画面展示后进入主菜单",
+        "开始新游戏：初始化新角色和存档",
+        "继续游戏：读取最新自动存档",
+        "设置：进入设置页面",
+        "关于：显示游戏版本和开发者信息"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-010",
+      "title": "双语系统",
+      "description": "支持中文和英文双语切换，所有界面文字通过 i18n 资源文件外置管理。",
+      "acceptance_criteria": [
+        "设置中可切换语言（中文/英文）",
+        "切换语言后所有 UI 文字即时更新",
+        "所有硬编码文本已提取到 i18n.json 资源文件"
+      ],
+      "priority": "P1"
+    },
+    {
+      "id": "FR-011",
+      "title": "存档系统",
+      "description": "自动存档：每次楼层切换和战斗结束后自动保存；手动存档：至少 3 个存档槽位，支持手动保存/读取/删除。",
+      "acceptance_criteria": [
+        "楼层切换时自动写入存档文件",
+        "战斗结束后自动写入存档文件",
+        "至少 3 个手动存档槽位，可独立保存/读取/删除",
+        "存档数据包含完整玩家状态和楼层进度"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-012",
+      "title": "设置系统",
+      "description": "设置项包括：BGM 音量、SFX 音量、语言切换、清除存档。",
+      "acceptance_criteria": [
+        "BGM 音量滑块独立控制背景音乐音量",
+        "SFX 音量滑块独立控制音效音量",
+        "语言切换立即生效",
+        "清除存档需二次确认"
+      ],
+      "priority": "P1"
+    },
+    {
+      "id": "FR-013",
+      "title": "内购占位",
+      "description": "实现一个非阻塞的购买金币按钮，接到 mock 的 IAP 流程即可，不需要真实接入支付。",
+      "acceptance_criteria": [
+        "主菜单或 HUD 上提供购买金币按钮",
+        "点击后弹出 mock 支付弹窗（模拟成功/取消）",
+        "支付成功后增加对应金币数量",
+        "取消或失败时不扣金币、不阻塞游戏"
+      ],
+      "priority": "P2"
+    },
+    {
+      "id": "FR-014",
+      "title": "HUD 显示",
+      "description": "游戏内 HUD 显示玩家四维（HP/ATK/DEF/Gold）、当前楼层、操作按钮（上下左右 + 攻击 + 道具栏）。",
+      "acceptance_criteria": [
+        "HUD 顶部显示 HP、ATK、DEF、Gold、EXP、Lv、当前楼层",
+        "屏幕底部显示方向按钮、攻击按钮、道具栏按钮",
+        "HUD 数值随游戏状态实时更新"
+      ],
+      "priority": "P0"
+    }
+  ],
+  "non_functional_requirements": [
+    {
+      "id": "NFR-001",
+      "title": "性能 - 帧率",
+      "description": "游戏运行时保持 60 FPS 流畅运行，地图渲染和战斗动画无卡顿。",
+      "priority": "P0"
+    },
+    {
+      "id": "NFR-002",
+      "title": "性能 - 冷启动",
+      "description": "应用冷启动时间小于 3 秒（从点击图标到主菜单可操作）。",
+      "priority": "P0"
+    },
+    {
+      "id": "NFR-003",
+      "title": "性能 - 内存",
+      "description": "应用运行时内存占用低于 200MB。",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-004",
+      "title": "性能 - 楼层切换",
+      "description": "楼层切换加载时间小于 0.5 秒。",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-005",
+      "title": "跨平台支持",
+      "description": "支持 Android 8.0+（API 26）和 iOS 13+，使用 Flutter 3.x + Dart 单一代码库编译。",
+      "priority": "P0"
+    },
+    {
+      "id": "NFR-006",
+      "title": "状态管理",
+      "description": "使用 Riverpod 进行状态管理，确保状态变更可预测、可测试。",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-007",
+      "title": "数据持久化",
+      "description": "本地存档使用 JSON 文件 + path_provider 存储，不引入云端依赖。",
+      "priority": "P0"
+    },
+    {
+      "id": "NFR-008",
+      "title": "资源占位",
+      "description": "使用纯色矩形 + Material Icons 作为占位资源，代码中预留 asset 槽位以便替换真实美术素材。",
+      "priority": "P2"
+    },
+    {
+      "id": "NFR-009",
+      "title": "测试覆盖",
+      "description": "核心战斗公式、楼层切换、存档读写需有单元测试；scenarios/下有 e2e 集成测试覆盖至少 3 条主线。",
+      "priority": "P0"
+    },
+    {
+      "id": "NFR-010",
+      "title": "数据驱动格式",
+      "description": "关卡数据、道具、怪物、NPC、剧情通过 JSON 文件驱动，字段结构在需求文档中完整定义。",
+      "priority": "P0"
+    },
+    {
+      "id": "NFR-011",
+      "title": "可靠性",
+      "description": "存档数据损坏时自动检测并提示；崩溃后重启可恢复到最后一次自动存档状态。",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-012",
+      "title": "安全性",
+      "description": "本地存档使用 AES-256 加密存储；内购 mock 流程不产生真实支付请求；不收集用户个人信息。",
+      "priority": "P1"
+    }
+  ],
+  "use_cases": [
+    {
+      "id": "UC-001",
+      "actor": "玩家",
+      "goal": "在地图上移动并探索楼层",
+      "preconditions": [
+        "游戏已启动并进入主菜单",
+        "玩家已开始新游戏或继续存档"
+      ],
+      "main_flow": [
+        "玩家在 HUD 上点击方向按钮",
+        "系统检测目标格子是否可通行",
+        "若可通行，玩家移动到目标格子",
+        "若目标格子有可交互对象，触发对应事件"
+      ],
+      "covers_requirements": ["FR-001", "FR-014"]
+    },
+    {
+      "id": "UC-002",
+      "actor": "玩家",
+      "goal": "与怪物战斗并获胜",
+      "preconditions": [
+        "玩家移动到怪物所在格子"
+      ],
+      "main_flow": [
+        "战斗界面启动，显示双方属性",
+        "玩家先攻，计算伤害并扣减怪物 HP",
+        "怪物反击，计算伤害并扣减玩家 HP",
+        "重复攻击-反击直到一方 HP ≤ 0",
+        "玩家胜利：获得 EXP 和金币，怪物格清空",
+        "玩家死亡：扣除金币，在上一层入口复活"
+      ],
+      "covers_requirements": ["FR-003"]
+    },
+    {
+      "id": "UC-003",
+      "actor": "玩家",
+      "goal": "通过楼梯切换楼层",
+      "preconditions": [
+        "玩家位于楼梯格上",
+        "无未完成的战斗"
+      ],
+      "main_flow": [
+        "玩家移动到楼梯格",
+        "系统检查楼层解锁条件",
+        "条件满足，切换至目标楼层",
+        "新楼层地图加载完成",
+        "自动存档触发"
+      ],
+      "covers_requirements": ["FR-002", "FR-011"]
+    },
+    {
+      "id": "UC-004",
+      "actor": "玩家",
+      "goal": "使用钥匙打开门",
+      "preconditions": [
+        "玩家持有与门颜色匹配的钥匙",
+        "玩家移动到门相邻格子"
+      ],
+      "main_flow": [
+        "玩家点击门或移动到门格",
+        "系统检查钥匙数量",
+        "钥匙数量 > 0，消耗 1 把钥匙",
+        "门变为可通行格子",
+        "HUD 更新钥匙数量"
+      ],
+      "covers_requirements": ["FR-001", "FR-005"]
+    },
+    {
+      "id": "UC-005",
+      "actor": "玩家",
+      "goal": "使用血瓶恢复生命值",
+      "preconditions": [
+        "玩家持有血瓶",
+        "当前 HP < 最大 HP"
+      ],
+      "main_flow": [
+        "玩家打开道具栏",
+        "选择血瓶并点击使用",
+        "系统恢复对应 HP 值",
+        "血瓶数量减 1",
+        "HUD 更新 HP 和道具数量"
+      ],
+      "covers_requirements": ["FR-005", "FR-014"]
+    },
+    {
+      "id": "UC-006",
+      "actor": "玩家",
+      "goal": "在商店购买道具",
+      "preconditions": [
+        "玩家位于商店内",
+        "商店界面已打开"
+      ],
+      "main_flow": [
+        "玩家浏览商店商品列表",
+        "选择要购买的道具",
+        "系统检查金币是否足够",
+        "金币充足，扣除金币并增加道具",
+        "金币不足，提示并取消购买"
+      ],
+      "covers_requirements": ["FR-008"]
+    },
+    {
+      "id": "UC-007",
+      "actor": "玩家",
+      "goal": "击败 BOSS 推进剧情",
+      "preconditions": [
+        "玩家到达 BOSS 楼层",
+        "BOSS 未被击败"
+      ],
+      "main_flow": [
+        "玩家与 BOSS 接触触发 BOSS 战",
+        "进入 BOSS 战斗界面",
+        "玩家先攻，BOSS 反击，循环直到 BOSS HP ≤ 0",
+        "BOSS HP 降至 250 时进入第二阶段",
+        "BOSS 被击败，获得专属奖励",
+        "终局楼层解锁或剧情推进"
+      ],
+      "covers_requirements": ["FR-006"]
+    },
+    {
+      "id": "UC-008",
+      "actor": "玩家",
+      "goal": "保存和读取游戏存档",
+      "preconditions": [
+        "游戏进行中"
+      ],
+      "main_flow": [
+        "玩家打开菜单选择存档/读档",
+        "选择存档槽位",
+        "保存：将当前玩家状态写入 JSON 文件",
+        "读取：从 JSON 文件加载玩家状态",
+        "系统验证存档完整性后恢复游戏"
+      ],
+      "covers_requirements": ["FR-011", "NFR-007"]
+    },
+    {
+      "id": "UC-009",
+      "actor": "玩家",
+      "goal": "切换游戏语言",
+      "preconditions": [
+        "玩家进入设置页面"
+      ],
+      "main_flow": [
+        "玩家在设置中找到语言选项",
+        "选择中文或英文",
+        "系统更新 i18n 资源引用",
+        "所有 UI 文字即时切换语言"
+      ],
+      "covers_requirements": ["FR-010", "FR-012"]
+    },
+    {
+      "id": "UC-010",
+      "actor": "玩家",
+      "goal": "购买金币（内购占位）",
+      "preconditions": [
+        "玩家在主菜单或 HUD 上找到购买按钮"
+      ],
+      "main_flow": [
+        "玩家点击购买金币按钮",
+        "弹出 mock 支付窗口",
+        "玩家选择金额并确认",
+        "mock 支付成功，增加对应金币",
+        "显示购买成功提示"
+      ],
+      "covers_requirements": ["FR-013"]
+    },
+    {
+      "id": "UC-011",
+      "actor": "玩家",
+      "goal": "与剧情 NPC 对话获取线索",
+      "preconditions": [
+        "玩家位于剧情 NPC 所在楼层"
+      ],
+      "main_flow": [
+        "玩家移动到 NPC 格子",
+        "弹出剧情对话框",
+        "NPC 显示剧情文本",
+        "玩家关闭对话框后继续游戏"
+      ],
+      "covers_requirements": ["FR-007"]
+    },
+    {
+      "id": "UC-012",
+      "actor": "玩家",
+      "goal": "发现隐藏房间",
+      "preconditions": [
+        "玩家位于隐藏房间附近"
+      ],
+      "main_flow": [
+        "玩家踩中隐藏地板 tile",
+        "隐藏房间显现",
+        "玩家进入房间",
+        "获得隐藏道具/奖励"
+      ],
+      "covers_requirements": ["FR-009"]
+    }
+  ]
+}
