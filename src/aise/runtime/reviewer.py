@@ -176,12 +176,32 @@ def build_reviewer_prompt(
     blocks.append("[REVIEWER QUESTION]")
     blocks.append(reviewer_question.strip())
     blocks.append("")
+    blocks.append("[REVIEWER CONSTRAINTS — STRICT]")
+    blocks.append(
+        "- You are a REVIEWER. Your job is to read the deliverables and "
+        "give a verdict. You are NOT allowed to fix anything yourself."
+    )
+    blocks.append(
+        "- DO NOT use the `execute` tool. Reviewers are observers, not "
+        "actors. Running pytest / cli / shell commands is the producer's "
+        "job in the next phase, not yours."
+    )
+    blocks.append(
+        "- DO NOT use `write_file` or `edit_file`. If you spot an issue, "
+        "describe it in your feedback and verdict REVISE — the producer "
+        "agent will fix it on the next round."
+    )
+    blocks.append(
+        "- You MAY use `read_file` to inspect each deliverable above, "
+        "but use it AT MOST ONCE per file. After that, emit your verdict."
+    )
+    blocks.append("")
     blocks.append("[REQUIRED RESPONSE FORMAT]")
     blocks.append("First line MUST be exactly one of: PASS / REVISE / REJECT")
     blocks.append(
-        "Subsequent lines: free-form feedback. For REVISE, list the"
+        "Subsequent lines: free-form feedback. For REVISE, list the "
+        "specific gaps the producer must fix."
     )
-    blocks.append("specific gaps the producer must fix.")
     return "\n".join(blocks)
 
 

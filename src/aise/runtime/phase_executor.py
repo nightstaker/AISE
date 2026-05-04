@@ -132,6 +132,91 @@ class PhaseResult:
 _PRODUCER_AUTO_GATE_RETRIES = 3
 
 
+# -- Inline JSON contract examples ---------------------------------------
+# Surfaced to producer LLMs in the rich phase prompt. The local model
+# can't be expected to fetch + parse the JSON Schema files; giving it a
+# valid example skeleton is the most reliable way to get a conforming
+# output. Keyed by the bare filename of the deliverable path
+# (resolved via ``rel.name``).
+
+_CONTRACT_EXAMPLES: dict[str, str] = {
+    "requirement_contract.json": """{
+  "project_name": "<project name>",
+  "summary": "<one-paragraph summary>",
+  "functional_requirements": [
+    {
+      "id": "FR-001",
+      "title": "<short title>",
+      "description": "<what the system must do>",
+      "acceptance_criteria": ["<measurable criterion>"],
+      "priority": "P0"
+    }
+  ],
+  "non_functional_requirements": [
+    {
+      "id": "NFR-001",
+      "title": "<e.g. response latency>",
+      "description": "<measurable constraint>",
+      "priority": "P1"
+    }
+  ],
+  "use_cases": [
+    {
+      "id": "UC-001",
+      "actor": "<role>",
+      "goal": "<one-sentence goal>",
+      "preconditions": ["<precondition>"],
+      "main_flow": ["<step 1>", "<step 2>"],
+      "covers_requirements": ["FR-001"]
+    }
+  ]
+}""",
+    "stack_contract.json": """{
+  "language": "python",
+  "runtime": "cpython3.11",
+  "framework_backend": "fastapi",
+  "framework_frontend": "",
+  "package_manager": "pip",
+  "project_config_file": "pyproject.toml",
+  "test_runner": "pytest",
+  "test_cmd": "python -m pytest tests/ -q",
+  "static_analyzer": ["ruff check"],
+  "entry_point": "src/main.py",
+  "run_command": "python -m src.main",
+  "ui_required": false,
+  "subsystems": [
+    {
+      "name": "core",
+      "src_dir": "src/core",
+      "responsibilities": "<what this subsystem owns>",
+      "components": [
+        {
+          "name": "<component name>",
+          "file": "src/core/<file>.py",
+          "test_file": "tests/core/test_<file>.py",
+          "responsibility": "<what this component does>"
+        }
+      ]
+    }
+  ],
+  "lifecycle_inits": []
+}""",
+    "behavioral_contract.json": """{
+  "scenarios": [
+    {
+      "id": "boot_shows_main",
+      "name": "Boot shows main entry",
+      "description": "When the program starts, it produces the expected initial output.",
+      "preconditions": ["No prior state required"],
+      "trigger": {"action": "run", "command": "python -m src.main"},
+      "effect": {"stdout_contains": "<expected substring>"},
+      "covers_requirements": ["FR-001"]
+    }
+  ]
+}""",
+}
+
+
 # -- Fanout enumeration types --------------------------------------------
 
 
@@ -289,10 +374,11 @@ class PhaseExecutor:
     requirement_contract: dict[str, Any] | None = None
 
     # -- Phase prompt builder (caller can override per-phase via DI) -----
+    # Default builder lazily resolves to ``_default_build_phase_prompt``
+    # at call time (we can't reference it in the dataclass field literal
+    # because the bound method needs ``self``).
 
-    build_phase_prompt: Callable[[PhaseSpec, str], str] = field(
-        default=lambda phase, requirement: f"Execute phase '{phase.id}'. Requirement: {requirement}"
-    )
+    build_phase_prompt: Callable[[PhaseSpec, str], str] | None = None
 
     # -- Public API -------------------------------------------------------
 
@@ -302,7 +388,7 @@ class PhaseExecutor:
         logger.info("PhaseExecutor: starting phase=%s producer=%s", phase.id, phase.producer)
 
         # 1. PRODUCE + AUTO_GATE loop (up to _PRODUCER_AUTO_GATE_RETRIES)
-        producer_prompt = self.build_phase_prompt(phase, requirement)
+        producer_prompt = self._call_build_phase_prompt(phase, requirement)
         producer_attempts = 0
         deliverable_reports: tuple[DeliverableReport, ...] = ()
         fanout_result: Any = None
@@ -351,7 +437,7 @@ class PhaseExecutor:
                 f"Your previous attempt's deliverables failed automated checks:\n"
                 f"{failure_text}\n\n"
                 f"Fix the above and re-produce. ---\n\n"
-                + self.build_phase_prompt(phase, requirement)
+                + self._call_build_phase_prompt(phase, requirement)
             )
         else:
             # Loop exhausted without AUTO_GATE pass → halt
@@ -619,6 +705,88 @@ class PhaseExecutor:
                 ]
         return []
 
+    # -- Producer prompt builder ----------------------------------------
+
+    def _call_build_phase_prompt(self, phase: PhaseSpec, requirement: str) -> str:
+        """Route to caller-provided builder if any, else the rich default.
+        The default lists every deliverable's path + acceptance summary +
+        any schema reference so the producer LLM knows exactly what files
+        it MUST write and what they need to look like."""
+        if self.build_phase_prompt is not None:
+            return self.build_phase_prompt(phase, requirement)
+        return self._default_build_phase_prompt(phase, requirement)
+
+    def _default_build_phase_prompt(self, phase: PhaseSpec, requirement: str) -> str:
+        lines: list[str] = []
+        lines.append("=== ORIGINAL USER REQUIREMENT ===")
+        lines.append(requirement)
+        lines.append("=== END REQUIREMENT ===")
+        lines.append("")
+        lines.append(f"Phase: {phase.id}  ({phase.title or 'no title'})")
+        lines.append(f"Producer role: {phase.producer}")
+        if phase.inputs:
+            lines.append(f"Inputs (read these first): {list(phase.inputs)}")
+        lines.append("")
+        lines.append("DELIVERABLES YOU MUST PRODUCE (each must satisfy the listed acceptance checks):")
+        for d in phase.deliverables:
+            paths = self._resolve_deliverable_paths(d)
+            if not paths:
+                continue
+            for p in paths:
+                try:
+                    rel = p.relative_to(self.project_root)
+                except ValueError:
+                    rel = p
+                acc_kinds = [a.kind for a in d.acceptance]
+                lines.append(f"  - {rel}")
+                lines.append(f"      kind: {d.kind}")
+                lines.append(f"      acceptance: {acc_kinds}")
+                for a in d.acceptance:
+                    if a.kind == "schema":
+                        # Inline an example skeleton matching the schema so
+                        # the producer doesn't have to look it up. Surfacing
+                        # only the schema FILE path confused weak local
+                        # models into writing the schema definition itself
+                        # (or writing the contract under ``schemas/``).
+                        example = _CONTRACT_EXAMPLES.get(str(rel).split("/")[-1], "")
+                        if example:
+                            lines.append(f"      content MUST be valid JSON like this example:")
+                            for ex_line in example.splitlines():
+                                lines.append(f"        {ex_line}")
+                    elif a.kind == "min_bytes":
+                        lines.append(f"      minimum size: {a.arg} bytes")
+                    elif a.kind == "contains_sections":
+                        lines.append(f"      required sections (must appear as markdown headings): {a.arg}")
+                    elif a.kind == "regex_count":
+                        lines.append(f"      required regex matches: {a.arg}")
+                    elif a.kind == "min_scenarios":
+                        lines.append(f"      minimum scenarios in JSON: {a.arg}")
+                    elif a.kind == "prior_phases_summarized":
+                        lines.append(
+                            "      report MUST mention canonical artifact paths "
+                            "(docs/requirement.md, docs/architecture.md, "
+                            "docs/stack_contract.json, docs/behavioral_contract.json)"
+                        )
+                    elif a.kind == "contains_all_lifecycle_inits":
+                        lines.append(
+                            "      entry_point body MUST invoke every "
+                            "<attr>.<method>() declared in stack_contract.lifecycle_inits"
+                        )
+                    elif a.kind == "mermaid_validates_via_skill":
+                        lines.append(
+                            "      every ```mermaid block MUST start with a known header "
+                            "(flowchart / graph / sequenceDiagram / classDiagram / "
+                            "stateDiagram / erDiagram / C4Context / C4Container / C4Component)"
+                        )
+        lines.append("")
+        lines.append("INSTRUCTIONS:")
+        lines.append("- Use write_file to create EACH deliverable at the EXACT path listed above.")
+        lines.append("- For *.json deliverables, output VALID JSON. Use the example as a structural template.")
+        lines.append("- Do NOT write into 'schemas/' — that is for schema definitions, not your output.")
+        lines.append("- Do NOT skip any deliverable — every one is graded by an automated check.")
+        lines.append("- When done, reply with a one-line summary; do NOT call any 'mark_complete' tool.")
+        return "\n".join(lines)
+
     def _run_review_loop(
         self, phase: PhaseSpec, requirement: str
     ) -> ReviewLoopResult:
@@ -635,7 +803,7 @@ class PhaseExecutor:
             return paths
 
         def revise_callback(feedbacks: Sequence[ReviewerFeedback]) -> None:
-            base_prompt = self.build_phase_prompt(phase, requirement)
+            base_prompt = self._call_build_phase_prompt(phase, requirement)
             new_prompt = prepend_reviewer_feedback(base_prompt, feedbacks)
             # Re-issue producer with prepended feedback. We don't re-run
             # fanout here — reviewer feedback typically affects the

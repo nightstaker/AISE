@@ -16,7 +16,7 @@
   "properties": {
     "language": { "type": "string", "minLength": 1 },
     "runtime": { "type": "string" },
-    "framework_backend": { "type": "string", "minLength": 1 },
+    "framework_backend": { "type": "string" },
     "framework_frontend": { "type": "string" },
     "package_manager": { "type": "string", "minLength": 1 },
     "project_config_file": { "type": "string" },
