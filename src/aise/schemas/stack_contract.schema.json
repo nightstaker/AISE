@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "stack_contract",
+  "title": "Stack contract (architect output, phase 2)",
+  "description": "Single source of truth for technology choice. Drives implementation fanout, test runner selection, and entry-point wiring. Replaces all per-language Python dictionaries previously in src/aise/tools/stack_contract.py.",
+  "type": "object",
+  "required": [
+    "language",
+    "framework_backend",
+    "package_manager",
+    "test_runner",
+    "entry_point",
+    "run_command",
+    "subsystems"
+  ],
+  "properties": {
+    "language": { "type": "string", "minLength": 1 },
+    "runtime": { "type": "string" },
+    "framework_backend": { "type": "string", "minLength": 1 },
+    "framework_frontend": { "type": "string" },
+    "package_manager": { "type": "string", "minLength": 1 },
+    "project_config_file": { "type": "string" },
+    "test_runner": { "type": "string", "minLength": 1 },
+    "test_cmd": { "type": "string" },
+    "static_analyzer": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    },
+    "entry_point": { "type": "string", "minLength": 1 },
+    "run_command": { "type": "string", "minLength": 1 },
+    "ui_required": { "type": "boolean" },
+    "ui_kind": { "type": "string" },
+
+    "subsystems": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/subsystem" }
+    },
+    "lifecycle_inits": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/lifecycle_init" }
+    },
+    "event_loop_owner": { "$ref": "#/definitions/lifecycle_init" }
+  },
+  "additionalProperties": true,
+
+  "definitions": {
+    "subsystem": {
+      "type": "object",
+      "required": ["name", "src_dir", "components"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "src_dir": { "type": "string", "minLength": 1 },
+        "responsibilities": { "type": "string" },
+        "components": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/component" }
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "component": {
+      "type": "object",
+      "required": ["name", "file"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "file": { "type": "string", "minLength": 1 },
+        "test_file": { "type": "string" },
+        "responsibility": { "type": "string" },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "lifecycle_init": {
+      "type": "object",
+      "required": ["attr", "method", "class", "module"],
+      "properties": {
+        "attr": { "type": "string", "minLength": 1 },
+        "method": { "type": "string", "minLength": 1 },
+        "class": { "type": "string", "minLength": 1 },
+        "module": { "type": "string", "minLength": 1 },
+        "handler_method": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

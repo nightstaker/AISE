@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "requirement_contract",
+  "title": "Machine-readable requirement contract (companion to docs/requirement.md)",
+  "description": "Produced by product_manager in phase 1. Lists every requirement as a structured row so downstream phases can iterate without parsing markdown.",
+  "type": "object",
+  "required": ["functional_requirements", "non_functional_requirements"],
+  "properties": {
+    "project_name": { "type": "string" },
+    "summary": { "type": "string" },
+    "functional_requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/requirement_row" }
+    },
+    "non_functional_requirements": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/requirement_row" }
+    },
+    "use_cases": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/use_case" }
+    }
+  },
+  "additionalProperties": true,
+
+  "definitions": {
+    "requirement_row": {
+      "type": "object",
+      "required": ["id", "title", "description"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(FR|NFR)-\\d{2,4}$"
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "acceptance_criteria": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["P0", "P1", "P2", "P3"]
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "use_case": {
+      "type": "object",
+      "required": ["id", "actor", "goal"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^UC-\\d{2,4}$" },
+        "actor": { "type": "string", "minLength": 1 },
+        "goal": { "type": "string", "minLength": 1 },
+        "preconditions": { "type": "array", "items": { "type": "string" } },
+        "main_flow": { "type": "array", "items": { "type": "string" } },
+        "covers_requirements": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^(FR|NFR)-\\d{2,4}$" }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -14,6 +14,7 @@ dependencies = [
     "langchain-core>=0.3.0",
     "langchain-openai>=0.2.0",
     "langgraph>=0.2.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -57,6 +58,7 @@ testpaths = [
     "tests/test_github",
     "tests/test_langchain",
     "tests/test_reliability",
+    "tests/test_runtime",
     "tests/test_skills",
     "tests/test_system",
 ]
