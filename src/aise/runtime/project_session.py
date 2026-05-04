@@ -23,6 +23,7 @@ Public surface (kept stable so existing tests/web code continue to work):
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,7 +92,11 @@ class ProjectSession:
         raw_mode = str(mode or "initial").strip().lower()
         self._mode = raw_mode if raw_mode in ("initial", "incremental") else "initial"
         raw_process = str(process_type or "waterfall").strip().lower()
-        self._process_type = raw_process if raw_process in ("waterfall", "agile") else "waterfall"
+        self._process_type = (
+            raw_process
+            if raw_process in ("waterfall", "agile", "waterfall_v2")
+            else "waterfall"
+        )
         try:
             start_idx = int(start_phase_idx)
         except (TypeError, ValueError):
@@ -156,6 +161,14 @@ class ProjectSession:
         # ``max_dispatches`` to ``Σ(1 + components) + buffer`` if the
         # static default is smaller.
         self._apply_dispatch_floor(reason="run_start")
+
+        # waterfall_v2: short-circuit to the new driver. The legacy
+        # phase loop below handles "waterfall" / "agile" — both run
+        # the orchestrator-LLM-driven _build_*_phase_prompts flow.
+        # waterfall_v2 instead walks process.md via PhaseExecutor with
+        # explicit acceptance gates + reviewer + halt/resume.
+        if self._process_type == "waterfall_v2":
+            return self._run_waterfall_v2(requirement)
 
         try:
             if global_pm_rt is not None:
@@ -278,6 +291,82 @@ class ProjectSession:
             if global_pm_rt is not None:
                 global_pm_rt._state = AgentState.ACTIVE
                 global_pm_rt._current_task = None
+
+    def _run_waterfall_v2(self, requirement: str) -> str:
+        """Drive a project through waterfall_v2 (process.md-based).
+
+        Wires WaterfallV2Driver (commit c4) into ProjectSession by
+        adapting (role, prompt, expected) callbacks to the existing
+        dispatch_task tool. Reviewer dispatch goes through the same
+        tool with the reviewer's role; agent_model_selection in
+        project_config decides which model each role talks to.
+        """
+        # Build dispatch_task once; adapter closures reuse it.
+        from ..tools.dispatch import make_dispatch_tools
+        from .waterfall_v2_driver import (
+            WaterfallV2Driver,
+            make_observable_produce_fn,
+        )
+
+        tools = make_dispatch_tools(self._ctx)
+        dispatch_task = next(t for t in tools if t.name == "dispatch_task")
+
+        def _dispatch(role: str, prompt: str, expected: list[str] | None) -> str:
+            raw = dispatch_task.invoke(
+                {
+                    "agent_name": role,
+                    "task_description": prompt,
+                    "step_id": f"v2-{role}",
+                    "phase": "waterfall_v2",
+                    "expected_artifacts": list(expected) if expected else None,
+                }
+            )
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                return raw if isinstance(raw, str) else ""
+            payload = parsed.get("payload", {}) if isinstance(parsed, dict) else {}
+            return payload.get("output_preview", "") or ""
+
+        produce_fn = make_observable_produce_fn(
+            lambda role, prompt, expected: _dispatch(role, prompt, list(expected or ()))
+        )
+
+        def reviewer_dispatch(role: str, prompt: str) -> str:
+            # Reviewers go through the same dispatch_task, no expected_artifacts
+            return _dispatch(role, prompt, None)
+
+        if self._project_root is None:
+            raise RuntimeError("waterfall_v2 requires a project_root on the session")
+
+        driver = WaterfallV2Driver(
+            project_root=self._project_root,
+            produce_fn=produce_fn,
+            dispatch_reviewer=reviewer_dispatch,
+        )
+        result = driver.run(requirement)
+        # Emit a final summary event so the web UI sees the run resolution.
+        self._ctx.emit(
+            {
+                "type": "phase_plan",
+                "phases": [p for p in result.completed_phases],
+                "total": len(result.phase_results),
+                "start_phase_idx": 0,
+                "max_dispatches": self._config.safety_limits.max_dispatches,
+                "timestamp": _now(),
+                "process_type": "waterfall_v2",
+                "halted": result.halted,
+            }
+        )
+        if result.halted:
+            return (
+                f"[waterfall_v2 HALTED at phase={result.halt_state.halted_at_phase}]\n"
+                f"reason: {result.halt_state.halt_reason}\n"
+                f"detail: {result.halt_state.failure_summary[:1000]}\n\n"
+                f"Run `aise resume_project <project_id>` to retry from "
+                f"the halted phase after fixing the issue."
+            )
+        return f"[waterfall_v2 COMPLETED] phases: {', '.join(result.completed_phases)}"
 
     @property
     def task_log(self) -> list[dict[str, Any]]:
@@ -454,8 +543,14 @@ class ProjectSession:
         "sprint_design": ("architecture",),
         "main_entry": ("entry_point",),
         "sprint_main_entry": ("entry_point",),
-        "qa_testing": ("qa", "ui_smoke"),
-        "sprint_review": ("qa", "ui_smoke"),
+        # ``scenario_implementation`` (Phase 4.5) is the gate that turns
+        # docs/behavioral_contract.json into per-scenario test files.
+        # Running ``scenarios`` here surfaces missing / failing tests
+        # back to the orchestrator; the QA phase re-checks so a
+        # regression there blocks delivery too.
+        "scenario_implementation": ("scenarios",),
+        "qa_testing": ("qa", "ui_smoke", "scenarios"),
+        "sprint_review": ("qa", "ui_smoke", "scenarios"),
     }
 
     def _apply_dispatch_floor(self, *, reason: str) -> None:
@@ -634,14 +729,19 @@ class ProjectSession:
             entry_point_expectations,
             qa_expectations,
             run_post_step_check,
+            scenario_expectations,
             ui_smoke_expectations,
         )
 
-        factories = {
+        # ``scenarios`` is parametrised by project_root because it
+        # has to read ``docs/behavioral_contract.json`` to know what
+        # to check; the other factories take no args.
+        factories: dict[str, Any] = {
             "architecture": architecture_expectations,
             "entry_point": entry_point_expectations,
             "qa": qa_expectations,
             "ui_smoke": ui_smoke_expectations,
+            "scenarios": lambda: scenario_expectations(self._project_root),
         }
 
         for tag in tags:
@@ -1521,6 +1621,16 @@ class ProjectSession:
                 "Also write the corresponding unit test file (using the\n"
                 "language's test runner) and verify it passes for that\n"
                 "module only (do NOT run the full suite).\n"
+                "Test ONLY the constructor and the initialize / setup\n"
+                "step. Do NOT call the entry's run / main / event loop\n"
+                "from tests, even with mocks — a mocked blocking loop\n"
+                "still does not return and the test process leaks memory\n"
+                "until the host OOMs.\n"
+                "Wrap the test command with an OS-level time + memory\n"
+                "cap so a leaky test cannot take down the host:\n"
+                "    ulimit -v 2097152 && timeout 60 <test command>\n"
+                "(Equivalent on systems without bash:\n"
+                "    prlimit --as=2147483648 -- timeout 60 <cmd>.)\n"
                 "End your response with ONE line in the EXACT format:\n"
                 "    RUN: <command to launch the app from project root>\n"
                 "Examples (alphabetical, pick the row matching your stack):\n"
@@ -1557,6 +1667,53 @@ class ProjectSession:
                 "4. STOP after verification succeeds OR 3 attempts are\n"
                 "   exhausted.\n"
                 "Do NOT call mark_complete.",
+            ),
+            (
+                "scenario_implementation",
+                f"Project requirement: {requirement}\n\n"
+                "Execute Phase 4.5 — Behavioral Scenarios (language-agnostic):\n\n"
+                "1. Read docs/behavioral_contract.json. If the file is\n"
+                "   missing, dispatch architect with this task:\n"
+                "   'Produce docs/behavioral_contract.json per the schema\n"
+                "    in your agent definition. Cover at minimum: process\n"
+                "    boot, the first interaction on the initial screen or\n"
+                "    endpoint, every named view / route, and any state\n"
+                "    persistence the requirement implies.'\n"
+                "   Pass expected_artifacts=['docs/behavioral_contract.json'].\n"
+                "   When it returns, re-read the file and continue.\n\n"
+                "2. For EVERY scenario in scenarios[], build one task entry\n"
+                "   for dispatch_tasks_parallel of this shape:\n"
+                '     {agent_name: "developer",\n'
+                '      step_id: "scenario_<id>",\n'
+                '      phase: "scenario_implementation",\n'
+                "      task_description: 'Implement scenario_id=<id>.\\n"
+                "        Trigger: <trigger json>\\n"
+                "        Effect: <effect json>\\n"
+                "        Description: <scenario.description>\\n"
+                "        Preconditions: <preconditions list>\\n\\n"
+                "        Write tests/scenarios/<id>.<test_ext> using the\n"
+                "        project test_runner. Drive the trigger and\n"
+                "        assert the effect. Do NOT inspect class or\n"
+                "        method names — the contract is observable\n"
+                "        behavior only. When the test goes red, fix the\n"
+                "        source files (under src/ or the language\n"
+                "        idiomatic root) until it passes green. Iterate\n"
+                "        up to 3 attempts. Run ONLY the scenario test\n"
+                "        (<test_runner> tests/scenarios/<id>.<test_ext>),\n"
+                "        not the whole suite.',\n"
+                '      expected_artifacts: ["tests/scenarios/<id>.<test_ext>"]}\n'
+                "   The <test_ext> mapping is fixed by language:\n"
+                "   python→.py, typescript→.ts, javascript→.js,\n"
+                "   go→.go, rust→.rs, java→.java, dart→.dart.\n\n"
+                "3. Call dispatch_tasks_parallel with the JSON-encoded array\n"
+                "   of all scenario tasks. The runtime cap throttles\n"
+                "   concurrency; you do not need to batch.\n\n"
+                "4. After it returns, inspect parallel_results[]. For each\n"
+                "   entry whose status != 'completed', dispatch_task to\n"
+                "   developer ONCE more with the failure detail. Do not\n"
+                "   exceed 2 retry rounds.\n\n"
+                "5. STOP. Do NOT call mark_complete. Do NOT run the full\n"
+                "   test suite — that is Phase 5's job.",
             ),
             (
                 "qa_testing",

@@ -571,17 +571,24 @@ class TestDispatchTaskRetryWithContext:
     def test_retry_on_missing_expected_artifact(self, tmp_path, fake_manager):
         """If ``expected_artifacts`` includes a path that never appears,
         or that appears but is trivially small, the dispatch retries
-        once with context."""
+        up to _MAX_DISPATCH_RETRIES times (3 since c5) with context.
+        After the retry budget is exhausted with the artifact still
+        missing, status becomes "incomplete" (was unconditionally
+        "completed" before c5)."""
         from aise.tools import (
             ToolContext,
             WorkflowState,
         )
         from aise.tools.dispatch import make_dispatch_tools
+        from aise.tools.retry import _MAX_DISPATCH_RETRIES
 
         rt = fake_manager.runtimes["developer"]
-        # Both attempts return non-empty text but the artifact is
-        # never written — the retry fires purely on artifact absence.
-        rt.handle_message.side_effect = ["first output", "second output"]
+        # All attempts return non-empty text but the artifact is
+        # never written. We supply (1 initial + _MAX_DISPATCH_RETRIES)
+        # outputs so the dispatch consumes its full retry budget.
+        rt.handle_message.side_effect = [
+            f"output_{i}" for i in range(_MAX_DISPATCH_RETRIES + 1)
+        ]
         ctx_ = ToolContext(
             manager=fake_manager,
             project_root=tmp_path,
@@ -599,11 +606,16 @@ class TestDispatchTaskRetryWithContext:
                 }
             )
         )
-        assert result["payload"]["retries"] == 1
-        assert rt.handle_message.call_count == 2
-        # Previous response ("first output") must appear verbatim in the retry prompt.
+        # c5: full retry budget consumed AND artifact still missing
+        # ⇒ status="incomplete" with shortfalls list (was unconditionally
+        # "completed" before).
+        assert result["status"] == "incomplete"
+        assert result["payload"]["retries"] == _MAX_DISPATCH_RETRIES
+        assert result["payload"]["shortfalls"] == ["docs/expected.md"]
+        assert rt.handle_message.call_count == _MAX_DISPATCH_RETRIES + 1
+        # Each retry prompt must include the PREVIOUS response verbatim.
         second_prompt = rt.handle_message.call_args_list[1].args[0]
-        assert "first output" in second_prompt
+        assert "output_0" in second_prompt
 
     def test_no_retry_when_artifact_is_present_and_large_enough(self, tmp_path, fake_manager):
         from aise.tools import (
@@ -683,9 +695,15 @@ class TestDispatchTasksParallelForwardsExpectedArtifacts:
             WorkflowState,
         )
         from aise.tools.dispatch import make_dispatch_tools
+        from aise.tools.retry import _MAX_DISPATCH_RETRIES
 
         rt = fake_manager.runtimes["developer"]
-        rt.handle_message.side_effect = ["one", "retry-one", "two", "retry-two"]
+        # Each task gets (1 initial + _MAX_DISPATCH_RETRIES) = 4 attempts;
+        # 2 tasks ⇒ 8 mock outputs total. After all retries the artifact
+        # is still missing → status="incomplete", retries=_MAX_DISPATCH_RETRIES.
+        rt.handle_message.side_effect = [
+            f"out_{i}" for i in range(2 * (_MAX_DISPATCH_RETRIES + 1))
+        ]
         ctx_ = ToolContext(
             manager=fake_manager,
             project_root=tmp_path,
@@ -709,10 +727,12 @@ class TestDispatchTasksParallelForwardsExpectedArtifacts:
             ]
         )
         result = json.loads(parallel.invoke({"tasks_json": payload}))
-        # Each task's artifact is missing → each must retry once.
+        # Each task's artifact is missing → each consumes its full
+        # retry budget and ends status="incomplete".
         assert result["total"] == 2
+        assert result["incomplete"] == 2  # c5 status reporting
         retries = sorted(item["payload"]["retries"] for item in result["parallel_results"])
-        assert retries == [1, 1]
+        assert retries == [_MAX_DISPATCH_RETRIES, _MAX_DISPATCH_RETRIES]
 
 
 # -- Aggregate -------------------------------------------------------------
