@@ -1,0 +1,60 @@
+# Phase-contract test case: main_entry phase against the hello-world
+# Python CLI scenario.
+#
+# Input: post-implementation snapshot (docs/* + src/{greet,version,__init__}
+# + tests/test_{greet,version}). Output expected: src/main.py wires the
+# components per stack_contract.lifecycle_inits[] and contains the
+# canonical Python entry-point guard.
+#
+# Run with:
+#   aise v2-phase-test --case tests/fixtures/v2_phase_io/python_cli_hello_world/main_entry/case.yaml
+
+aise_version: "0.1.0"
+scenario_id: python_cli_hello_world
+phase: main_entry
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a Python CLI tool that prints 'hello, world' when run.
+
+max_review_iterations: 1
+timeout_sec: 1200
+
+assertions:
+  - name: main_entry_present
+    path: src/main.py
+    predicate: file_exists
+
+  - name: main_entry_substantial
+    path: src/main.py
+    predicate:
+      min_bytes: 80
+
+  # -- Canonical Python entry-point guard --
+  - name: has_name_main_guard
+    path: src/main.py
+    predicate:
+      regex_count:
+        pattern: "if __name__ == [\"']__main__[\"']"
+        min: 1
+
+  # -- main_entry must wire the components implementation produced.
+  #    Either by importing them or by referencing the greet module
+  #    directly. Loose coupling: any of "greet", "from .greet", or
+  #    "from src.greet" counts. --
+  - name: main_imports_or_calls_greet
+    path: src/main.py
+    predicate:
+      contains_keywords:
+        any_of: ["from .greet", "from greet", "import greet", "greet("]
+
+  # -- main.py must actually deliver the user requirement. We don't pin
+  #    "print(...)" since some main impls call greet() which itself
+  #    prints; this is the union form. --
+  - name: main_delivers_hello_world
+    path: src/main.py
+    predicate:
+      contains_keywords:
+        any_of: ["hello, world", "hello,world", "greet"]

@@ -43,6 +43,11 @@ where = ["src"]
 [tool.ruff]
 target-version = "py311"
 line-length = 120
+# Phase-test fixtures under tests/fixtures/v2_phase_io/ are *snapshots*
+# of LLM-produced source files — committed verbatim from a successful
+# e2e and must not drift under formatter passes (drift would invalidate
+# the "what the LLM produced" record).
+extend-exclude = ["tests/fixtures/v2_phase_io/**"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
@@ -61,5 +66,13 @@ testpaths = [
     "tests/test_runtime",
     "tests/test_skills",
     "tests/test_system",
+    "tests/test_testing",
 ]
 pythonpath = ["src"]
+# Fixture trees under tests/fixtures/v2_phase_io/<scenario>/<phase>/input/
+# contain LLM-produced ``test_*.py`` files (snapshots from successful e2es).
+# Pytest collection would mis-treat them as actual unit tests because of
+# the ``test_`` prefix. Skip the entire fixture root via addopts so it
+# applies regardless of how pytest is invoked (including ``pytest tests/``
+# which overrides testpaths but inherits addopts).
+addopts = "--ignore=tests/fixtures"

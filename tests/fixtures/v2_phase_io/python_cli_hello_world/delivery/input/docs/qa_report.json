@@ -1,0 +1,33 @@
+{
+  "toolchain_check": {
+    "python": "present",
+    "pytest": "present",
+    "ruff": "present"
+  },
+  "pytest": {
+    "ran": true,
+    "passed": 20,
+    "failed": 0,
+    "skipped": 0,
+    "total": 20
+  },
+  "scenario_tests": {
+    "ran": true,
+    "passed": 10,
+    "failed": 0,
+    "skipped": 0,
+    "total": 10,
+    "files": [
+      "tests/scenarios/test_default_print.py",
+      "tests/scenarios/test_version_flag.py",
+      "tests/scenarios/test_help_flag.py",
+      "tests/scenarios/test_exit_code_zero.py",
+      "tests/scenarios/test_exact_output.py",
+      "tests/scenarios/e2e_default_run.py",
+      "tests/scenarios/e2e_version_run.py",
+      "tests/scenarios/e2e_help_run.py",
+      "tests/scenarios/e2e_exit_codes.py",
+      "tests/scenarios/e2e_invalid_args.py"
+    ]
+  }
+}
