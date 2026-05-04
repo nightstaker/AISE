@@ -330,7 +330,11 @@ class WebProjectService:
             raise ValueError("Project name cannot be empty")
         mode = "github" if development_mode == "github" else "local"
         raw_process = str(process_type or "waterfall").strip().lower()
-        process = raw_process if raw_process in ("waterfall", "agile") else "waterfall"
+        process = (
+            raw_process
+            if raw_process in ("waterfall", "agile", "waterfall_v2")
+            else "waterfall"
+        )
         config = self.project_manager.create_default_project_config(project_name)
         config.development_mode = mode
         config.process_type = process
