@@ -804,7 +804,7 @@ class WebProjectService:
             has_baseline = any(r.status == "completed" and (r.result or "").strip() for r in prior_runs)
             mode = "incremental" if has_baseline else "initial"
             process_type = getattr(project.config, "process_type", "waterfall") or "waterfall"
-            if process_type not in ("waterfall", "agile"):
+            if process_type not in ("waterfall", "agile", "waterfall_v2"):
                 process_type = "waterfall"
             run_id = f"run_{uuid.uuid4().hex[:10]}"
             run = WorkflowRun(
@@ -1419,7 +1419,7 @@ class WebProjectService:
                     if raw_mode not in ("initial", "incremental"):
                         raw_mode = "initial"
                     raw_process = str(item.get("process_type", "waterfall")).strip().lower()
-                    if raw_process not in ("waterfall", "agile"):
+                    if raw_process not in ("waterfall", "agile", "waterfall_v2"):
                         raw_process = "waterfall"
                     failed_idx_raw = item.get("failed_phase_idx", -1)
                     try:
