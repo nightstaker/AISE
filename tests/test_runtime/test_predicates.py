@@ -209,6 +209,69 @@ class TestSchemaPredicate:
         )
         assert not r.passed and "invalid JSON" in r.detail
 
+    def test_event_loop_owner_null_is_valid(self, tmp_path: Path):
+        # Flutter / Bottle-style entry points hand the loop to an external
+        # library (`runApp(app)`, `app.run()`), so architect.md tells the
+        # producer to set event_loop_owner=null. Schema must accept it —
+        # the magic_tower 2026-05-04 e2e halted at architecture because
+        # this branch was missing from the schema even though architect.md
+        # and safety_net/stack_contract.py both treat null as valid.
+        contract = {
+            "language": "dart",
+            "framework_backend": "",
+            "framework_frontend": "flutter",
+            "package_manager": "pub",
+            "test_runner": "flutter test",
+            "entry_point": "lib/main.dart",
+            "run_command": "flutter run",
+            "subsystems": [
+                {
+                    "name": "ui",
+                    "src_dir": "lib/ui",
+                    "components": [{"name": "main_menu", "file": "lib/ui/main_menu.dart"}],
+                }
+            ],
+            "event_loop_owner": None,
+        }
+        (tmp_path / "stack_contract.json").write_text(json.dumps(contract), encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("schema", "schemas/stack_contract.schema.json"),
+            _ctx(tmp_path, "stack_contract.json"),
+        )
+        assert r.passed, r.detail
+
+    def test_event_loop_owner_object_still_valid(self, tmp_path: Path):
+        # Pygame / Qt-with-custom-loop projects fill in a real lifecycle_init
+        # object — the existing branch must keep working after we widen the
+        # schema to accept null.
+        contract = {
+            "language": "python",
+            "framework_backend": "pygame",
+            "package_manager": "pip",
+            "test_runner": "pytest",
+            "entry_point": "src/main.py",
+            "run_command": "python -m src.main",
+            "subsystems": [
+                {
+                    "name": "core",
+                    "src_dir": "src/core",
+                    "components": [{"name": "game", "file": "src/core/game.py"}],
+                }
+            ],
+            "event_loop_owner": {
+                "attr": "dispatcher",
+                "method": "initialize",
+                "class": "EventDispatcher",
+                "module": "src/core/game.py",
+            },
+        }
+        (tmp_path / "stack_contract.json").write_text(json.dumps(contract), encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("schema", "schemas/stack_contract.schema.json"),
+            _ctx(tmp_path, "stack_contract.json"),
+        )
+        assert r.passed, r.detail
+
 
 # -- language_supported ---------------------------------------------------
 

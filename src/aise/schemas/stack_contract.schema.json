@@ -42,7 +42,12 @@
       "type": "array",
       "items": { "$ref": "#/definitions/lifecycle_init" }
     },
-    "event_loop_owner": { "$ref": "#/definitions/lifecycle_init" }
+    "event_loop_owner": {
+      "oneOf": [
+        { "$ref": "#/definitions/lifecycle_init" },
+        { "type": "null" }
+      ]
+    }
   },
   "additionalProperties": true,
 
