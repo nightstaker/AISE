@@ -274,28 +274,43 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
                     on_token_usage=_on_token_usage,
                 )
 
+            # c5: real acceptance check after the retry loop exits.
+            # Previously this branch unconditionally emitted
+            # status="completed" regardless of whether expected_artifacts
+            # were satisfied — orchestrators saw 100% green even when
+            # the gate was failing on every retry. Now: if shortfalls
+            # remain after all retries, status="incomplete" and the
+            # missing artifact list is surfaced in the response.
+            final_shortfalls = _artifact_shortfalls(ctx.project_root, expected_artifacts)
             output_len = len(result)
             preview = result[:500] + "..." if output_len > 500 else result
+            status = "completed" if not final_shortfalls else "incomplete"
+            payload: dict[str, Any] = {
+                "output_preview": preview,
+                "output_length": output_len,
+                "retries": retries_used,
+            }
+            if final_shortfalls:
+                payload["shortfalls"] = final_shortfalls
             response_msg = {
                 "taskId": task_id,
                 "from": agent_name,
                 "to": "orchestrator",
                 "type": "task_response",
-                "status": "completed",
+                "status": status,
                 "timestamp": _now(),
-                "payload": {
-                    "output_preview": preview,
-                    "output_length": output_len,
-                    "retries": retries_used,
-                },
+                "payload": payload,
             }
             ctx.emit(response_msg)
-            logger.info(
-                "Task completed: task=%s from=%s output=%d chars retries=%d",
+            log_fn = logger.info if status == "completed" else logger.warning
+            log_fn(
+                "Task %s: task=%s from=%s output=%d chars retries=%d shortfalls=%d",
+                status,
                 task_id,
                 agent_name,
                 output_len,
                 retries_used,
+                len(final_shortfalls),
             )
             return json.dumps(response_msg, ensure_ascii=False)
         except Exception as exc:
@@ -359,12 +374,14 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
 
         ok = sum(1 for r in results if r.get("status") == "completed")
         fail = sum(1 for r in results if r.get("status") == "failed")
+        incomplete = sum(1 for r in results if r.get("status") == "incomplete")
         return json.dumps(
             {
                 "parallel_results": results,
                 "total": len(results),
                 "completed": ok,
                 "failed": fail,
+                "incomplete": incomplete,
             },
             ensure_ascii=False,
         )
@@ -466,7 +483,13 @@ def make_dispatch_tools(ctx: ToolContext) -> list[BaseTool]:
                         "expected_artifacts": [p for p in (cf, tfile) if p],
                     }
                 )
-            skel_expected.append(interface_path)
+            # Empty interface_path means the language has no
+            # per-folder barrel convention (C# / Unity / .NET /
+            # Kotlin / Swift / unknown). Skip the artifact entry so
+            # we don't demand a phantom ``__init__.py`` from a stack
+            # that doesn't use one.
+            if interface_path:
+                skel_expected.append(interface_path)
 
             subsystem_plans.append(
                 {
