@@ -265,9 +265,7 @@ class TestSchemaFilesAreValid:
     @pytest.fixture
     def schemas_dir(self) -> Path:
         # tests/test_runtime/test_waterfall_v2_loader.py → up 2 → repo
-        return (
-            Path(__file__).resolve().parent.parent.parent / "src" / "aise" / "schemas"
-        )
+        return Path(__file__).resolve().parent.parent.parent / "src" / "aise" / "schemas"
 
     def test_all_schema_files_parse(self, schemas_dir: Path):
         files = list(schemas_dir.glob("*.schema.json"))

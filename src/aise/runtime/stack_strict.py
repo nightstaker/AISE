@@ -50,9 +50,7 @@ def _load_module_from_file(name: str, rel_path: str):
     return mod
 
 
-_stack_contract_mod = _load_module_from_file(
-    "_c12_stack_contract", "tools/stack_contract.py"
-)
+_stack_contract_mod = _load_module_from_file("_c12_stack_contract", "tools/stack_contract.py")
 
 # Start from the legacy table (which has python / typescript / javascript /
 # go / rust / java / dart). We overlay csharp / kotlin / swift here so this
@@ -61,9 +59,7 @@ _stack_contract_mod = _load_module_from_file(
 # ``aise.tools.dispatch`` callers (legacy flow) still hit the silent Python
 # fallback for csharp — that fallback will be removed in a follow-up
 # cleanup PR after all callers have migrated to ``stack_strict``.
-_LANGUAGE_TOOLCHAIN: dict[str, dict[str, str]] = dict(
-    _stack_contract_mod._LANGUAGE_TOOLCHAIN
-)
+_LANGUAGE_TOOLCHAIN: dict[str, dict[str, str]] = dict(_stack_contract_mod._LANGUAGE_TOOLCHAIN)
 _LANGUAGE_TOOLCHAIN.setdefault(
     "csharp",
     {
@@ -98,6 +94,7 @@ _INTERFACE_FILENAME: dict[str, str] = dict(_stack_contract_mod._INTERFACE_FILENA
 for _no_barrel_lang in ("csharp", "cs", "kotlin", "swift"):
     _INTERFACE_FILENAME.setdefault(_no_barrel_lang, "")
 
+
 def _interface_module_path(language: str, subsystem_name: str, src_dir: str) -> str:
     """Resolve the per-language barrel file path. Mirrors the legacy
     helper but reads from this module's overlaid ``_INTERFACE_FILENAME``
@@ -110,6 +107,7 @@ def _interface_module_path(language: str, subsystem_name: str, src_dir: str) -> 
     if fname == "<subsystem>.dart":
         fname = f"{subsystem_name}.dart"
     return f"{base}/{fname}"
+
 
 # Per-language scenario test-file extension. Must mirror the table in
 # the scenario verification phase. The previous ``project_1-tower``
@@ -143,9 +141,7 @@ _LANGUAGE_TEST_EXT: dict[str, str] = {
 # "no barrel file convention"). Exclude them from the "must be in
 # _INTERFACE_FILENAME" supported set since their entry is the empty
 # sentinel, not a real filename.
-_LANGUAGES_WITHOUT_BARREL: frozenset[str] = frozenset(
-    {"csharp", "cs", "kotlin", "swift"}
-)
+_LANGUAGES_WITHOUT_BARREL: frozenset[str] = frozenset({"csharp", "cs", "kotlin", "swift"})
 
 
 class UnsupportedLanguageError(ValueError):
@@ -177,9 +173,7 @@ def get_toolchain(language: str) -> dict[str, Any]:
     norm = _norm(language)
     row = _LANGUAGE_TOOLCHAIN.get(norm)
     if row is None:
-        raise UnsupportedLanguageError(
-            norm, "_LANGUAGE_TOOLCHAIN", sorted(_LANGUAGE_TOOLCHAIN.keys())
-        )
+        raise UnsupportedLanguageError(norm, "_LANGUAGE_TOOLCHAIN", sorted(_LANGUAGE_TOOLCHAIN.keys()))
     return row
 
 
@@ -195,9 +189,7 @@ def get_interface_filename(language: str, subsystem_name: str, src_dir: str) -> 
     """
     norm = _norm(language)
     if norm not in _INTERFACE_FILENAME:
-        raise UnsupportedLanguageError(
-            norm, "_INTERFACE_FILENAME", sorted(_INTERFACE_FILENAME.keys())
-        )
+        raise UnsupportedLanguageError(norm, "_INTERFACE_FILENAME", sorted(_INTERFACE_FILENAME.keys()))
     return _interface_module_path(norm, subsystem_name, src_dir)
 
 
@@ -206,19 +198,13 @@ def get_test_extension(language: str) -> str:
     norm = _norm(language)
     ext = _LANGUAGE_TEST_EXT.get(norm)
     if ext is None:
-        raise UnsupportedLanguageError(
-            norm, "_LANGUAGE_TEST_EXT", sorted(_LANGUAGE_TEST_EXT.keys())
-        )
+        raise UnsupportedLanguageError(norm, "_LANGUAGE_TEST_EXT", sorted(_LANGUAGE_TEST_EXT.keys()))
     return ext
 
 
 def registered_languages() -> list[str]:
     """Union of languages declared across all 3 tables."""
-    return sorted(
-        set(_LANGUAGE_TOOLCHAIN)
-        | set(_INTERFACE_FILENAME)
-        | set(_LANGUAGE_TEST_EXT)
-    )
+    return sorted(set(_LANGUAGE_TOOLCHAIN) | set(_INTERFACE_FILENAME) | set(_LANGUAGE_TEST_EXT))
 
 
 def language_has_no_barrel(language: str) -> bool:

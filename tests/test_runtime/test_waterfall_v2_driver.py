@@ -30,19 +30,17 @@ def _passing_produce(tmp_path: Path):
             encoding="utf-8",
         )
         (docs / "requirement_contract.json").write_text(
-            json.dumps({
-                "functional_requirements": [
-                    {"id": "FR-001", "title": "t", "description": "d"}
-                ],
-                "non_functional_requirements": [],
-            }),
+            json.dumps(
+                {
+                    "functional_requirements": [{"id": "FR-001", "title": "t", "description": "d"}],
+                    "non_functional_requirements": [],
+                }
+            ),
             encoding="utf-8",
         )
 
         # Phase 2
-        (docs / "architecture.md").write_text(
-            "# Architecture\n" + "x" * 5500, encoding="utf-8"
-        )
+        (docs / "architecture.md").write_text("# Architecture\n" + "x" * 5500, encoding="utf-8")
         sc = {
             "language": "python",
             "framework_backend": "none",
@@ -64,38 +62,26 @@ def _passing_produce(tmp_path: Path):
         }
         (docs / "stack_contract.json").write_text(json.dumps(sc), encoding="utf-8")
         bc = {
-            "scenarios": [
-                {"id": f"s{i}", "name": f"S{i}", "trigger": {"x": i}, "effect": {"y": i}}
-                for i in range(5)
-            ]
+            "scenarios": [{"id": f"s{i}", "name": f"S{i}", "trigger": {"x": i}, "effect": {"y": i}} for i in range(5)]
         }
         (docs / "behavioral_contract.json").write_text(json.dumps(bc), encoding="utf-8")
 
         # Phase 3 fanout: write the component file + entry point
         (tmp_path / "src" / "core").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "src" / "core" / "router.py").write_text(
-            "# router stub\n" + "x" * 200, encoding="utf-8"
-        )
-        (tmp_path / "src" / "core" / "__init__.py").write_text(
-            "# barrel\n" + "x" * 200, encoding="utf-8"
-        )
-        (tmp_path / "src" / "main.py").write_text(
-            "# entry\n" + "x" * 200, encoding="utf-8"
-        )
+        (tmp_path / "src" / "core" / "router.py").write_text("# router stub\n" + "x" * 200, encoding="utf-8")
+        (tmp_path / "src" / "core" / "__init__.py").write_text("# barrel\n" + "x" * 200, encoding="utf-8")
+        (tmp_path / "src" / "main.py").write_text("# entry\n" + "x" * 200, encoding="utf-8")
 
         # Phase 5 fanout: write scenario tests
         (tmp_path / "tests" / "scenarios").mkdir(parents=True, exist_ok=True)
         for sid in (f"s{i}" for i in range(5)):
-            (tmp_path / "tests" / "scenarios" / f"{sid}.py").write_text(
-                "# scenario\n" + "x" * 250, encoding="utf-8"
-            )
+            (tmp_path / "tests" / "scenarios" / f"{sid}.py").write_text("# scenario\n" + "x" * 250, encoding="utf-8")
 
         # Phase 6 delivery
         (docs / "delivery_report.md").write_text(
             "## 验收结论\nok.\n## 已知 issue\nnone.\n## 下一步建议\nship.\n"
             "Built per docs/requirement.md and docs/architecture.md.\n"
-            "Stack: docs/stack_contract.json. Behavior: docs/behavioral_contract.json.\n"
-            + "x" * 1500,
+            "Stack: docs/stack_contract.json. Behavior: docs/behavioral_contract.json.\n" + "x" * 1500,
             encoding="utf-8",
         )
 
@@ -225,13 +211,11 @@ class TestHaltAndResume:
         # New halt should NOT regress to a phase earlier than main_entry
         # (the resume started there). Acceptable values: main_entry or
         # any phase after it.
-        phase_order = ("requirements", "architecture", "implementation",
-                       "main_entry", "verification", "delivery")
+        phase_order = ("requirements", "architecture", "implementation", "main_entry", "verification", "delivery")
         new_idx = phase_order.index(new_halt.halted_at_phase)
         main_entry_idx = phase_order.index("main_entry")
         assert new_idx >= main_entry_idx, (
-            f"resume must not regress; halted at {new_halt.halted_at_phase} "
-            f"but resume started at main_entry"
+            f"resume must not regress; halted at {new_halt.halted_at_phase} but resume started at main_entry"
         )
 
 
@@ -263,6 +247,7 @@ class TestObservableProduceFnWrapper:
     def test_registers_and_marks_failed_on_exception(self, tmp_path: Path):
         get_registry().clear()
         try:
+
             def underlying(role, prompt, expected):
                 raise RuntimeError("boom")
 

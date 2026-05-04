@@ -41,9 +41,7 @@ def _make_stack_contract(tmp_path: Path) -> dict:
         "lifecycle_inits": [],
     }
     (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "docs" / "stack_contract.json").write_text(
-        json.dumps(sc), encoding="utf-8"
-    )
+    (tmp_path / "docs" / "stack_contract.json").write_text(json.dumps(sc), encoding="utf-8")
     return sc
 
 
@@ -60,9 +58,7 @@ def _make_behavioral_contract(tmp_path: Path, *, n: int = 5) -> dict:
             for i in range(n)
         ]
     }
-    (tmp_path / "docs" / "behavioral_contract.json").write_text(
-        json.dumps(bc), encoding="utf-8"
-    )
+    (tmp_path / "docs" / "behavioral_contract.json").write_text(json.dumps(bc), encoding="utf-8")
     return bc
 
 
@@ -92,13 +88,10 @@ class TestSingleWriterPhase:
         # Materialize a passing requirement.md and requirement_contract.json
         body = (
             "# 项目\n\n## 功能需求\nFR-001 something\n\n"
-            "## 非功能需求\nNFR-001 perf\n\n## 用例\nUC-001\n"
-            + "x" * 2500  # min_bytes=2000
+            "## 非功能需求\nNFR-001 perf\n\n## 用例\nUC-001\n" + "x" * 2500  # min_bytes=2000
         )
         contract = {
-            "functional_requirements": [
-                {"id": "FR-001", "title": "t", "description": "d"}
-            ],
+            "functional_requirements": [{"id": "FR-001", "title": "t", "description": "d"}],
             "non_functional_requirements": [],
         }
         produce = _writes_to(
@@ -135,16 +128,24 @@ class TestSingleWriterPhase:
                 # Tiny file → fails min_bytes
                 (tmp_path / "docs" / "requirement.md").write_text("hi", encoding="utf-8")
                 (tmp_path / "docs" / "requirement_contract.json").write_text(
-                    json.dumps({"functional_requirements": [{"id": "FR-001", "title": "t", "description": "d"}], "non_functional_requirements": []}),
+                    json.dumps(
+                        {
+                            "functional_requirements": [{"id": "FR-001", "title": "t", "description": "d"}],
+                            "non_functional_requirements": [],
+                        }
+                    ),
                     encoding="utf-8",
                 )
             else:
-                body = (
-                    "## 功能需求\nFR-001\n## 非功能需求\nNFR-001\n## 用例\n" + "x" * 2500
-                )
+                body = "## 功能需求\nFR-001\n## 非功能需求\nNFR-001\n## 用例\n" + "x" * 2500
                 (tmp_path / "docs" / "requirement.md").write_text(body, encoding="utf-8")
                 (tmp_path / "docs" / "requirement_contract.json").write_text(
-                    json.dumps({"functional_requirements": [{"id": "FR-001", "title": "t", "description": "d"}], "non_functional_requirements": []}),
+                    json.dumps(
+                        {
+                            "functional_requirements": [{"id": "FR-001", "title": "t", "description": "d"}],
+                            "non_functional_requirements": [],
+                        }
+                    ),
                     encoding="utf-8",
                 )
             return "ok"
@@ -188,9 +189,7 @@ class TestReviewerInteraction:
     def test_passed_with_unresolved_review_when_budget_exhausted(self, tmp_path: Path):
         spec = load_waterfall_v2(default_waterfall_v2_path())
         req_phase = spec.phase_by_id("requirements")
-        body = (
-            "## 功能需求\nFR-001\n## 非功能需求\nNFR\n## 用例\n" + "x" * 2500
-        )
+        body = "## 功能需求\nFR-001\n## 非功能需求\nNFR\n## 用例\n" + "x" * 2500
         contract = {
             "functional_requirements": [{"id": "FR-001", "title": "t", "description": "d"}],
             "non_functional_requirements": [],
@@ -250,9 +249,7 @@ class TestReviewerInteraction:
         result = PhaseResult(phase_id="architecture", status=PhaseStatus.PASSED)
         assert result.phase_tag(1) == "phase_2_architecture_done"
 
-        result_pending = PhaseResult(
-            phase_id="implementation", status=PhaseStatus.PASSED_WITH_UNRESOLVED_REVIEW
-        )
+        result_pending = PhaseResult(phase_id="implementation", status=PhaseStatus.PASSED_WITH_UNRESOLVED_REVIEW)
         assert result_pending.phase_tag(2) == "phase_3_implementation_done_review_pending"
 
 

@@ -70,9 +70,7 @@ class TaskSnapshot:
             "elapsed_seconds": round(self.elapsed_seconds, 1),
             "llm_call_count": self.llm_call_count,
             "last_llm_call_seconds_ago": (
-                round(self.last_llm_call_seconds_ago, 1)
-                if self.last_llm_call_seconds_ago is not None
-                else None
+                round(self.last_llm_call_seconds_ago, 1) if self.last_llm_call_seconds_ago is not None else None
             ),
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
@@ -206,11 +204,7 @@ class TaskRegistry:
         with self._lock:
             now = monotonic()
             return sorted(
-                (
-                    rec.snapshot(now)
-                    for rec in self._records.values()
-                    if rec.status == "running"
-                ),
+                (rec.snapshot(now) for rec in self._records.values() if rec.status == "running"),
                 key=lambda s: -s.started_at_monotonic,
             )
 

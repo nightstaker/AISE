@@ -300,10 +300,7 @@ class TestSummarizationPatch:
         )
 
         if not hasattr(da_graph, "_compute_summarization_defaults"):
-            pytest.skip(
-                "deepagents.graph._compute_summarization_defaults absent on "
-                "this version — patch is a no-op"
-            )
+            pytest.skip("deepagents.graph._compute_summarization_defaults absent on this version — patch is a no-op")
 
         # Running a second time must not re-wrap the already-patched function.
         _install_summarization_max_arg_length_patch()

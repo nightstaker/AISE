@@ -74,6 +74,7 @@ class TestLsLoopDetector:
             backend.ls_info("/")
         # 5th raises
         import pytest as _pt
+
         with _pt.raises(RuntimeError, match="LOOP_DETECTED"):
             backend.ls_info("/")
 

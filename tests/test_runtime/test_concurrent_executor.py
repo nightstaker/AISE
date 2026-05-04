@@ -63,9 +63,7 @@ class TestRunParallel:
             completed.add(t.id)
             return _ok(t)
 
-        tasks = [Task(id="fast_fail", payload=0)] + [
-            Task(id=f"slow_{i}", payload=i) for i in range(4)
-        ]
+        tasks = [Task(id="fast_fail", payload=0)] + [Task(id=f"slow_{i}", payload=i) for i in range(4)]
         sr = run_parallel(tasks, fn, max_workers=5)
         assert not sr.passed
         # All 4 slow tasks should have completed

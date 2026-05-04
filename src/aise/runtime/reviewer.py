@@ -198,10 +198,7 @@ def build_reviewer_prompt(
     blocks.append("")
     blocks.append("[REQUIRED RESPONSE FORMAT]")
     blocks.append("First line MUST be exactly one of: PASS / REVISE / REJECT")
-    blocks.append(
-        "Subsequent lines: free-form feedback. For REVISE, list the "
-        "specific gaps the producer must fix."
-    )
+    blocks.append("Subsequent lines: free-form feedback. For REVISE, list the specific gaps the producer must fix.")
     return "\n".join(blocks)
 
 
@@ -226,9 +223,7 @@ def run_review_round(
     feedbacks: list[ReviewerFeedback] = []
     for role in reviewer_roles:
         question = reviewer_questions.get(role, "Review the deliverables and verdict PASS / REVISE / REJECT.")
-        prompt = build_reviewer_prompt(
-            deliverable_paths, question, project_root=ctx.project_root
-        )
+        prompt = build_reviewer_prompt(deliverable_paths, question, project_root=ctx.project_root)
         try:
             raw = ctx.dispatch_reviewer(role, prompt)
         except Exception as exc:

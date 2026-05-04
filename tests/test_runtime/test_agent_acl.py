@@ -80,9 +80,7 @@ class TestDefaultAcl:
         assert not check_write("qa_engineer", "docs/architecture.md").allowed
 
     def test_pm_writes_delivery_report(self):
-        assert check_write(
-            "project_manager", "docs/delivery_report.md"
-        ).allowed
+        assert check_write("project_manager", "docs/delivery_report.md").allowed
         # PM does NOT touch source
         assert not check_write("project_manager", "src/main.py").allowed
 

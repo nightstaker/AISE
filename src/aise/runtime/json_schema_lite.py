@@ -54,9 +54,7 @@ def _resolve_ref(ref: str, root: dict[str, Any]) -> dict[str, Any]:
     return node
 
 
-def _validate_node(
-    value: Any, schema: dict[str, Any], root: dict[str, Any], path: str
-) -> list[str]:
+def _validate_node(value: Any, schema: dict[str, Any], root: dict[str, Any], path: str) -> list[str]:
     errors: list[str] = []
 
     # $ref short-circuit
@@ -65,16 +63,9 @@ def _validate_node(
 
     # oneOf — one and only one must validate
     if "oneOf" in schema:
-        matches = sum(
-            1
-            for sub in schema["oneOf"]
-            if not _validate_node(value, sub, root, path)
-        )
+        matches = sum(1 for sub in schema["oneOf"] if not _validate_node(value, sub, root, path))
         if matches != 1:
-            errors.append(
-                f"{path}: must match exactly one of oneOf branches "
-                f"(matched {matches})"
-            )
+            errors.append(f"{path}: must match exactly one of oneOf branches (matched {matches})")
         return errors
 
     # const
@@ -96,9 +87,7 @@ def _validate_node(
         if "minLength" in schema and len(value) < schema["minLength"]:
             errors.append(f"{path}: minLength={schema['minLength']}, got len={len(value)}")
         if "pattern" in schema and not re.search(schema["pattern"], value):
-            errors.append(
-                f"{path}: must match pattern {schema['pattern']!r}, got {value!r}"
-            )
+            errors.append(f"{path}: must match pattern {schema['pattern']!r}, got {value!r}")
 
     # numeric-specific
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -112,20 +101,14 @@ def _validate_node(
         item_schema = schema.get("items")
         if item_schema is not None:
             for i, item in enumerate(value):
-                errors.extend(
-                    _validate_node(item, item_schema, root, f"{path}[{i}]")
-                )
+                errors.extend(_validate_node(item, item_schema, root, f"{path}[{i}]"))
 
     # object-specific
     if isinstance(value, dict):
         if "minProperties" in schema and len(value) < schema["minProperties"]:
-            errors.append(
-                f"{path}: minProperties={schema['minProperties']}, got len={len(value)}"
-            )
+            errors.append(f"{path}: minProperties={schema['minProperties']}, got len={len(value)}")
         if "maxProperties" in schema and len(value) > schema["maxProperties"]:
-            errors.append(
-                f"{path}: maxProperties={schema['maxProperties']}, got len={len(value)}"
-            )
+            errors.append(f"{path}: maxProperties={schema['maxProperties']}, got len={len(value)}")
         for req in schema.get("required", []):
             if req not in value:
                 errors.append(f"{path}: missing required property {req!r}")

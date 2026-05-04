@@ -246,9 +246,7 @@ def enumerate_subsystem_dag_tasks(
     Stage ``component``: 1 task per (subsystem, component) pair.
     """
     subsystems = stack_contract.get("subsystems", []) or []
-    out: dict[str, list[Task[FanoutTaskPayload]]] = {
-        s.id: [] for s in fanout.stages
-    }
+    out: dict[str, list[Task[FanoutTaskPayload]]] = {s.id: [] for s in fanout.stages}
     for ss in subsystems:
         sname = ss.get("name", "?")
         # Skeleton task
@@ -264,9 +262,7 @@ def enumerate_subsystem_dag_tasks(
                 expected_artifacts=comp_files,
                 subsystem=sname,
             )
-            out["skeleton"].append(
-                Task(id=f"skeleton.{sname}", payload=payload)
-            )
+            out["skeleton"].append(Task(id=f"skeleton.{sname}", payload=payload))
         # Component tasks
         if "component" in out:
             for comp in ss.get("components", []) or []:
@@ -287,9 +283,7 @@ def enumerate_subsystem_dag_tasks(
                     subsystem=sname,
                     component=cname,
                 )
-                out["component"].append(
-                    Task(id=f"component.{sname}.{cname}", payload=payload)
-                )
+                out["component"].append(Task(id=f"component.{sname}.{cname}", payload=payload))
     return out
 
 
@@ -304,21 +298,23 @@ def enumerate_scenario_parallel_tasks(
     language = stack_contract.get("language", "python").lower()
     # Conservative ext map — same set as in waterfall_v2.process.md prompt
     ext = {
-        "python": ".py", "py": ".py",
-        "typescript": ".ts", "ts": ".ts",
-        "javascript": ".js", "js": ".js",
+        "python": ".py",
+        "py": ".py",
+        "typescript": ".ts",
+        "ts": ".ts",
+        "javascript": ".js",
+        "js": ".js",
         "go": ".go",
         "rust": ".rs",
         "java": ".java",
         "dart": ".dart",
-        "csharp": ".cs", "cs": ".cs",
+        "csharp": ".cs",
+        "cs": ".cs",
         "kotlin": ".kt",
         "swift": ".swift",
     }.get(language, ".py")
 
-    out: dict[str, list[Task[FanoutTaskPayload]]] = {
-        s.id: [] for s in fanout.stages
-    }
+    out: dict[str, list[Task[FanoutTaskPayload]]] = {s.id: [] for s in fanout.stages}
     stage_id = fanout.stages[0].id  # scenario_parallel has one stage
     for scenario in scenarios:
         sid = scenario.get("id")
@@ -436,14 +432,11 @@ class PhaseExecutor:
                 f"[AUTO-GATE FEEDBACK]\n"
                 f"Your previous attempt's deliverables failed automated checks:\n"
                 f"{failure_text}\n\n"
-                f"Fix the above and re-produce. ---\n\n"
-                + self._call_build_phase_prompt(phase, requirement)
+                f"Fix the above and re-produce. ---\n\n" + self._call_build_phase_prompt(phase, requirement)
             )
         else:
             # Loop exhausted without AUTO_GATE pass → halt
-            failure_text = "\n\n".join(
-                r.summary() for r in deliverable_reports if not r.passed
-            )
+            failure_text = "\n\n".join(r.summary() for r in deliverable_reports if not r.passed)
             logger.warning(
                 "PhaseExecutor: phase=%s auto_gate exhausted after %d attempts",
                 phase.id,
@@ -511,9 +504,7 @@ class PhaseExecutor:
         fanout = phase.fanout
         strategy = fanout.strategy
         if strategy == "subsystem_dag":
-            tasks_per_stage = enumerate_subsystem_dag_tasks(
-                fanout, self.stack_contract or {}, phase.producer
-            )
+            tasks_per_stage = enumerate_subsystem_dag_tasks(fanout, self.stack_contract or {}, phase.producer)
         elif strategy == "scenario_parallel":
             tasks_per_stage = enumerate_scenario_parallel_tasks(
                 fanout,
@@ -544,10 +535,7 @@ class PhaseExecutor:
                     detail=f"produce_fn raised {type(exc).__name__}: {exc}",
                 )
             # Gate the task by checking its expected_artifacts exist on disk.
-            missing = [
-                p for p in payload.expected_artifacts
-                if not (self.project_root / p.lstrip("/")).is_file()
-            ]
+            missing = [p for p in payload.expected_artifacts if not (self.project_root / p.lstrip("/")).is_file()]
             if missing:
                 return TaskResult(
                     task_id=t.id,
@@ -692,10 +680,17 @@ class PhaseExecutor:
                 # Match the same ext mapping used for fanout enumeration
                 language = (self.stack_contract or {}).get("language", "python").lower()
                 ext_map = {
-                    "python": ".py", "typescript": ".ts", "javascript": ".js",
-                    "go": ".go", "rust": ".rs", "java": ".java",
-                    "dart": ".dart", "csharp": ".cs", "cs": ".cs",
-                    "kotlin": ".kt", "swift": ".swift",
+                    "python": ".py",
+                    "typescript": ".ts",
+                    "javascript": ".js",
+                    "go": ".go",
+                    "rust": ".rs",
+                    "java": ".java",
+                    "dart": ".dart",
+                    "csharp": ".cs",
+                    "cs": ".cs",
+                    "kotlin": ".kt",
+                    "swift": ".swift",
                 }
                 ext = ext_map.get(language, ".py")
                 return [
@@ -787,9 +782,7 @@ class PhaseExecutor:
         lines.append("- When done, reply with a one-line summary; do NOT call any 'mark_complete' tool.")
         return "\n".join(lines)
 
-    def _run_review_loop(
-        self, phase: PhaseSpec, requirement: str
-    ) -> ReviewLoopResult:
+    def _run_review_loop(self, phase: PhaseSpec, requirement: str) -> ReviewLoopResult:
         assert phase.review is not None
         ctx = ReviewerContext(
             project_root=self.project_root,

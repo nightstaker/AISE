@@ -25,9 +25,7 @@ class TestParseVerdict:
         assert v == "PASS" and fb == "Looks good."
 
     def test_revise_with_bullets(self):
-        v, fb = parse_verdict(
-            "REVISE\nMissing sections:\n- 功能需求\n- 用例"
-        )
+        v, fb = parse_verdict("REVISE\nMissing sections:\n- 功能需求\n- 用例")
         assert v == "REVISE"
         assert "功能需求" in fb and "用例" in fb
 
@@ -54,9 +52,7 @@ class TestParseVerdict:
         assert "empty" in fb
 
     def test_verdict_in_middle_takes_first(self):
-        v, fb = parse_verdict(
-            "Some preamble.\nREVISE\nThe real verdict."
-        )
+        v, fb = parse_verdict("Some preamble.\nREVISE\nThe real verdict.")
         # First match wins — but preamble is before, so we look line-by-line
         # for first match. The preamble line doesn't match \b(PASS|REVISE|REJECT)\b
         # at start, so REVISE on line 2 wins.
@@ -99,18 +95,14 @@ class TestBuildPrompt:
     def test_lists_files_with_sizes(self, tmp_path: Path):
         f = tmp_path / "x.md"
         f.write_text("hello", encoding="utf-8")
-        prompt = build_reviewer_prompt(
-            [f], "Is this good?", project_root=tmp_path
-        )
+        prompt = build_reviewer_prompt([f], "Is this good?", project_root=tmp_path)
         assert "[DELIVERABLES UNDER REVIEW]" in prompt
         assert "x.md (5 bytes)" in prompt
         assert "Is this good?" in prompt
         assert "PASS / REVISE / REJECT" in prompt
 
     def test_marks_missing_files(self, tmp_path: Path):
-        prompt = build_reviewer_prompt(
-            [tmp_path / "nope.md"], "?", project_root=tmp_path
-        )
+        prompt = build_reviewer_prompt([tmp_path / "nope.md"], "?", project_root=tmp_path)
         assert "MISSING" in prompt
 
     def test_handles_empty_deliverables(self, tmp_path: Path):
@@ -148,9 +140,7 @@ class TestPrependFeedback:
         assert out == "TASK"
 
     def test_empty_feedback_text_uses_placeholder(self):
-        out = prepend_reviewer_feedback(
-            "TASK", [ReviewerFeedback("dev", "REVISE", "")]
-        )
+        out = prepend_reviewer_feedback("TASK", [ReviewerFeedback("dev", "REVISE", "")])
         assert "(no specific feedback)" in out
 
 
@@ -216,9 +206,7 @@ class TestRunReviewRound:
 
 class TestRunReviewLoop:
     def test_passes_on_first_round(self, tmp_path: Path):
-        ctx = ReviewerContext(
-            project_root=tmp_path, dispatch_reviewer=lambda r, p: "PASS"
-        )
+        ctx = ReviewerContext(project_root=tmp_path, dispatch_reviewer=lambda r, p: "PASS")
 
         def revise_cb(feedbacks):
             raise AssertionError("revise should not be called when first round passes")
@@ -247,9 +235,7 @@ class TestRunReviewLoop:
         def revise_cb(feedbacks):
             revise_calls.append(len(feedbacks))
 
-        result = run_review_loop(
-            ["dev"], {"dev": "?"}, lambda: [], ctx, revise_cb, revise_budget=3
-        )
+        result = run_review_loop(["dev"], {"dev": "?"}, lambda: [], ctx, revise_cb, revise_budget=3)
         assert result.passed
         assert result.iterations_used == 1
         assert revise_calls == [1]
@@ -266,9 +252,7 @@ class TestRunReviewLoop:
         def revise_cb(feedbacks):
             revise_calls.append(len(feedbacks))
 
-        result = run_review_loop(
-            ["dev"], {"dev": "?"}, lambda: [], ctx, revise_cb, revise_budget=3
-        )
+        result = run_review_loop(["dev"], {"dev": "?"}, lambda: [], ctx, revise_cb, revise_budget=3)
         assert not result.passed
         assert result.exhausted
         assert result.passed_with_unresolved_review
@@ -312,6 +296,8 @@ class TestReviewLoopResultHelpers:
         c_pass = ConsensusResult(feedbacks=(ReviewerFeedback("a", "PASS"),), consensus_pass=True)
         c_fail = ConsensusResult(feedbacks=(ReviewerFeedback("a", "REVISE"),), consensus_pass=False)
         assert not ReviewLoopResult(c_pass, 0, 3, exhausted=False).passed_with_unresolved_review
-        assert not ReviewLoopResult(c_pass, 0, 3, exhausted=True).passed_with_unresolved_review  # contradictory but defensive
+        assert not ReviewLoopResult(
+            c_pass, 0, 3, exhausted=True
+        ).passed_with_unresolved_review  # contradictory but defensive
         assert not ReviewLoopResult(c_fail, 3, 3, exhausted=False).passed_with_unresolved_review
         assert ReviewLoopResult(c_fail, 3, 3, exhausted=True).passed_with_unresolved_review

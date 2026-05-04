@@ -200,10 +200,7 @@ def check_write(role: str, path: str) -> AclDecision:
         allowed=False,
         role=role,
         path=path,
-        detail=(
-            f"role {role!r} may not write {path!r}. Allowed globs: "
-            f"{list(globs)}"
-        ),
+        detail=(f"role {role!r} may not write {path!r}. Allowed globs: {list(globs)}"),
     )
 
 

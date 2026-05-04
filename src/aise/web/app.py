@@ -330,11 +330,7 @@ class WebProjectService:
             raise ValueError("Project name cannot be empty")
         mode = "github" if development_mode == "github" else "local"
         raw_process = str(process_type or "waterfall").strip().lower()
-        process = (
-            raw_process
-            if raw_process in ("waterfall", "agile", "waterfall_v2")
-            else "waterfall"
-        )
+        process = raw_process if raw_process in ("waterfall", "agile", "waterfall_v2") else "waterfall"
         config = self.project_manager.create_default_project_config(project_name)
         config.development_mode = mode
         config.process_type = process
@@ -2154,15 +2150,11 @@ def create_app() -> FastAPI:
             requirements = project.get("requirements") or []
             if isinstance(requirements, list) and requirements:
                 last = requirements[-1]
-                existing_req = (
-                    last.get("text", "") if isinstance(last, dict) else str(last)
-                )
+                existing_req = last.get("text", "") if isinstance(last, dict) else str(last)
         except Exception:
             existing_req = ""
         try:
-            run_id = service.run_requirement(
-                project_id, existing_req or "(resume halted run)"
-            )
+            run_id = service.run_requirement(project_id, existing_req or "(resume halted run)")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {

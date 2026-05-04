@@ -92,11 +92,7 @@ class ProjectSession:
         raw_mode = str(mode or "initial").strip().lower()
         self._mode = raw_mode if raw_mode in ("initial", "incremental") else "initial"
         raw_process = str(process_type or "waterfall").strip().lower()
-        self._process_type = (
-            raw_process
-            if raw_process in ("waterfall", "agile", "waterfall_v2")
-            else "waterfall"
-        )
+        self._process_type = raw_process if raw_process in ("waterfall", "agile", "waterfall_v2") else "waterfall"
         try:
             start_idx = int(start_phase_idx)
         except (TypeError, ValueError):

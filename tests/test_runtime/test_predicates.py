@@ -47,6 +47,7 @@ class TestRegistry:
             return PredicateResult("__test_unique_kind_xyz", True)
 
         with pytest.raises(ValueError, match="already registered"):
+
             @register("__test_unique_kind_xyz")
             def _fn2(arg, ctx):
                 return PredicateResult("__test_unique_kind_xyz", True)
@@ -183,26 +184,20 @@ class TestSchemaPredicate:
                 {
                     "name": "core",
                     "src_dir": "src/core",
-                    "components": [
-                        {"name": "router", "file": "src/core/router.py"}
-                    ],
+                    "components": [{"name": "router", "file": "src/core/router.py"}],
                 }
             ],
         }
         (tmp_path / "stack_contract.json").write_text(json.dumps(valid), encoding="utf-8")
         ctx = _ctx(tmp_path, "stack_contract.json")
-        r = evaluate_predicate(
-            _pred("schema", "schemas/stack_contract.schema.json"), ctx
-        )
+        r = evaluate_predicate(_pred("schema", "schemas/stack_contract.schema.json"), ctx)
         assert r.passed, r.detail
 
     def test_invalid_stack_contract_reports_errors(self, tmp_path: Path):
         invalid = {"language": "python"}  # missing 6 required fields
         (tmp_path / "stack_contract.json").write_text(json.dumps(invalid), encoding="utf-8")
         ctx = _ctx(tmp_path, "stack_contract.json")
-        r = evaluate_predicate(
-            _pred("schema", "schemas/stack_contract.schema.json"), ctx
-        )
+        r = evaluate_predicate(_pred("schema", "schemas/stack_contract.schema.json"), ctx)
         assert not r.passed
         assert "missing required" in r.detail
 
@@ -320,18 +315,12 @@ class TestPriorPhasesSummarized:
         Behavior: docs/behavioral_contract.json.
         """
         (tmp_path / "delivery_report.md").write_text(body, encoding="utf-8")
-        r = evaluate_predicate(
-            _pred("prior_phases_summarized", 5), _ctx(tmp_path, "delivery_report.md")
-        )
+        r = evaluate_predicate(_pred("prior_phases_summarized", 5), _ctx(tmp_path, "delivery_report.md"))
         assert r.passed
 
     def test_fails_when_too_few(self, tmp_path: Path):
-        (tmp_path / "delivery_report.md").write_text(
-            "Only mentions docs/requirement.md", encoding="utf-8"
-        )
-        r = evaluate_predicate(
-            _pred("prior_phases_summarized", 5), _ctx(tmp_path, "delivery_report.md")
-        )
+        (tmp_path / "delivery_report.md").write_text("Only mentions docs/requirement.md", encoding="utf-8")
+        r = evaluate_predicate(_pred("prior_phases_summarized", 5), _ctx(tmp_path, "delivery_report.md"))
         assert not r.passed
 
 

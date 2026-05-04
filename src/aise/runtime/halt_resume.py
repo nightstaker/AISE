@@ -128,9 +128,7 @@ def is_halted(project_root: Path) -> bool:
 # -- Resume planning -----------------------------------------------------
 
 
-def compute_resume_phase(
-    spec: WaterfallV2Spec, halt_state: HaltState
-) -> PhaseSpec | None:
+def compute_resume_phase(spec: WaterfallV2Spec, halt_state: HaltState) -> PhaseSpec | None:
     """Return the PhaseSpec to re-execute on resume.
 
     Default semantics: re-run the halted phase's PRODUCE step from
@@ -142,9 +140,7 @@ def compute_resume_phase(
     return spec.phase_by_id(halt_state.halted_at_phase)
 
 
-def remaining_phases(
-    spec: WaterfallV2Spec, halt_state: HaltState
-) -> tuple[PhaseSpec, ...]:
+def remaining_phases(spec: WaterfallV2Spec, halt_state: HaltState) -> tuple[PhaseSpec, ...]:
     """Phases the executor still needs to run on resume:
     halted phase + all subsequent phases."""
     start = spec.phase_index(halt_state.halted_at_phase)
@@ -156,9 +152,7 @@ def remaining_phases(
 # -- Convenience: mark phase done in completed_phases --------------------
 
 
-def append_completed_phase(
-    halt_state: HaltState, phase_id: str
-) -> HaltState:
+def append_completed_phase(halt_state: HaltState, phase_id: str) -> HaltState:
     """Return a new HaltState with phase_id appended to completed_phases."""
     if phase_id in halt_state.completed_phases:
         return halt_state

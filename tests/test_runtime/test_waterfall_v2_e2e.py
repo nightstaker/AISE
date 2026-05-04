@@ -51,9 +51,7 @@ class MockLLM:
                 p = self.project_root / path.lstrip("/")
                 p.parent.mkdir(parents=True, exist_ok=True)
                 if not p.exists():
-                    p.write_text(
-                        f"# stub for {path}\n" + "x" * 250, encoding="utf-8"
-                    )
+                    p.write_text(f"# stub for {path}\n" + "x" * 250, encoding="utf-8")
         elif role == "qa_engineer":
             for path in expected:
                 p = self.project_root / path.lstrip("/")
@@ -82,19 +80,19 @@ class MockLLM:
             encoding="utf-8",
         )
         (docs / "requirement_contract.json").write_text(
-            json.dumps({
-                "functional_requirements": [{"id": "FR-001", "title": "t", "description": "d"}],
-                "non_functional_requirements": [],
-            }),
+            json.dumps(
+                {
+                    "functional_requirements": [{"id": "FR-001", "title": "t", "description": "d"}],
+                    "non_functional_requirements": [],
+                }
+            ),
             encoding="utf-8",
         )
 
     def _write_phase_2(self) -> None:
         docs = self.project_root / "docs"
         docs.mkdir(parents=True, exist_ok=True)
-        (docs / "architecture.md").write_text(
-            "# Architecture\n" + "x" * 5500, encoding="utf-8"
-        )
+        (docs / "architecture.md").write_text("# Architecture\n" + "x" * 5500, encoding="utf-8")
         sc = {
             "language": "python",
             "framework_backend": "none",
@@ -116,10 +114,7 @@ class MockLLM:
         }
         (docs / "stack_contract.json").write_text(json.dumps(sc), encoding="utf-8")
         bc = {
-            "scenarios": [
-                {"id": f"sc{i}", "name": f"S{i}", "trigger": {"x": i}, "effect": {"y": i}}
-                for i in range(5)
-            ]
+            "scenarios": [{"id": f"sc{i}", "name": f"S{i}", "trigger": {"x": i}, "effect": {"y": i}} for i in range(5)]
         }
         (docs / "behavioral_contract.json").write_text(json.dumps(bc), encoding="utf-8")
 
@@ -129,8 +124,7 @@ class MockLLM:
         (docs / "delivery_report.md").write_text(
             "## 验收结论\nshipped.\n## 已知 issue\nnone.\n## 下一步建议\niter.\n"
             "Built per docs/requirement.md and docs/architecture.md.\n"
-            "Stack: docs/stack_contract.json. Behavior: docs/behavioral_contract.json.\n"
-            + "x" * 1500,
+            "Stack: docs/stack_contract.json. Behavior: docs/behavioral_contract.json.\n" + "x" * 1500,
             encoding="utf-8",
         )
 
@@ -254,6 +248,7 @@ class TestProducerHardFail:
         assert is_halted(tmp_path)
         # Halt state was persisted
         from aise.runtime.halt_resume import load_halt_state
+
         loaded = load_halt_state(tmp_path)
         assert loaded is not None
         assert loaded.halted_at_phase == "requirements"

@@ -586,9 +586,7 @@ class TestDispatchTaskRetryWithContext:
         # All attempts return non-empty text but the artifact is
         # never written. We supply (1 initial + _MAX_DISPATCH_RETRIES)
         # outputs so the dispatch consumes its full retry budget.
-        rt.handle_message.side_effect = [
-            f"output_{i}" for i in range(_MAX_DISPATCH_RETRIES + 1)
-        ]
+        rt.handle_message.side_effect = [f"output_{i}" for i in range(_MAX_DISPATCH_RETRIES + 1)]
         ctx_ = ToolContext(
             manager=fake_manager,
             project_root=tmp_path,
@@ -701,9 +699,7 @@ class TestDispatchTasksParallelForwardsExpectedArtifacts:
         # Each task gets (1 initial + _MAX_DISPATCH_RETRIES) = 4 attempts;
         # 2 tasks ⇒ 8 mock outputs total. After all retries the artifact
         # is still missing → status="incomplete", retries=_MAX_DISPATCH_RETRIES.
-        rt.handle_message.side_effect = [
-            f"out_{i}" for i in range(2 * (_MAX_DISPATCH_RETRIES + 1))
-        ]
+        rt.handle_message.side_effect = [f"out_{i}" for i in range(2 * (_MAX_DISPATCH_RETRIES + 1))]
         ctx_ = ToolContext(
             manager=fake_manager,
             project_root=tmp_path,

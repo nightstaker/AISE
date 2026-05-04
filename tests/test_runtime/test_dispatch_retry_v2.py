@@ -28,9 +28,7 @@ def _load_module(name: str, path: Path) -> ModuleType:
     return mod
 
 
-_RETRY = _load_module(
-    "_c5_retry", Path("src/aise/tools/retry.py").resolve()
-)
+_RETRY = _load_module("_c5_retry", Path("src/aise/tools/retry.py").resolve())
 
 
 class TestRetryConstants:

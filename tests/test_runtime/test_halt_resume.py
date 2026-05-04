@@ -73,9 +73,7 @@ class TestPersistence:
 
     def test_load_returns_none_when_file_missing_required_field(self, tmp_path: Path):
         (tmp_path / "runs").mkdir()
-        (tmp_path / "runs" / "HALTED.json").write_text(
-            '{"halt_reason": "x"}', encoding="utf-8"
-        )
+        (tmp_path / "runs" / "HALTED.json").write_text('{"halt_reason": "x"}', encoding="utf-8")
         assert load_halt_state(tmp_path) is None
 
     def test_clear_removes_marker(self, tmp_path: Path):

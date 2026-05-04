@@ -356,9 +356,7 @@ def _mermaid_validates_via_skill(arg: Any, ctx: PredicateContext) -> PredicateRe
     blocks = re.findall(r"```mermaid\s*\n(.*?)\n```", body, flags=re.DOTALL)
     if not blocks:
         # No mermaid blocks ⇒ vacuously passes (not every doc must have diagrams).
-        return PredicateResult(
-            "mermaid_validates_via_skill", True, "no mermaid blocks present", skipped=True
-        )
+        return PredicateResult("mermaid_validates_via_skill", True, "no mermaid blocks present", skipped=True)
     known_headers = (
         "flowchart",
         "graph",
@@ -411,6 +409,7 @@ def _language_idiomatic_check(arg: Any, ctx: PredicateContext) -> PredicateResul
         return PredicateResult("language_idiomatic_check", True, "no static_analyzer declared; skipping", skipped=True)
     # Use shutil.which to check availability without invoking.
     import shutil
+
     if shutil.which(analyzer_cmd) is None:
         return PredicateResult(
             "language_idiomatic_check",
@@ -446,17 +445,14 @@ def _language_idiomatic_check(arg: Any, ctx: PredicateContext) -> PredicateResul
 # -- Top-level evaluation -------------------------------------------------
 
 
-def evaluate_predicate(
-    predicate: AcceptancePredicate, ctx: PredicateContext
-) -> PredicateResult:
+def evaluate_predicate(predicate: AcceptancePredicate, ctx: PredicateContext) -> PredicateResult:
     """Look up + invoke one predicate."""
     fn = _REGISTRY.get(predicate.kind)
     if fn is None:
         return PredicateResult(
             predicate.kind,
             False,
-            f"unknown predicate kind: {predicate.kind!r}; "
-            f"registered={registered_kinds()}",
+            f"unknown predicate kind: {predicate.kind!r}; registered={registered_kinds()}",
         )
     try:
         return fn(predicate.arg, ctx)
@@ -473,9 +469,7 @@ def evaluate_deliverable(
     ctx: PredicateContext,
 ) -> DeliverableReport:
     """Run every predicate of a deliverable; return one report."""
-    results = tuple(
-        evaluate_predicate(p, ctx) for p in deliverable.acceptance
-    )
+    results = tuple(evaluate_predicate(p, ctx) for p in deliverable.acceptance)
     return DeliverableReport(
         deliverable_path=str(ctx.deliverable_path),
         deliverable_kind=deliverable.kind,

@@ -71,9 +71,7 @@ def load_waterfall_v2(source: str | Path) -> WaterfallV2Spec:
     errors = validate(raw, schema)
     if errors:
         joined = "\n  - ".join(errors)
-        raise ProcessSpecError(
-            f"process.md failed schema validation:\n  - {joined}"
-        )
+        raise ProcessSpecError(f"process.md failed schema validation:\n  - {joined}")
 
     return _materialize(raw)
 
@@ -90,9 +88,7 @@ def _read_source(source: str | Path) -> str:
 def _extract_frontmatter(text: str) -> str:
     match = _FRONTMATTER_RE.match(text)
     if not match:
-        raise ProcessSpecError(
-            "process.md must start with YAML frontmatter delimited by '---' lines"
-        )
+        raise ProcessSpecError("process.md must start with YAML frontmatter delimited by '---' lines")
     return match.group(1)
 
 
@@ -102,18 +98,14 @@ def _parse_yaml(yaml_text: str) -> dict[str, Any]:
     except yaml.YAMLError as exc:
         raise ProcessSpecError(f"frontmatter YAML parse error: {exc}") from exc
     if not isinstance(data, dict):
-        raise ProcessSpecError(
-            f"frontmatter must be a YAML mapping, got {type(data).__name__}"
-        )
+        raise ProcessSpecError(f"frontmatter must be a YAML mapping, got {type(data).__name__}")
     return data
 
 
 def _load_schema() -> dict[str, Any]:
     # Lives at src/aise/schemas/process_v2.schema.json — this loader is at
     # src/aise/runtime/waterfall_v2_loader.py, so two parents up + sibling.
-    schema_path = (
-        Path(__file__).resolve().parent.parent / "schemas" / "process_v2.schema.json"
-    )
+    schema_path = Path(__file__).resolve().parent.parent / "schemas" / "process_v2.schema.json"
     with open(schema_path, encoding="utf-8") as f:
         return json.load(f)
 
@@ -191,14 +183,10 @@ def _acceptance(raw: Any) -> AcceptancePredicate:
         return AcceptancePredicate(kind=raw, arg=None)
     if isinstance(raw, dict):
         if len(raw) != 1:
-            raise ProcessSpecError(
-                f"acceptance dict must have exactly one key, got {sorted(raw)!r}"
-            )
+            raise ProcessSpecError(f"acceptance dict must have exactly one key, got {sorted(raw)!r}")
         ((k, v),) = raw.items()
         return AcceptancePredicate(kind=k, arg=v)
-    raise ProcessSpecError(
-        f"acceptance entry must be string or one-key dict, got {type(raw).__name__}"
-    )
+    raise ProcessSpecError(f"acceptance entry must be string or one-key dict, got {type(raw).__name__}")
 
 
 def _fanout(raw: dict[str, Any]) -> FanoutSpec:
@@ -225,9 +213,7 @@ def _concurrency(raw: dict[str, Any]) -> ConcurrencyPolicy:
         max_workers=raw["max_workers"],
         per_task_retries=raw["per_task_retries"],
         join_policy=raw.get("join_policy", "ALL_PASS"),
-        on_task_failure_after_retries=raw.get(
-            "on_task_failure_after_retries", "phase_halt"
-        ),
+        on_task_failure_after_retries=raw.get("on_task_failure_after_retries", "phase_halt"),
     )
 
 
@@ -245,8 +231,4 @@ def _review(raw: dict[str, Any]) -> ReviewSpec:
 
 def default_waterfall_v2_path() -> Path:
     """Return the path to the bundled waterfall_v2.process.md."""
-    return (
-        Path(__file__).resolve().parent.parent
-        / "processes"
-        / "waterfall_v2.process.md"
-    )
+    return Path(__file__).resolve().parent.parent / "processes" / "waterfall_v2.process.md"
