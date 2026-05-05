@@ -18,12 +18,19 @@ from aise.runtime.stack_strict import (
 
 class TestGetToolchain:
     def test_known_languages_return_row(self):
-        for lang in ("python", "typescript", "go", "rust", "java", "dart", "csharp", "kotlin", "swift"):
+        for lang in ("python", "typescript", "go", "rust", "cpp", "dart", "kotlin", "swift"):
             row = get_toolchain(lang)
             assert "test_cmd" in row
             assert "test_path_pattern" in row
             assert "src_path_pattern" in row
             assert "static_check" in row
+
+    def test_dropped_languages_raise(self):
+        # csharp / cs / java were dropped on 2026-05-04. Re-adding any
+        # of them must be a deliberate decision, not a silent fallback.
+        for lang in ("csharp", "cs", "java"):
+            with pytest.raises(UnsupportedLanguageError):
+                get_toolchain(lang)
 
     def test_unknown_language_raises(self):
         with pytest.raises(UnsupportedLanguageError) as exc_info:
@@ -34,7 +41,7 @@ class TestGetToolchain:
 
     def test_normalizes_case_and_whitespace(self):
         assert get_toolchain(" Python ") == get_toolchain("python")
-        assert get_toolchain("CSHARP") == get_toolchain("csharp")
+        assert get_toolchain("CPP") == get_toolchain("cpp")
 
     def test_empty_language_raises(self):
         with pytest.raises(UnsupportedLanguageError):
@@ -57,10 +64,10 @@ class TestGetInterfaceFilename:
         path = get_interface_filename("dart", "gameplay", "lib/gameplay")
         assert path.endswith("gameplay.dart")
 
-    def test_csharp_returns_empty_string(self):
-        # csharp is in _INTERFACE_FILENAME with the "" sentinel —
-        # caller should treat empty as "no barrel deliverable for this stack"
-        assert get_interface_filename("csharp", "x", "Assets/Scripts/X") == ""
+    def test_no_barrel_languages_return_empty_string(self):
+        # cpp/kotlin/swift have no per-folder barrel convention; the
+        # "" sentinel tells callers to skip the deliverable entirely.
+        assert get_interface_filename("cpp", "core", "src/core") == ""
         assert get_interface_filename("kotlin", "x", "src/main/kotlin/x") == ""
         assert get_interface_filename("swift", "x", "Sources/X") == ""
 
@@ -76,20 +83,17 @@ class TestGetTestExtension:
     def test_python_dot_py(self):
         assert get_test_extension("python") == ".py"
 
-    def test_csharp_dot_cs(self):
-        # csharp must be in _LANGUAGE_TEST_EXT; if not, this test will
-        # show the user where to add it. Per c12 the user added csharp
-        # to _LANGUAGE_TOOLCHAIN/_INTERFACE_FILENAME — verify it's also
-        # in scenario_gate's table.
-        try:
-            ext = get_test_extension("csharp")
-        except UnsupportedLanguageError as e:
-            pytest.fail(
-                f"csharp missing from _LANGUAGE_TEST_EXT: {e}. "
-                "Add it to src/aise/safety_net/scenario_gate.py to "
-                "complete the c12 csharp coverage across all 3 tables."
-            )
-        assert ext == ".cs"
+    def test_cpp_dot_cpp(self):
+        # cpp must be in _LANGUAGE_TEST_EXT across all 3 tables for the
+        # phase-3 fanout + scenario derivation to use the correct
+        # extension. Both ``cpp`` and ``c++`` aliases must round-trip.
+        assert get_test_extension("cpp") == ".cpp"
+        assert get_test_extension("c++") == ".cpp"
+
+    def test_dropped_languages_have_no_test_extension(self):
+        for lang in ("csharp", "cs", "java"):
+            with pytest.raises(UnsupportedLanguageError):
+                get_test_extension(lang)
 
     def test_unknown_raises(self):
         with pytest.raises(UnsupportedLanguageError):
@@ -100,13 +104,20 @@ class TestGetTestExtension:
 
 
 class TestRegisteredLanguages:
-    def test_includes_csharp(self):
-        assert "csharp" in registered_languages()
+    def test_includes_cpp(self):
+        assert "cpp" in registered_languages()
 
     def test_includes_kotlin_and_swift(self):
         ls = registered_languages()
         assert "kotlin" in ls
         assert "swift" in ls
+
+    def test_excludes_dropped_languages(self):
+        ls = registered_languages()
+        for lang in ("csharp", "cs", "java"):
+            assert lang not in ls, (
+                f"{lang!r} unexpectedly present in registered_languages(); support was dropped on 2026-05-04"
+            )
 
     def test_returns_sorted(self):
         ls = registered_languages()
@@ -117,8 +128,8 @@ class TestRegisteredLanguages:
 
 
 class TestLanguageHasNoBarrel:
-    def test_csharp_kotlin_swift_have_no_barrel(self):
-        for lang in ("csharp", "cs", "kotlin", "swift", "CSHARP"):
+    def test_cpp_kotlin_swift_have_no_barrel(self):
+        for lang in ("cpp", "c++", "kotlin", "swift", "CPP"):
             assert language_has_no_barrel(lang)
 
     def test_python_has_barrel(self):

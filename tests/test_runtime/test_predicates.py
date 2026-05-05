@@ -277,8 +277,8 @@ class TestSchemaPredicate:
 
 
 class TestLanguageSupported:
-    def test_passes_with_csharp(self, tmp_path: Path):
-        ctx = _ctx(tmp_path, "stack.json", stack_contract={"language": "csharp"})
+    def test_passes_with_cpp(self, tmp_path: Path):
+        ctx = _ctx(tmp_path, "stack.json", stack_contract={"language": "cpp"})
         r = evaluate_predicate(_pred("language_supported"), ctx)
         assert r.passed
 

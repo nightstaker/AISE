@@ -53,22 +53,12 @@ def _load_module_from_file(name: str, rel_path: str):
 _stack_contract_mod = _load_module_from_file("_c12_stack_contract", "tools/stack_contract.py")
 
 # Start from the legacy table (which has python / typescript / javascript /
-# go / rust / java / dart). We overlay csharp / kotlin / swift here so this
-# PR is self-contained even if the legacy ``aise.tools.stack_contract`` is
-# never edited to add those rows. Until the legacy module is also updated,
-# ``aise.tools.dispatch`` callers (legacy flow) still hit the silent Python
-# fallback for csharp — that fallback will be removed in a follow-up
-# cleanup PR after all callers have migrated to ``stack_strict``.
+# go / rust / cpp / dart). We overlay kotlin / swift here so this module
+# is self-contained even if the legacy ``aise.tools.stack_contract`` is
+# never edited to add those rows. csharp/cs and java were dropped from
+# the supported set on 2026-05-04 — adding them back requires both a
+# legacy-module row and a kotlin/swift-style overlay here.
 _LANGUAGE_TOOLCHAIN: dict[str, dict[str, str]] = dict(_stack_contract_mod._LANGUAGE_TOOLCHAIN)
-_LANGUAGE_TOOLCHAIN.setdefault(
-    "csharp",
-    {
-        "test_cmd": "dotnet test --filter FullyQualifiedName~{Component}Tests",
-        "test_path_pattern": "Assets/Scripts/{subsystem}/Tests/{Component}Tests.cs",
-        "src_path_pattern": "Assets/Scripts/{subsystem}/{Component}.cs",
-        "static_check": "dotnet build --no-restore",
-    },
-)
 _LANGUAGE_TOOLCHAIN.setdefault(
     "kotlin",
     {
@@ -89,9 +79,11 @@ _LANGUAGE_TOOLCHAIN.setdefault(
 )
 
 _INTERFACE_FILENAME: dict[str, str] = dict(_stack_contract_mod._INTERFACE_FILENAME)
-# csharp / kotlin / swift have no per-folder barrel file convention.
+# C++ / kotlin / swift have no per-folder barrel file convention.
 # Empty string is the sentinel "no interface deliverable required".
-for _no_barrel_lang in ("csharp", "cs", "kotlin", "swift"):
+# (cpp's empty entry already comes from the legacy table; we set the
+# others here defensively in case the legacy module hasn't been edited.)
+for _no_barrel_lang in ("cpp", "kotlin", "swift"):
     _INTERFACE_FILENAME.setdefault(_no_barrel_lang, "")
 
 
@@ -129,19 +121,18 @@ _LANGUAGE_TEST_EXT: dict[str, str] = {
     "js": ".js",
     "go": ".go",
     "rust": ".rs",
-    "java": ".java",
     "dart": ".dart",
-    "csharp": ".cs",
-    "cs": ".cs",
+    "cpp": ".cpp",
+    "c++": ".cpp",
     "kotlin": ".kt",
     "swift": ".swift",
 }
 
-# csharp/kotlin/swift use empty string in _INTERFACE_FILENAME ("" means
+# cpp/kotlin/swift use empty string in _INTERFACE_FILENAME ("" means
 # "no barrel file convention"). Exclude them from the "must be in
 # _INTERFACE_FILENAME" supported set since their entry is the empty
 # sentinel, not a real filename.
-_LANGUAGES_WITHOUT_BARREL: frozenset[str] = frozenset({"csharp", "cs", "kotlin", "swift"})
+_LANGUAGES_WITHOUT_BARREL: frozenset[str] = frozenset({"cpp", "c++", "kotlin", "swift"})
 
 
 class UnsupportedLanguageError(ValueError):
@@ -208,7 +199,7 @@ def registered_languages() -> list[str]:
 
 
 def language_has_no_barrel(language: str) -> bool:
-    """True for csharp/cs/kotlin/swift — languages where per-folder
+    """True for cpp/c++/kotlin/swift — languages where per-folder
     barrel files are not idiomatic and the AUTO_GATE should skip the
     interface_filename deliverable entry."""
     return _norm(language) in _LANGUAGES_WITHOUT_BARREL
