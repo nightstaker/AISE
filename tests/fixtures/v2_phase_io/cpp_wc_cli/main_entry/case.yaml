@@ -1,0 +1,40 @@
+aise_version: "0.1.0"
+scenario_id: cpp_wc_cli
+phase: main_entry
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a C++17 ``wc``-like CLI — wire main.cpp.
+
+max_review_iterations: 1
+timeout_sec: 1200
+
+assertions:
+  - name: main_present
+    path: src/main.cpp
+    predicate: file_exists
+
+  - name: main_substantial
+    path: src/main.cpp
+    predicate: { min_bytes: 100 }
+
+  # Canonical C++ entry shape — int main(...) with argc/argv.
+  - name: has_int_main
+    path: src/main.cpp
+    predicate: { regex_count: { pattern: "\\bint\\s+main\\s*\\(", min: 1 } }
+
+  - name: has_argc_or_argv
+    path: src/main.cpp
+    predicate: { contains_keywords: { any_of: [argc, argv] } }
+
+  # Wires the counters — at least references one of the counter modules
+  - name: wires_a_counter
+    path: src/main.cpp
+    predicate: { contains_keywords: { any_of: [line_counter, word_counter, byte_counter, combined_counter, "counter/"] } }
+
+  # Standard library i/o (no third-party deps allowed)
+  - name: uses_stdlib_io
+    path: src/main.cpp
+    predicate: { contains_keywords: { any_of: ["<iostream>", "<fstream>", "<cstdio>"] } }

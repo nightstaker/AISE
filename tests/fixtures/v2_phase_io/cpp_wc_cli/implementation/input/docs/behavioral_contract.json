@@ -1,0 +1,164 @@
+{
+  "scenarios": [
+    {
+      "id": "test_line_counter",
+      "name": "行计数单元测试",
+      "description": "测试行计数器的基本功能：空文件返回0，有换行符的文件正确计数，没有尾部换行符的文件正确计数",
+      "preconditions": ["测试可执行文件已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "ctest --test-dir build --output-on-failure --verbose -R LineCounterTest"
+      },
+      "effect": {
+        "exit_code": 0,
+        "stdout_contains": "Test project",
+        "stdout_contains": "Pass"
+      },
+      "covers_requirements": ["FR-002"]
+    },
+    {
+      "id": "test_word_counter",
+      "name": "单词计数单元测试",
+      "description": "测试单词计数器的基本功能：空文件返回0，多个连续空格不产生额外单词，正确统计单词数",
+      "preconditions": ["测试可执行文件已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "ctest --test-dir build --output-on-failure --verbose -R WordCounterTest"
+      },
+      "effect": {
+        "exit_code": 0,
+        "stdout_contains": "Test project",
+        "stdout_contains": "Pass"
+      },
+      "covers_requirements": ["FR-003"]
+    },
+    {
+      "id": "test_byte_counter",
+      "name": "字节计数单元测试",
+      "description": "测试字节计数器的基本功能：空文件返回0，正确统计文件字节数",
+      "preconditions": ["测试可执行文件已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "ctest --test-dir build --output-on-failure --verbose -R ByteCounterTest"
+      },
+      "effect": {
+        "exit_code": 0,
+        "stdout_contains": "Test project",
+        "stdout_contains": "Pass"
+      },
+      "covers_requirements": ["FR-004"]
+    },
+    {
+      "id": "test_arg_parser",
+      "name": "参数解析单元测试",
+      "description": "测试参数解析器：正确参数返回文件路径，缺少参数抛出异常",
+      "preconditions": ["测试可执行文件已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "ctest --test-dir build --output-on-failure --verbose -R ArgParserTest"
+      },
+      "effect": {
+        "exit_code": 0,
+        "stdout_contains": "Test project",
+        "stdout_contains": "Pass"
+      },
+      "covers_requirements": ["FR-001"]
+    },
+    {
+      "id": "test_output_formatter",
+      "name": "输出格式化单元测试",
+      "description": "测试输出格式化器：正确格式化并输出结果",
+      "preconditions": ["测试可执行文件已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "ctest --test-dir build --output-on-failure --verbose -R OutputFormatterTest"
+      },
+      "effect": {
+        "exit_code": 0,
+        "stdout_contains": "Test project",
+        "stdout_contains": "Pass"
+      },
+      "covers_requirements": ["FR-005"]
+    },
+    {
+      "id": "e2e_normal_file",
+      "name": "端到端测试：正常文件处理",
+      "description": "端到端测试：使用wc-tool处理一个包含多行多词的文本文件，验证输出格式正确",
+      "preconditions": ["测试可执行文件已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "ctest --test-dir build --output-on-failure --verbose -R E2ENormalFileTest"
+      },
+      "effect": {
+        "exit_code": 0,
+        "stdout_contains": "Test project",
+        "stdout_contains": "Pass"
+      },
+      "covers_requirements": ["FR-001", "FR-002", "FR-003", "FR-004", "FR-005"]
+    },
+    {
+      "id": "e2e_empty_file",
+      "name": "端到端测试：空文件处理",
+      "description": "端到端测试：使用wc-tool处理空文件，验证输出为 0 0 0 filename",
+      "preconditions": ["测试可执行文件已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "ctest --test-dir build --output-on-failure --verbose -R E2EEmptyFileTest"
+      },
+      "effect": {
+        "exit_code": 0,
+        "stdout_contains": "Test project",
+        "stdout_contains": "Pass"
+      },
+      "covers_requirements": ["FR-002", "FR-003", "FR-004"]
+    },
+    {
+      "id": "e2e_no_argument",
+      "name": "端到端测试：缺少参数",
+      "description": "端到端测试：使用wc-tool不带参数运行，验证输出错误信息到stderr并返回非零退出码",
+      "preconditions": ["测试可执行文件已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "ctest --test-dir build --output-on-failure --verbose -R E2ENoArgumentTest"
+      },
+      "effect": {
+        "exit_code": 0,
+        "stdout_contains": "Test project",
+        "stdout_contains": "Pass"
+      },
+      "covers_requirements": ["FR-001"]
+    },
+    {
+      "id": "e2e_file_not_found",
+      "name": "端到端测试：文件不存在",
+      "description": "端到端测试：使用wc-tool处理不存在的文件，验证输出错误信息到stderr并返回非零退出码",
+      "preconditions": ["测试可执行文件已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "ctest --test-dir build --output-on-failure --verbose -R E2EFileNotFoundTest"
+      },
+      "effect": {
+        "exit_code": 0,
+        "stdout_contains": "Test project",
+        "stdout_contains": "Pass"
+      },
+      "covers_requirements": ["FR-001"]
+    },
+    {
+      "id": "e2e_no_trailing_newline",
+      "name": "端到端测试：无尾部换行符",
+      "description": "端到端测试：使用wc-tool处理没有尾部换行符的文件，验证wc兼容的行计数",
+      "preconditions": ["测试可执行文件已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "ctest --test-dir build --output-on-failure --verbose -R E2ENoTrailingNewlineTest"
+      },
+      "effect": {
+        "exit_code": 0,
+        "stdout_contains": "Test project",
+        "stdout_contains": "Pass"
+      },
+      "covers_requirements": ["FR-002", "FR-003", "FR-004", "FR-005"]
+    }
+  ]
+}

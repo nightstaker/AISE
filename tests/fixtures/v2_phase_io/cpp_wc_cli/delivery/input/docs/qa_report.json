@@ -1,0 +1,73 @@
+{
+  "toolchain_check": {
+    "cmake": "present",
+    "ctest": "present",
+    "clang-tidy": "missing",
+    "g++": "present",
+    "gcc": "present",
+    "make": "present",
+    "ninja": "present"
+  },
+  "ctest": {
+    "ran": true,
+    "passed": 21,
+    "failed": 0,
+    "total": 21,
+    "command": "ctest --test-dir build --output-on-failure",
+    "details": {
+      "unit_tests": {
+        "passed": 6,
+        "tests": [
+          "LineCounterTest",
+          "WordCounterTest",
+          "ByteCounterTest",
+          "ArgParserTest",
+          "OutputFormatterTest",
+          "FileOpenerTest"
+        ]
+      },
+      "e2e_tests": {
+        "passed": 5,
+        "tests": [
+          "E2ENormalFileTest",
+          "E2EEmptyFileTest",
+          "E2ENoArgumentTest",
+          "E2EFileNotFoundTest",
+          "E2ENoTrailingNewlineTest"
+        ]
+      },
+      "scenario_tests": {
+        "passed": 10,
+        "tests": [
+          "ScenarioLineCounterTest",
+          "ScenarioWordCounterTest",
+          "ScenarioByteCounterTest",
+          "ScenarioArgParserTest",
+          "ScenarioOutputFormatterTest",
+          "ScenarioE2ENormalFileTest",
+          "ScenarioE2EEmptyFileTest",
+          "ScenarioE2ENoArgumentTest",
+          "ScenarioE2EFileNotFoundTest",
+          "ScenarioE2ENoTrailingNewlineTest"
+        ]
+      }
+    }
+  },
+  "integration_tests": {
+    "total_written": 10,
+    "files": [
+      "tests/scenarios/test_line_counter.cpp",
+      "tests/scenarios/test_word_counter.cpp",
+      "tests/scenarios/test_byte_counter.cpp",
+      "tests/scenarios/test_arg_parser.cpp",
+      "tests/scenarios/test_output_formatter.cpp",
+      "tests/scenarios/e2e_normal_file.cpp",
+      "tests/scenarios/e2e_empty_file.cpp",
+      "tests/scenarios/e2e_no_argument.cpp",
+      "tests/scenarios/e2e_file_not_found.cpp",
+      "tests/scenarios/e2e_no_trailing_newline.cpp"
+    ]
+  },
+  "ui_required": false,
+  "notes": "All 21 tests passed. clang-tidy is missing from the host but was not required for test execution."
+}

@@ -1,0 +1,31 @@
+aise_version: "0.1.0"
+scenario_id: cpp_wc_cli
+phase: verification
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a C++17 ``wc``-like CLI — verify behavioral scenarios.
+
+max_review_iterations: 1
+timeout_sec: 1200
+
+assertions:
+  - name: behavioral_contract_has_enough_scenarios
+    path: docs/behavioral_contract.json
+    predicate: { min_scenarios: 3 }
+
+  # qa_report.json — same softening as TS/Go: qa_engineer skips writing
+  # it when ctest / cmake aren't on PATH. severity=warn until the
+  # qa_engineer prompt is updated to always emit ran=false.
+  - name: qa_report_present
+    path: docs/qa_report.json
+    predicate: file_exists
+    severity: warn
+
+  # Toolchain-honesty: don't fabricate pytest results on a C++ project.
+  - name: qa_report_no_pytest_on_cpp
+    path: docs/qa_report.json
+    predicate: { forbidden_patterns: { patterns: ["\"pytest\"\\s*:\\s*\\{[^}]*\"ran\"\\s*:\\s*true"] } }
+    severity: warn

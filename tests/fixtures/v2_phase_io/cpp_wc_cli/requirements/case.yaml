@@ -1,0 +1,44 @@
+aise_version: "0.1.0"
+scenario_id: cpp_wc_cli
+phase: requirements
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a C++17 command-line tool similar to ``wc`` (word count).
+  - Usage: wc-tool <file> — prints lines, words, bytes + filename.
+  - Build with CMake (CMakeLists.txt at project root, C++17 strict).
+  - Test with CTest (no third-party deps; <cassert> is fine).
+  - Source layout: src/main.cpp + per-feature .cpp under src/<subsystem>/.
+  - Single static binary; stdlib only; stdout/stderr only.
+  - Unit tests for line / word / byte primitives.
+
+max_review_iterations: 1
+timeout_sec: 600
+
+assertions:
+  - { name: requirement_md_present,         path: docs/requirement.md, predicate: file_exists }
+  - { name: requirement_md_substantial,     path: docs/requirement.md, predicate: { min_bytes: 1500 } }
+  - { name: requirement_contract_present,   path: docs/requirement_contract.json, predicate: file_exists }
+  - name: requirement_contract_schema_valid
+    path: docs/requirement_contract.json
+    predicate: { schema: schemas/requirement_contract.schema.json }
+  - name: covers_cpp_or_c_plus_plus
+    path: docs/requirement.md
+    predicate: { contains_keywords: { any_of: ["C++", "C++17", "cpp"] } }
+  - name: covers_wc_semantics
+    path: docs/requirement.md
+    predicate: { contains_keywords: { any_of: [lines, words, bytes, "word count"] } }
+  - name: covers_cmake_or_ctest
+    path: docs/requirement.md
+    predicate: { contains_keywords: { any_of: [CMake, ctest, "CMakeLists"] } }
+  - name: at_least_three_FRs
+    path: docs/requirement.md
+    predicate: { regex_count: { pattern: "FR-\\d+", min: 3 } }
+  - name: contract_lists_FRs
+    path: docs/requirement_contract.json
+    predicate: { count_at_least: { field: functional_requirements, min: 3 } }
+  - name: not_a_python_or_typescript
+    path: docs/requirement.md
+    predicate: { forbidden_patterns: { patterns: ["pyproject\\.toml", "package\\.json", "tsconfig\\.json"] } }

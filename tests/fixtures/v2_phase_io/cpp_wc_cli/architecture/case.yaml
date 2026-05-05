@@ -1,0 +1,49 @@
+aise_version: "0.1.0"
+scenario_id: cpp_wc_cli
+phase: architecture
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a C++17 command-line tool similar to ``wc`` — single binary,
+  CMake build, CTest tests, stdlib only.
+
+max_review_iterations: 1
+timeout_sec: 1800
+
+assertions:
+  - { name: arch_md_present,             path: docs/architecture.md, predicate: file_exists }
+  - { name: arch_md_substantial,         path: docs/architecture.md, predicate: { min_bytes: 2000 } }
+  - { name: stack_contract_present,      path: docs/stack_contract.json, predicate: file_exists }
+  - { name: behavioral_contract_present, path: docs/behavioral_contract.json, predicate: file_exists }
+  - name: stack_schema_valid
+    path: docs/stack_contract.json
+    predicate: { schema: schemas/stack_contract.schema.json }
+  - name: language_cpp
+    path: docs/stack_contract.json
+    predicate: { json_field_one_of: { field: language, allowed: [cpp, "c++"] } }
+  - name: package_manager_cmake
+    path: docs/stack_contract.json
+    predicate: { json_field_one_of: { field: package_manager, allowed: [cmake, conan, vcpkg] } }
+  - name: project_config_cmakelists
+    path: docs/stack_contract.json
+    predicate: { json_field_equals: { field: project_config_file, expected: CMakeLists.txt } }
+  - name: test_runner_ctest
+    path: docs/stack_contract.json
+    predicate: { json_field_one_of: { field: test_runner, allowed: [ctest, "ctest --test-dir build", "ctest --output-on-failure"] } }
+  - name: ui_required_false
+    path: docs/stack_contract.json
+    predicate: { json_field_equals: { field: ui_required, expected: false } }
+  - name: subsystems_min
+    path: docs/stack_contract.json
+    predicate: { count_at_least: { field: subsystems, min: 1 } }
+  - name: subsystems_max
+    path: docs/stack_contract.json
+    predicate: { count_at_most: { field: subsystems, max: 8 } }
+  - name: arch_mentions_cpp_and_cmake
+    path: docs/architecture.md
+    predicate: { contains_keywords: { all_of: ["C++", CMake] } }
+  - name: not_python_typescript_or_flutter
+    path: docs/architecture.md
+    predicate: { forbidden_patterns: { patterns: ["pyproject\\.toml", "package\\.json", "pubspec\\.yaml", "lib/main\\.dart"] } }
