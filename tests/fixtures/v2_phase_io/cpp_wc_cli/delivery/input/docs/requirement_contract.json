@@ -1,0 +1,156 @@
+{
+  "project_name": "wc-tool",
+  "summary": "A C++17 command-line tool that computes line count, word count, and byte count for a given file, mirroring the Unix wc utility. Built with CMake, tested with CTest, producing a single static binary with no runtime dependencies beyond the C++ standard library.",
+  "functional_requirements": [
+    {
+      "id": "FR-001",
+      "title": "File Input and Argument Parsing",
+      "description": "The tool accepts a single positional argument specifying the file path. It must validate the argument exists and the file is readable, printing errors to stderr and exiting non-zero on failure.",
+      "acceptance_criteria": [
+        "Exactly one file path argument is accepted",
+        "No argument produces an error to stderr with non-zero exit",
+        "Non-existent file produces an error to stderr with non-zero exit"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-002",
+      "title": "Line Count",
+      "description": "The tool counts newline characters as lines, with wc-compatible semantics: empty file yields 0, and a file without a trailing newline still counts the last line.",
+      "acceptance_criteria": [
+        "Each newline character contributes exactly one to line count",
+        "Empty file produces line count of 0",
+        "File without trailing newline still counts the final line"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-003",
+      "title": "Word Count",
+      "description": "The tool counts whitespace-delimited words where a word is a maximal sequence of non-whitespace characters. Multiple consecutive whitespace characters do not produce extra words.",
+      "acceptance_criteria": [
+        "A word is a maximal sequence of non-whitespace characters",
+        "Empty file produces word count of 0",
+        "Multiple consecutive whitespace characters do not produce extra words"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-004",
+      "title": "Byte Count",
+      "description": "The tool reports the total number of bytes in the file, equivalent to the file size in bytes as reported by the operating system.",
+      "acceptance_criteria": [
+        "Byte count equals the file size in bytes",
+        "Empty file produces byte count of 0"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-005",
+      "title": "Output Format",
+      "description": "The tool prints three integers (lines, words, bytes) separated by single spaces, followed by the filename, to stdout.",
+      "acceptance_criteria": [
+        "Output format is: <lines> <words> <bytes> <filename>",
+        "Fields are separated by exactly one space",
+        "Filename printed is the user-provided argument, not a canonicalised path"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-006",
+      "title": "Build System",
+      "description": "The project is buildable with CMake using C++17 as the strict language standard, producing a single static binary with no runtime dependencies.",
+      "acceptance_criteria": [
+        "CMakeLists.txt exists at the project root",
+        "Build system enforces C++17",
+        "Build produces a single static binary with no runtime dependencies"
+      ],
+      "priority": "P1"
+    },
+    {
+      "id": "FR-007",
+      "title": "Unit Tests",
+      "description": "The project includes unit tests for each counting primitive using the CTest framework with no third-party dependencies. Separate test executables are registered with add_test.",
+      "acceptance_criteria": [
+        "Separate test executables exist for line-count, word-count, and byte-count",
+        "Tests are registered with add_test in CMake",
+        "No third-party testing frameworks are used"
+      ],
+      "priority": "P1"
+    }
+  ],
+  "non_functional_requirements": [
+    {
+      "id": "NFR-001",
+      "title": "Performance",
+      "description": "The tool reads the input file exactly once, processes files of at least 1 GB within 30 seconds on standard hardware, and uses O(1) memory with respect to file size via streaming read.",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-002",
+      "title": "Portability",
+      "description": "The tool compiles and runs on Linux (glibc) and macOS (Apple clang) using C++17, and is relocatable with no hardcoded paths.",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-003",
+      "title": "Reliability",
+      "description": "The tool handles binary files gracefully without crashing and does not produce undefined behaviour on empty files, very large files, or files with unusual encodings.",
+      "priority": "P1"
+    }
+  ],
+  "use_cases": [
+    {
+      "id": "UC-001",
+      "actor": "User",
+      "goal": "Obtain line, word, and byte counts for a given file.",
+      "preconditions": [
+        "A file exists and is readable"
+      ],
+      "main_flow": [
+        "User invokes wc-tool with a file path argument",
+        "The tool opens the file for reading",
+        "The tool reads the file once, counting lines, words, and bytes",
+        "The tool prints the results to stdout in the format: lines words bytes filename"
+      ],
+      "covers_requirements": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005"
+      ]
+    },
+    {
+      "id": "UC-002",
+      "actor": "User",
+      "goal": "Receive an error message when no file argument is provided.",
+      "preconditions": [],
+      "main_flow": [
+        "User invokes wc-tool without arguments",
+        "The tool detects the missing argument",
+        "The tool prints an error message to stderr",
+        "The tool exits with a non-zero status code"
+      ],
+      "covers_requirements": [
+        "FR-001"
+      ]
+    },
+    {
+      "id": "UC-003",
+      "actor": "User",
+      "goal": "Receive an error message when the specified file does not exist.",
+      "preconditions": [],
+      "main_flow": [
+        "User invokes wc-tool with a non-existent file path",
+        "The tool attempts to open the file",
+        "The tool detects the file does not exist",
+        "The tool prints an error message to stderr",
+        "The tool exits with a non-zero status code"
+      ],
+      "covers_requirements": [
+        "FR-001"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+aise_version: "0.1.0"
+scenario_id: cpp_wc_cli
+phase: implementation
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a C++17 ``wc``-like CLI — single binary, CMake, CTest, stdlib only.
+
+max_review_iterations: 1
+timeout_sec: 1800
+
+assertions:
+  # Per-component source files. Architect's stack_contract enumerates
+  # the exact paths; we spot-check the canonical line/word/byte counters.
+  - name: line_counter_present
+    path: src/counter/line_counter.cpp
+    predicate: file_exists
+    severity: warn   # naming may vary slightly (line.cpp vs line_counter.cpp)
+
+  - name: word_counter_present
+    path: src/counter/word_counter.cpp
+    predicate: file_exists
+    severity: warn
+
+  - name: byte_counter_present
+    path: src/counter/byte_counter.cpp
+    predicate: file_exists
+    severity: warn
+
+  # Header companions are conventional in C++ — at minimum line_counter
+  # should have one even if architect chose a header-only style.
+  - name: line_counter_header
+    path: src/counter/line_counter.h
+    predicate: file_exists
+    severity: warn
+
+  # Per-component unit tests
+  - name: line_counter_test_present
+    path: tests/test_line_counter.cpp
+    predicate: file_exists
+    severity: warn
+
+  - name: word_counter_test_present
+    path: tests/test_word_counter.cpp
+    predicate: file_exists
+    severity: warn
+
+  # Implementation MUST NOT write src/main.cpp (entry — main_entry's job).
+  # Captured at severity=warn matching the same dev-overreach signal we
+  # documented in PR #140 for python_cli/typescript/go.
+  - name: implementation_does_not_write_main
+    path: src/main.cpp
+    predicate: { forbidden_patterns: { patterns: ["int\\s+main\\s*\\("] } }
+    severity: warn

@@ -1,0 +1,74 @@
+{
+  "language": "cpp",
+  "runtime": "native",
+  "framework_backend": "",
+  "framework_frontend": "",
+  "package_manager": "cmake",
+  "project_config_file": "CMakeLists.txt",
+  "test_runner": "ctest",
+  "static_analyzer": ["clang-tidy"],
+  "entry_point": "src/main.cpp",
+  "run_command": "cmake -B build && cmake --build build && ./build/wc-tool",
+  "ui_required": false,
+  "ui_kind": "",
+  "subsystems": [
+    {
+      "name": "input",
+      "src_dir": "src/input",
+      "responsibilities": "命令行参数解析和文件打开",
+      "components": [
+        {
+          "name": "arg_parser",
+          "file": "src/input/arg_parser.cpp",
+          "test_file": "tests/test_arg_parser.cpp",
+          "responsibility": "解析并验证命令行参数"
+        },
+        {
+          "name": "file_opener",
+          "file": "src/input/file_opener.cpp",
+          "test_file": "tests/test_file_opener.cpp",
+          "responsibility": "打开文件流进行读取"
+        }
+      ]
+    },
+    {
+      "name": "counter",
+      "src_dir": "src/counter",
+      "responsibilities": "行计数、单词计数和字节计数算法实现",
+      "components": [
+        {
+          "name": "line_counter",
+          "file": "src/counter/line_counter.cpp",
+          "test_file": "tests/test_line_counter.cpp",
+          "responsibility": "统计换行符数量"
+        },
+        {
+          "name": "word_counter",
+          "file": "src/counter/word_counter.cpp",
+          "test_file": "tests/test_word_counter.cpp",
+          "responsibility": "统计单词数量"
+        },
+        {
+          "name": "byte_counter",
+          "file": "src/counter/byte_counter.cpp",
+          "test_file": "tests/test_byte_counter.cpp",
+          "responsibility": "统计字节数量"
+        }
+      ]
+    },
+    {
+      "name": "output",
+      "src_dir": "src/output",
+      "responsibilities": "格式化并打印结果到标准输出",
+      "components": [
+        {
+          "name": "formatter",
+          "file": "src/output/formatter.cpp",
+          "test_file": "tests/test_output_formatter.cpp",
+          "responsibility": "将统计结果格式化为指定格式"
+        }
+      ]
+    }
+  ],
+  "lifecycle_inits": []
+}
