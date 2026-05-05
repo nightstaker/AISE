@@ -273,6 +273,122 @@ class TestSchemaPredicate:
         assert r.passed, r.detail
 
 
+# -- qa_report.schema.json (added 2026-05-05) ---------------------------
+
+
+class TestQaReportSchema:
+    """Validates docs/qa_report.json against the bundled schema. The
+    schema was promoted from prose-only to AUTO_GATE-enforced after
+    the 2026-05-05 phase-test matrix found qa_engineer skipping the
+    report on toolchain-missing branches."""
+
+    def test_minimal_valid_report_passes(self, tmp_path: Path):
+        # Smallest legal qa_report — toolchain present, no UI, ran=true.
+        report = {
+            "phase": "qa",
+            "completed_at": "2026-05-05T00:00:00Z",
+            "toolchain_check": {"pytest": "present"},
+            "pytest": {
+                "command": "python -m pytest -q",
+                "ran": True,
+                "passed": 12,
+                "failed": 0,
+                "skipped": 0,
+                "failed_tests": [],
+            },
+        }
+        (tmp_path / "qa_report.json").write_text(json.dumps(report), encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("schema", "schemas/qa_report.schema.json"),
+            _ctx(tmp_path, "qa_report.json"),
+        )
+        assert r.passed, r.detail
+
+    def test_runner_missing_branch_passes(self, tmp_path: Path):
+        # The exact branch the prompt MUST cover but historically
+        # didn't: toolchain missing → ran=false → counts omitted.
+        # The schema accepts this without inventing pass/fail numbers.
+        report = {
+            "phase": "qa",
+            "toolchain_check": {"vitest": "missing", "npx": "missing"},
+            "pytest": {
+                "command": "npx vitest run",
+                "ran": False,
+                "reason": "vitest not on PATH",
+            },
+        }
+        (tmp_path / "qa_report.json").write_text(json.dumps(report), encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("schema", "schemas/qa_report.schema.json"),
+            _ctx(tmp_path, "qa_report.json"),
+        )
+        assert r.passed, r.detail
+
+    def test_ui_validation_branch_passes(self, tmp_path: Path):
+        # Flutter / pygame projects: ui_validation block populated.
+        report = {
+            "phase": "qa",
+            "toolchain_check": {"flutter": "missing"},
+            "pytest": {"command": "flutter test", "ran": False, "reason": "flutter missing"},
+            "ui_validation": {
+                "required": True,
+                "verdict": "SKIPPED_HEADLESS_ONLY",
+                "reason": "no display server",
+                "pixel_smoke": {
+                    "non_bg_samples": 0,
+                    "threshold": 1000,
+                    "frame_path": "artifacts/smoke_frame_0.png",
+                    "verdict": "SKIPPED",
+                },
+            },
+        }
+        (tmp_path / "qa_report.json").write_text(json.dumps(report), encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("schema", "schemas/qa_report.schema.json"),
+            _ctx(tmp_path, "qa_report.json"),
+        )
+        assert r.passed, r.detail
+
+    def test_missing_phase_field_fails(self, tmp_path: Path):
+        # ``phase`` is required at the top level — schema must reject.
+        report = {"toolchain_check": {"pytest": "present"}}
+        (tmp_path / "qa_report.json").write_text(json.dumps(report), encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("schema", "schemas/qa_report.schema.json"),
+            _ctx(tmp_path, "qa_report.json"),
+        )
+        assert not r.passed
+        assert "phase" in r.detail
+
+    def test_missing_toolchain_check_fails(self, tmp_path: Path):
+        # toolchain_check is required: phase 6 reads it to decide
+        # whether reported pass/fail counts can be trusted.
+        report = {"phase": "qa"}
+        (tmp_path / "qa_report.json").write_text(json.dumps(report), encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("schema", "schemas/qa_report.schema.json"),
+            _ctx(tmp_path, "qa_report.json"),
+        )
+        assert not r.passed
+        assert "toolchain_check" in r.detail
+
+    def test_pytest_missing_ran_field_fails(self, tmp_path: Path):
+        # When the ``pytest`` object is present, ``ran`` is required
+        # so phase 6 can branch on it.
+        report = {
+            "phase": "qa",
+            "toolchain_check": {"pytest": "present"},
+            "pytest": {"command": "pytest"},
+        }
+        (tmp_path / "qa_report.json").write_text(json.dumps(report), encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("schema", "schemas/qa_report.schema.json"),
+            _ctx(tmp_path, "qa_report.json"),
+        )
+        assert not r.passed
+        assert "ran" in r.detail
+
+
 # -- language_supported ---------------------------------------------------
 
 

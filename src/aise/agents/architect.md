@@ -128,6 +128,27 @@ own — if you don't lay down the skeleton, nobody will.
     parent's `src_dir`. The runtime validates this — a flat layout
     where components point at sibling top-level paths fails the
     check and triggers an architect re-dispatch.
+  - **The JSON key is literally `"file"` regardless of language.**
+    Do not rename it to `"path"` / `"source"` / `"header"` /
+    `"src"` / `"location"` even when the language has multiple
+    file kinds. The schema's `required: ["name", "file"]` rejects
+    aliases. Concrete examples:
+
+    | Language | Component example |
+    | --- | --- |
+    | Python | `{"name": "router", "file": "src/api/router.py"}` |
+    | TypeScript | `{"name": "echo_handler", "file": "src/routes/echo_handler.ts"}` |
+    | Go | `{"name": "echo_handler", "file": "internal/handlers/echo_handler.go"}` |
+    | Rust | `{"name": "router", "file": "src/api/router.rs"}` |
+    | Dart / Flutter | `{"name": "battle_engine", "file": "lib/gameplay/battle_engine.dart"}` |
+    | C++ | `{"name": "line_counter", "file": "src/counter/line_counter.cpp"}` |
+
+    For C++ specifically: `"file"` references the primary `.cpp`.
+    A matching `.h` is implied (the developer phase will write it
+    as a sibling deliverable); do NOT add a separate `"header"`
+    JSON field. Listed C++ component files MUST end in `.cpp`,
+    `.cc`, or `.cxx` — never `.h` / `.hpp` (those are not
+    standalone components).
   - Soft cap: aim for ≤ 10 subsystems for typical projects. If you
     exceed it, you are likely flat-listing components again.
   - **`lifecycle_inits[]` is REQUIRED** (use `[]` explicitly when no

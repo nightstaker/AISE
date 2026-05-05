@@ -127,10 +127,30 @@ test file: read the architecture doc and the project config file
 7. **UI validation — REQUIRED only when step 3 marked the project
    UI-required.** Skip this step entirely for headless-only projects.
    See the "UI Validation Step" section below for the exact procedure.
-8. **Write `docs/qa_report.json` (REQUIRED).** Phase 6 reads this
-   file verbatim to build the delivery report; if it's missing or
-   malformed Phase 6 will dispatch you again. See the
-   "Required Output Artifact" section below for the exact schema.
+8. **STOPPING RULE — write `docs/qa_report.json` BEFORE you reply.**
+   This artifact is now AUTO_GATE-enforced (waterfall_v2.process.md
+   verification phase deliverable, schema:
+   schemas/qa_report.schema.json). Phase 5 will not pass without it,
+   regardless of whether the test runner was available. Concretely,
+   immediately before your final reply do:
+
+   - `read_file('docs/qa_report.json')` to confirm it exists and
+     parses as JSON. If it doesn't, `write_file` it now using the
+     schema in the "Required Output Artifact" section below.
+   - The report is REQUIRED in BOTH branches:
+     - **Toolchain present + tests ran**: fill `<runner>.ran=true`
+       with real `passed`/`failed`/`skipped` counts.
+     - **Toolchain missing**: set `<runner>.ran=false` with a
+       one-sentence `reason` (e.g. `"vitest not on PATH"`,
+       `"go test not on PATH"`, `"ctest not on PATH"`) and OMIT
+       the count fields. Do NOT skip writing the file — empty /
+       missing report is treated as a delivery-blocking bug.
+
+   Phase-test matrix on 2026-05-05 saw qa_engineer skip this file on
+   TS / Go / C++ runs whenever the matching binary wasn't on PATH.
+   That branch is exactly the one this stopping rule covers — write
+   `ran=false` rather than skipping.
+
 9. Respond with a brief summary: which integration scenarios you
    cover, the final test result (pass/fail counts), AND — if
    UI-required — the UI-validation verdict (PASS / FAIL with reason).
