@@ -67,13 +67,13 @@ own — if you don't lay down the skeleton, nobody will.
 
   ```json
   {
-    "language": "python|typescript|javascript|go|rust|java|kotlin|csharp|...",
-    "runtime": "cpython|node|deno|jvm|dotnet|native|...",
+    "language": "python|typescript|javascript|go|rust|cpp|kotlin|swift|dart|...",
+    "runtime": "cpython|node|deno|native|jvm|...",
     "framework_backend": "<pinned framework name, or empty string if N/A>",
     "framework_frontend": "<pinned framework name, or empty string if N/A>",
-    "package_manager": "pip|npm|yarn|pnpm|cargo|go|maven|gradle|nuget|...",
-    "project_config_file": "pyproject.toml|package.json|Cargo.toml|go.mod|pom.xml|...",
-    "test_runner": "pytest|vitest|jest|go test|cargo test|mvn test|...",
+    "package_manager": "pip|npm|yarn|pnpm|cargo|go|cmake|conan|vcpkg|pub|...",
+    "project_config_file": "pyproject.toml|package.json|Cargo.toml|go.mod|CMakeLists.txt|pubspec.yaml|...",
+    "test_runner": "pytest|vitest|jest|go test|cargo test|ctest|flutter test|...",
     "static_analyzer": ["<one or more analyzer commands>"],
     "entry_point": "<source file path of the runnable entry, e.g. src/main.py>",
     "run_command": "<single shell command that boots the app, e.g. 'python src/main.py'>",
@@ -148,8 +148,8 @@ own — if you don't lay down the skeleton, nobody will.
     | Stack signal | Required `src_dir` prefix | Required `entry_point` |
     | ------------ | ------------------------- | ---------------------- |
     | `framework_frontend = flutter` (or `language = dart`) | `lib/` | `lib/main.dart` |
-    | `package_manager = maven` (or `gradle`) | `src/main/java/` | `src/main/java/.../App.java` |
     | `language = go` | `internal/` | `cmd/<app>/main.go` |
+    | `language = cpp` (or `c++`) | `src/` | `src/main.cpp` (single executable) — `project_config_file = CMakeLists.txt`, `test_runner = ctest` |
     | (anything else) | `src/` is the safe default | matching language convention |
 
     For Flutter projects every `subsystems[].src_dir`, every
@@ -212,15 +212,17 @@ own — if you don't lay down the skeleton, nobody will.
   name; equal to the corresponding `subsystems[].name` in
   `docs/stack_contract.json`. Each directory carries the minimum
   barrel file the language needs (`__init__.py` for Python,
-  `index.ts` for TypeScript, `mod.rs` for Rust, `doc.go` for Go,
-  `package-info.java` for Java). Barrel files should re-export the
-  subsystem's public interface or be empty — no logic.
+  `index.ts` for TypeScript, `mod.rs` for Rust, `doc.go` for Go).
+  C++ / kotlin / swift have no per-folder barrel convention — leave
+  the directory bare and rely on the build system. Barrel files (when
+  required) should re-export the subsystem's public interface or be
+  empty — no logic.
 
 **Conditional scaffolding — produce when the stack demands it:**
 
 - **Project configuration file** — `pyproject.toml`, `package.json`,
   `requirements.txt`, `tsconfig.json`, `Cargo.toml`, `go.mod`,
-  `pom.xml`, `build.gradle.kts`, etc. Pin the language version and
+  `CMakeLists.txt`, `pubspec.yaml`, etc. Pin the language version and
   declare every runtime dependency your tech-stack choice requires.
   Whatever framework you put in
   `stack_contract.framework_backend` / `framework_frontend` MUST
@@ -371,10 +373,11 @@ task complete until every step has run.
      `internal/<subsystem>/doc.go` barrel
    - Rust: `src/<subsystem>/<component>.rs` +
      `src/<subsystem>/mod.rs` barrel
-   - Java: `src/main/java/<group>/<subsystem>/<Component>.java`
-     + `src/main/java/<group>/<subsystem>/package-info.java`
-   - C# / .NET: `src/<Subsystem>/<Component>.cs` with
-     `namespace <App>.<Subsystem>;`
+   - C++: `src/<subsystem>/<component>.cpp` (+ matching
+     `src/<subsystem>/<component>.h` declaration if you need a
+     stable public surface). No per-folder barrel; downstream
+     `target_include_directories(... PRIVATE src)` keeps includes
+     working.
 
    In your response text, quote the subsystem → directory mapping
    AND the component → file mapping explicitly so the developer
@@ -395,8 +398,7 @@ task complete until every step has run.
    | TypeScript / JavaScript | `index.ts` / `index.js` | `export *` re-exports of the subsystem's public API |
    | Rust | `mod.rs` | `pub mod ...;` declarations for each child component |
    | Go | `doc.go` | `// Package <subsystem> ...` doc comment |
-   | Java / Kotlin | `package-info.java` | `/** Subsystem responsibility ... */` package doc |
-   | C# / .NET | `<Subsystem>.cs` placeholder with `namespace ...` declaration | Empty namespace skeleton |
+   | C++ / Kotlin / Swift | (none) | No barrel file — rely on the build system's include / module path |
 
    Per-component source stubs go inside the subsystem directory
    following the `subsystems[].components[].file` paths from

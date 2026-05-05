@@ -35,12 +35,14 @@ class TestDefaultAcl:
             assert d.allowed, f"architect should be allowed to write {path}: {d.detail}"
 
     def test_architect_cannot_write_assets(self):
-        """Regression: project_1-tower had architect writing 248 .cs files
-        into Assets/. ACL must reject that."""
-        d = check_write("architect", "Assets/Scripts/Main.cs")
+        """Regression: project_1-tower had architect writing 248 source
+        files into Assets/. ACL must reject that — architect's role is
+        docs/, not source. Path uses .cpp now since csharp support was
+        dropped on 2026-05-04, but the regression intent is unchanged."""
+        d = check_write("architect", "Assets/Scripts/Main.cpp")
         assert not d.allowed
         assert "architect" in d.detail
-        assert "Assets/Scripts/Main.cs" in d.path
+        assert "Assets/Scripts/Main.cpp" in d.path
 
     def test_architect_cannot_write_tests(self):
         d = check_write("architect", "tests/test_x.py")
@@ -48,14 +50,15 @@ class TestDefaultAcl:
 
     def test_developer_can_write_assets_and_src(self):
         for path in (
-            "Assets/Scripts/Main.cs",
-            "Assets/Scripts/UI/MainMenu.cs",
             "src/main.py",
             "src/core/router.py",
+            "src/core/foo.cpp",
+            "src/core/foo.h",
             "lib/main.dart",
             "tests/test_foo.py",
             "scripts/validate.py",
             "pubspec.yaml",
+            "CMakeLists.txt",
         ):
             d = check_write("developer", path)
             assert d.allowed, f"developer should be allowed to write {path}"

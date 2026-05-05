@@ -524,11 +524,20 @@ class TestSubsystemTaskDescriptionDeterministic:
 
 class TestLanguageToolchainCoverage:
     def test_mainstream_languages_present(self):
-        for lang in ("python", "typescript", "javascript", "go", "rust", "java"):
+        for lang in ("python", "typescript", "javascript", "go", "rust", "cpp", "dart"):
             assert lang in _LANGUAGE_TOOLCHAIN, (
                 f"mainstream language {lang!r} missing from "
                 f"_LANGUAGE_TOOLCHAIN — every Phase-3 fan-out for that "
                 f"language would fall back to Python defaults"
+            )
+
+    def test_dropped_languages_absent(self):
+        # csharp / cs / java were removed on 2026-05-04 — re-adding any
+        # of them needs a deliberate code change, not a silent fallback.
+        for lang in ("csharp", "cs", "java"):
+            assert lang not in _LANGUAGE_TOOLCHAIN, (
+                f"language {lang!r} unexpectedly present in _LANGUAGE_TOOLCHAIN; "
+                "the support was dropped — do not add it back without an explicit decision"
             )
 
     def test_each_row_has_required_keys(self):

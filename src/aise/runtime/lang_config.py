@@ -72,11 +72,16 @@ _LANGUAGES: tuple[_LangSpec, ...] = (
         extensions=(".rs",),
         config_filename="Cargo.toml",
     ),
+    # C++17+ canonical detection: count source extensions only (.cpp /
+    # .cc / .cxx). Headers (.h / .hpp) are excluded so a single-header
+    # vendor library doesn't out-vote a Python project. CMake is the
+    # single-source-of-truth project file we generate; conan/vcpkg are
+    # treated as alternative configs and never overwritten.
     _LangSpec(
-        key="java",
-        extensions=(".java",),
-        config_filename="pom.xml",
-        other_config_filenames=("build.gradle", "build.gradle.kts"),
+        key="cpp",
+        extensions=(".cpp", ".cc", ".cxx"),
+        config_filename="CMakeLists.txt",
+        other_config_filenames=("conanfile.txt", "conanfile.py", "vcpkg.json"),
     ),
 )
 
@@ -208,8 +213,8 @@ def _render_config(spec: _LangSpec, name: str, run_command: str) -> str:
         return _render_go_mod(name)
     if spec.key == "rust":
         return _render_cargo_toml(name)
-    if spec.key == "java":
-        return _render_pom_xml(name)
+    if spec.key == "cpp":
+        return _render_cmake_lists(name, run_command)
     # Defensive fallback — should never fire given the spec list.
     return f"# AISE-generated placeholder for {spec.key}\n"
 
@@ -286,17 +291,35 @@ def _render_cargo_toml(name: str) -> str:
     )
 
 
-def _render_pom_xml(name: str) -> str:
+def _render_cmake_lists(name: str, run_command: str) -> str:
+    """Minimal CMakeLists.txt for a C++17 project.
+
+    Generates a single executable target named after the project, plus
+    a ctest-discovered test target if a ``tests/`` directory exists at
+    build time. Source globs match ``src/*.cpp`` only (recursive globs
+    are deliberately avoided to keep build determinism — the developer
+    or downstream user should add explicit ``add_subdirectory`` calls
+    when subsystems land).
+    """
+    binary = name or "aise-project"
     return (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        "<!-- AISE-generated minimal pom.xml. -->\n"
-        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
-        "    <modelVersion>4.0.0</modelVersion>\n"
-        f"    <groupId>local.aise</groupId>\n"
-        f"    <artifactId>{name}</artifactId>\n"
-        f"    <version>0.1.0</version>\n"
-        "    <packaging>jar</packaging>\n"
-        "</project>\n"
+        "# AISE-generated minimal CMakeLists.txt. Extend with explicit\n"
+        "# add_subdirectory / target_link_libraries as the project grows.\n"
+        "cmake_minimum_required(VERSION 3.16)\n"
+        f"project({binary} CXX)\n"
+        "\n"
+        "set(CMAKE_CXX_STANDARD 17)\n"
+        "set(CMAKE_CXX_STANDARD_REQUIRED ON)\n"
+        "set(CMAKE_CXX_EXTENSIONS OFF)\n"
+        "\n"
+        "file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS src/*.cpp src/*.cc src/*.cxx)\n"
+        f"add_executable({binary} ${{SRC_FILES}})\n"
+        f"target_include_directories({binary} PRIVATE src)\n"
+        "\n"
+        "enable_testing()\n"
+        'if(EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")\n'
+        "    add_subdirectory(tests)\n"
+        "endif()\n"
     )
 
 

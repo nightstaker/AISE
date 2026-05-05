@@ -59,13 +59,10 @@ class ProbeResult:
 _PROBE_CACHE: dict[tuple[str, str], ProbeResult] = {}
 
 
-# Per-binary version-flag heuristic. Most CLIs accept --version; a
-# few (e.g. some old Java tools) only respond to -version. This map
-# is intentionally tiny — the default is --version.
-_VERSION_FLAGS: dict[str, str] = {
-    "java": "-version",
-    "javac": "-version",
-}
+# Per-binary version-flag heuristic. Most CLIs accept --version; this
+# map is intentionally tiny — the default is --version. Add an entry
+# only when an analyzer / runner uses something else (e.g. ``-V``).
+_VERSION_FLAGS: dict[str, str] = {}
 
 
 def probe_runner(stack_contract: dict[str, Any] | None) -> ProbeResult:

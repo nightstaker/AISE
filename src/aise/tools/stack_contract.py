@@ -117,11 +117,14 @@ _LANGUAGE_TOOLCHAIN: dict[str, dict[str, str]] = {
         "src_path_pattern": "src/{subsystem}/{component}.rs",
         "static_check": "cargo clippy -- -D warnings && cargo check",
     },
-    "java": {
-        "test_cmd": "mvn test -Dtest={Component}Test",
-        "test_path_pattern": "src/test/java/{subsystem}/{Component}Test.java",
-        "src_path_pattern": "src/main/java/{subsystem}/{Component}.java",
-        "static_check": "mvn -q compile",
+    "cpp": {
+        "test_cmd": "ctest --test-dir build -R {Component}Test --output-on-failure",
+        "test_path_pattern": "tests/{subsystem}/{component}_test.cpp",
+        "src_path_pattern": "src/{subsystem}/{component}.cpp",
+        # Build is the canonical "static check" for C++ — if it doesn't
+        # compile we already know it's wrong. A linter (clang-tidy /
+        # cppcheck) is optional and architect can pin one in static_analyzer.
+        "static_check": "cmake --build build --target {Component} 2>&1 | tail -200",
     },
     # Dart / Flutter convention. Source under ``lib/`` (NOT ``src/``) is
     # mandatory: ``package:`` imports only resolve against ``lib/``, and
@@ -152,7 +155,10 @@ _INTERFACE_FILENAME: dict[str, str] = {
     "js": "index.js",
     "go": "doc.go",
     "rust": "mod.rs",
-    "java": "package-info.java",
+    # C++ has no fixed barrel-file convention. Empty sentinel mirrors
+    # csharp/kotlin/swift's absence in the new table — caller (PhaseExecutor)
+    # treats "" as "skip the per-folder interface deliverable for this lang".
+    "cpp": "",
     # Dart's library-barrel convention: ``lib/<subsystem>/<subsystem>.dart``
     # is the public surface that sibling subsystems / the entry file
     # ``import 'package:<app>/<subsystem>/<subsystem>.dart'`` against.

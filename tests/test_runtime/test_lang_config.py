@@ -100,20 +100,41 @@ class TestGenerate:
         assert 'name = "rusty"' in body
         assert 'edition = "2021"' in body
 
-    def test_java_writes_pom_xml(self, workdir: Path) -> None:
-        _touch(workdir / "src" / "App.java")
-        result = generate_root_config(workdir, project_name="demo-api")
+    def test_cpp_writes_cmakelists(self, workdir: Path) -> None:
+        _touch(workdir / "src" / "main.cpp")
+        result = generate_root_config(workdir, project_name="demo-tool")
         assert result["created"] is True
-        body = (workdir / "pom.xml").read_text(encoding="utf-8")
-        assert "<artifactId>demo-api</artifactId>" in body
-        assert "<modelVersion>4.0.0</modelVersion>" in body
+        body = (workdir / "CMakeLists.txt").read_text(encoding="utf-8")
+        assert "cmake_minimum_required" in body
+        assert "project(demo-tool CXX)" in body
+        assert "CMAKE_CXX_STANDARD 17" in body
+        # Build target must reference the executable name from project_name
+        assert "add_executable(demo-tool" in body
+        # Tests sub-CMake is conditionally pulled in
+        assert "enable_testing()" in body
+
+    def test_cpp_alternative_configs_block_overwrite(self, workdir: Path) -> None:
+        # vcpkg.json / conanfile.* are valid C++ project configs — don't
+        # overwrite when they're already present.
+        _touch(workdir / "src" / "main.cpp")
+        (workdir / "vcpkg.json").write_text('{"name":"x"}\n', encoding="utf-8")
+        result = generate_root_config(workdir, project_name="x")
+        assert result["skipped"] is True
+        assert result["reason"] == "alternative-config-exists"
+        assert not (workdir / "CMakeLists.txt").exists()
 
     def test_skip_when_no_source(self, workdir: Path) -> None:
         result = generate_root_config(workdir)
         assert result["skipped"] is True
         assert result["reason"] == "no-source-detected"
         # No config file should have landed next to the empty src/ dir.
-        for marker in ("pyproject.toml", "package.json", "go.mod", "Cargo.toml", "pom.xml"):
+        for marker in (
+            "pyproject.toml",
+            "package.json",
+            "go.mod",
+            "Cargo.toml",
+            "CMakeLists.txt",
+        ):
             assert not (workdir / marker).exists()
 
     def test_skip_when_target_exists(self, workdir: Path) -> None:
