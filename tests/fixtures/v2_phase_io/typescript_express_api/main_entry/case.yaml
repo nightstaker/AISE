@@ -1,0 +1,36 @@
+aise_version: "0.1.0"
+scenario_id: typescript_express_api
+phase: main_entry
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a TypeScript REST API server using Node.js + Express.
+
+max_review_iterations: 1
+timeout_sec: 900
+
+assertions:
+  - name: entry_present
+    path: src/index.ts
+    predicate: file_exists
+
+  - name: entry_substantial
+    path: src/index.ts
+    predicate: { min_bytes: 100 }
+
+  # Canonical Express server bootstrap shape: app.listen(...)
+  - name: has_app_listen
+    path: src/index.ts
+    predicate: { regex_count: { pattern: "\\.listen\\s*\\(", min: 1 } }
+
+  # TypeScript imports
+  - name: imports_express
+    path: src/index.ts
+    predicate: { contains_keywords: { any_of: ["from 'express'", "from \"express\"", "import express"] } }
+
+  # Wires the routes — at least references one of the route modules
+  - name: wires_routes
+    path: src/index.ts
+    predicate: { contains_keywords: { any_of: [routes, healthz, echo, "from './routes"] } }

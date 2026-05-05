@@ -1,0 +1,94 @@
+{
+  "scenarios": [
+    {
+      "id": "unit_test_health_handler",
+      "name": "Unit test: health handler returns correct response",
+      "description": "The health handler unit test verifies that GET /healthz returns HTTP 200 with body {\"status\":\"ok\"} and correct Content-Type header using httptest.",
+      "preconditions": ["No prior state required"],
+      "trigger": {"action": "run", "command": "go test ./internal/handlers/... -run TestHealthHandler -v"},
+      "effect": {"test_passes": true},
+      "covers_requirements": ["FR-001", "FR-005"]
+    },
+    {
+      "id": "unit_test_echo_valid_input",
+      "name": "Unit test: echo handler with valid input",
+      "description": "The echo handler unit test verifies that POST /api/echo with valid JSON returns correct echo and length using httptest.",
+      "preconditions": ["No prior state required"],
+      "trigger": {"action": "run", "command": "go test ./internal/handlers/... -run TestEchoHandler -v"},
+      "effect": {"test_passes": true},
+      "covers_requirements": ["FR-002", "FR-005"]
+    },
+    {
+      "id": "unit_test_echo_missing_message",
+      "name": "Unit test: echo handler with missing message field",
+      "description": "The echo handler unit test verifies that POST /api/echo with a JSON body missing the message field returns HTTP 400 with {\"error\":\"invalid input\"} using httptest.",
+      "preconditions": ["No prior state required"],
+      "trigger": {"action": "run", "command": "go test ./internal/handlers/... -run TestEchoHandlerMissingMessage -v"},
+      "effect": {"test_passes": true},
+      "covers_requirements": ["FR-002", "FR-005"]
+    },
+    {
+      "id": "unit_test_echo_malformed_json",
+      "name": "Unit test: echo handler with malformed JSON",
+      "description": "The echo handler unit test verifies that POST /api/echo with an invalid JSON body returns HTTP 400 with {\"error\":\"invalid input\"} using httptest.",
+      "preconditions": ["No prior state required"],
+      "trigger": {"action": "run", "command": "go test ./internal/handlers/... -run TestEchoHandlerMalformedJSON -v"},
+      "effect": {"test_passes": true},
+      "covers_requirements": ["FR-002", "FR-005"]
+    },
+    {
+      "id": "unit_test_echo_message_too_long",
+      "name": "Unit test: echo handler with message exceeding maximum length",
+      "description": "The echo handler unit test verifies that POST /api/echo with a message exceeding 10,000 bytes returns HTTP 400 with {\"error\":\"message too long\"} using httptest.",
+      "preconditions": ["No prior state required"],
+      "trigger": {"action": "run", "command": "go test ./internal/handlers/... -run TestEchoHandlerMessageTooLong -v"},
+      "effect": {"test_passes": true},
+      "covers_requirements": ["NFR-003", "FR-005"]
+    },
+    {
+      "id": "unit_test_echo_non_string_message",
+      "name": "Unit test: echo handler with non-string message value",
+      "description": "The echo handler unit test verifies that POST /api/echo with a message value that is not a string type returns HTTP 400 with {\"error\":\"invalid input\"} using httptest.",
+      "preconditions": ["No prior state required"],
+      "trigger": {"action": "run", "command": "go test ./internal/handlers/... -run TestEchoHandlerNonStringMessage -v"},
+      "effect": {"test_passes": true},
+      "covers_requirements": ["FR-002", "FR-005"]
+    },
+    {
+      "id": "unit_test_wrong_method_healthz",
+      "name": "Unit test: healthz rejects non-GET methods",
+      "description": "The handler unit test verifies that POST /healthz returns HTTP 405 Method Not Allowed using httptest.",
+      "preconditions": ["No prior state required"],
+      "trigger": {"action": "run", "command": "go test ./internal/handlers/... -run TestWrongMethodHealthz -v"},
+      "effect": {"test_passes": true},
+      "covers_requirements": ["FR-003", "FR-005"]
+    },
+    {
+      "id": "unit_test_wrong_method_echo",
+      "name": "Unit test: echo rejects non-POST methods",
+      "description": "The echo handler unit test verifies that GET /api/echo returns HTTP 405 Method Not Allowed using httptest.",
+      "preconditions": ["No prior state required"],
+      "trigger": {"action": "run", "command": "go test ./internal/handlers/... -run TestWrongMethodEcho -v"},
+      "effect": {"test_passes": true},
+      "covers_requirements": ["FR-003", "FR-005"]
+    },
+    {
+      "id": "unit_test_not_found_handler",
+      "name": "Unit test: not found handler returns 404",
+      "description": "The router unit test verifies that the router's RegisterNotFound method correctly returns HTTP 404 with {\"error\":\"not found\"} and correct Content-Type for unregistered paths using httptest.",
+      "preconditions": ["No prior state required"],
+      "trigger": {"action": "run", "command": "go test ./internal/router/... -run TestNotFoundHandler -v"},
+      "effect": {"test_passes": true},
+      "covers_requirements": ["FR-004", "FR-005"]
+    },
+    {
+      "id": "unit_test_router_registration",
+      "name": "Unit test: router registers all routes",
+      "description": "The router unit test verifies that all routes (healthz, echo, not-found) are registered on the ServeMux correctly using httptest.",
+      "preconditions": ["No prior state required"],
+      "trigger": {"action": "run", "command": "go test ./internal/router/... -run TestRouterRegistration -v"},
+      "effect": {"test_passes": true},
+      "covers_requirements": ["FR-001", "FR-002", "FR-004"]
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+aise_version: "0.1.0"
+scenario_id: typescript_express_api
+phase: delivery
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a TypeScript REST API server using Node.js + Express.
+
+max_review_iterations: 1
+timeout_sec: 900
+
+assertions:
+  - name: delivery_report_present
+    path: docs/delivery_report.md
+    predicate: file_exists
+
+  - name: delivery_report_substantial
+    path: docs/delivery_report.md
+    predicate: { min_bytes: 600 }
+
+  - name: report_summarizes_prior_phases
+    path: docs/delivery_report.md
+    predicate: { prior_phases_summarized: 4 }
+
+  - name: report_mentions_typescript
+    path: docs/delivery_report.md
+    predicate: { contains_keywords: { all_of: [TypeScript] } }
+
+  - name: report_mentions_endpoints
+    path: docs/delivery_report.md
+    predicate: { contains_keywords: { any_of: [healthz, echo, "/api"] } }

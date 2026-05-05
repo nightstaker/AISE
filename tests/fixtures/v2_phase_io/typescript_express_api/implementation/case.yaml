@@ -1,0 +1,43 @@
+aise_version: "0.1.0"
+scenario_id: typescript_express_api
+phase: implementation
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a TypeScript REST API server using Node.js + Express.
+  - GET /healthz returning {"status":"ok"}
+  - POST /api/echo accepting JSON {"message":string} and returning {"echo":<message>,"length":<int>}
+
+max_review_iterations: 1
+timeout_sec: 1800
+
+assertions:
+  # The architect's stack_contract pinned 5+ components; spot-check the
+  # canonical handlers (subsystem path varies but route handlers always land).
+  - name: echo_handler_present
+    path: src/routes/echo_handler.ts
+    predicate: file_exists
+    severity: warn   # exact filename may vary (echo.ts vs echo_handler.ts)
+
+  - name: health_handler_present
+    path: src/routes/health_handler.ts
+    predicate: file_exists
+    severity: warn
+
+  - name: echo_handler_test_present
+    path: tests/routes/echo_handler.test.ts
+    predicate: file_exists
+    severity: warn
+
+  - name: health_handler_test_present
+    path: tests/routes/health_handler.test.ts
+    predicate: file_exists
+    severity: warn
+
+  # Implementation must NOT write src/index.ts (entry point — main_entry's job)
+  - name: implementation_does_not_write_entry
+    path: src/index.ts
+    predicate: { forbidden_patterns: { patterns: ["app\\.listen\\(", "createServer\\("] } }
+    severity: warn

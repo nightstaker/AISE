@@ -1,0 +1,75 @@
+{
+  "language": "typescript",
+  "runtime": "node",
+  "framework_backend": "express",
+  "framework_frontend": "",
+  "package_manager": "npm",
+  "project_config_file": "package.json",
+  "test_runner": "vitest",
+  "static_analyzer": ["tsc --noEmit"],
+  "entry_point": "src/index.ts",
+  "run_command": "npm run build && node dist/index.js",
+  "ui_required": false,
+  "ui_kind": "",
+  "subsystems": [
+    {
+      "name": "server",
+      "src_dir": "src/server",
+      "responsibilities": "Express application construction and route registration",
+      "components": [
+        {
+          "name": "app_builder",
+          "file": "src/server/app_builder.ts",
+          "test_file": "tests/server/app_builder.test.ts",
+          "responsibility": "Create Express application instance and configure middleware"
+        },
+        {
+          "name": "router",
+          "file": "src/server/router.ts",
+          "test_file": "tests/server/router.test.ts",
+          "responsibility": "Define route mappings and register all endpoint handlers"
+        }
+      ]
+    },
+    {
+      "name": "routes",
+      "src_dir": "src/routes",
+      "responsibilities": "HTTP route handler implementations for all endpoints",
+      "components": [
+        {
+          "name": "health_handler",
+          "file": "src/routes/health_handler.ts",
+          "test_file": "tests/routes/health_handler.test.ts",
+          "responsibility": "Handle GET /healthz endpoint logic"
+        },
+        {
+          "name": "echo_handler",
+          "file": "src/routes/echo_handler.ts",
+          "test_file": "tests/routes/echo_handler.test.ts",
+          "responsibility": "Handle POST /api/echo endpoint business logic"
+        }
+      ]
+    },
+    {
+      "name": "middleware",
+      "src_dir": "src/middleware",
+      "responsibilities": "Error handling middleware for malformed requests",
+      "components": [
+        {
+          "name": "error_handler",
+          "file": "src/middleware/error_handler.ts",
+          "test_file": "tests/middleware/error_handler.test.ts",
+          "responsibility": "Handle JSON parse errors and global error handling"
+        }
+      ]
+    }
+  ],
+  "lifecycle_inits": [
+    {
+      "attr": "app",
+      "method": "registerRoutes",
+      "class": "EntryPoint",
+      "module": "src/index.ts"
+    }
+  ]
+}
