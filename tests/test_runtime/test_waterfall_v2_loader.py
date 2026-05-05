@@ -125,11 +125,26 @@ class TestLoadBundledWaterfallV2:
         assert dlv is not None
         assert dlv.reviewer == ("rd_director",)
 
-    def test_review_budget_3_everywhere(self):
+    def test_review_budget_tiered_by_phase(self):
+        # revise_budget tiered on 2026-05-05 (perf optimization A2): phase 2
+        # architecture keeps 3 (framing decisions warrant deeper review);
+        # phase 6 delivery drops to 1 (summary phase, extra rounds rarely
+        # change anything); other phases drop to 2 — observed across the
+        # 5-scenario matrix that iter 3 produces near-zero new fixes.
+        expected = {
+            "requirements": 2,
+            "architecture": 3,
+            "implementation": 2,
+            "main_entry": 2,
+            "verification": 2,
+            "delivery": 1,
+        }
         spec = load_waterfall_v2(default_waterfall_v2_path())
         for ph in spec.phases:
             assert ph.review is not None, ph.id
-            assert ph.review.revise_budget == 3, ph.id
+            assert ph.review.revise_budget == expected[ph.id], (
+                f"{ph.id}: revise_budget={ph.review.revise_budget}, expected {expected[ph.id]}"
+            )
             assert ph.review.consensus == "ALL_PASS", ph.id
             assert ph.review.on_revise_exhausted == "continue_with_marker", ph.id
 
