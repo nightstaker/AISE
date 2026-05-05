@@ -1,0 +1,47 @@
+aise_version: "0.1.0"
+scenario_id: typescript_express_api
+phase: architecture
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a TypeScript REST API server using Node.js + Express.
+  - GET /healthz returning {"status":"ok"}
+  - POST /api/echo accepting JSON {"message":string} and returning {"echo":<message>,"length":<int>}
+
+max_review_iterations: 1
+timeout_sec: 1500
+
+assertions:
+  - { name: arch_md_present,             path: docs/architecture.md, predicate: file_exists }
+  - { name: arch_md_substantial,         path: docs/architecture.md, predicate: { min_bytes: 2000 } }
+  - { name: stack_contract_present,      path: docs/stack_contract.json, predicate: file_exists }
+  - { name: behavioral_contract_present, path: docs/behavioral_contract.json, predicate: file_exists }
+  - name: stack_schema_valid
+    path: docs/stack_contract.json
+    predicate: { schema: schemas/stack_contract.schema.json }
+  - name: language_typescript
+    path: docs/stack_contract.json
+    predicate: { json_field_equals: { field: language, expected: typescript } }
+  - name: package_manager_node
+    path: docs/stack_contract.json
+    predicate: { json_field_one_of: { field: package_manager, allowed: [npm, pnpm, yarn] } }
+  - name: test_runner_vitest_or_jest
+    path: docs/stack_contract.json
+    predicate: { json_field_one_of: { field: test_runner, allowed: ["vitest", "jest", "vitest run", "npx vitest", "npx vitest run"] } }
+  - name: ui_required_false
+    path: docs/stack_contract.json
+    predicate: { json_field_equals: { field: ui_required, expected: false } }
+  - name: subsystems_min
+    path: docs/stack_contract.json
+    predicate: { count_at_least: { field: subsystems, min: 1 } }
+  - name: subsystems_max
+    path: docs/stack_contract.json
+    predicate: { count_at_most: { field: subsystems, max: 8 } }
+  - name: arch_mentions_express
+    path: docs/architecture.md
+    predicate: { contains_keywords: { all_of: [Express, TypeScript] } }
+  - name: not_a_python_or_flutter
+    path: docs/architecture.md
+    predicate: { forbidden_patterns: { patterns: ["pyproject\\.toml", "pubspec\\.yaml", "lib/main\\.dart"] } }

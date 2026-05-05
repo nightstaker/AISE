@@ -1,0 +1,66 @@
+# Phase-contract test case: implementation phase against the Flutter
+# magic-tower scenario.
+#
+# Input: post-architecture snapshot (docs/* + pubspec.yaml — no ios/
+# android/ scaffolds; those come from `flutter create` and aren't the
+# architect's responsibility). Output expected: developer fans out and
+# writes one Dart file per stack_contract.subsystems[].components[].file
+# with a matching test under test/.
+#
+# Run with:
+#   aise v2-phase-test --case tests/fixtures/v2_phase_io/flutter_mobile_game/implementation/case.yaml
+
+aise_version: "0.1.0"
+scenario_id: flutter_mobile_game
+phase: implementation
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  开发一款可以上架商店的商用魔塔（Magic Tower）手机游戏 APP（Flutter + Dart）。
+
+max_review_iterations: 1
+timeout_sec: 3600
+
+assertions:
+  # -- Source files produced under lib/ (Flutter convention, not src/) --
+  - name: lib_main_dart_NOT_yet_present
+    path: lib/main.dart
+    # Note: implementation phase MUST NOT write lib/main.dart — that's
+    # main_entry's job. We use forbidden_patterns with severity=warn since
+    # the predicate fails on missing file, and "missing" is what we want.
+    predicate:
+      forbidden_patterns:
+        patterns: ["void main\\("]
+    severity: warn
+
+  # -- At minimum, the gameplay subsystem should have its core combat module --
+  - name: combat_engine_or_battle_engine_present
+    path: lib/gameplay/battle_engine.dart
+    predicate: file_exists
+    severity: warn   # naming may vary slightly: battle_engine vs combat_engine
+
+  # -- Sanity: developer fans out and at least 5 Dart files land under lib/.
+  #    The exact count depends on stack_contract.subsystems[].components[]
+  #    cardinality (~22 in the magic_tower run); we set a conservative
+  #    floor at 5 to catch "developer wrote nothing" failures. --
+  # (no `count_files_in_dir` predicate exists yet; instead we spot-check
+  #  the canonical components and rely on test files below.)
+
+  # -- Per-component test files. The architect declared 22 components
+  #    each with a test_file path; we sample 3 high-confidence ones.
+  - name: player_state_test_present
+    path: test/gameplay/player_mgr_test.dart
+    predicate: file_exists
+    severity: warn   # naming/path may vary by exact stack_contract
+
+  - name: save_mgr_test_present
+    path: test/system/save_mgr_test.dart
+    predicate: file_exists
+    severity: warn
+
+  - name: i18n_mgr_test_present
+    path: test/system/i18n_mgr_test.dart
+    predicate: file_exists
+    severity: warn

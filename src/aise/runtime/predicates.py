@@ -442,6 +442,245 @@ def _language_idiomatic_check(arg: Any, ctx: PredicateContext) -> PredicateResul
     )
 
 
+# -- Phase-contract predicates (Layer 2 phase-test catalog) ---------------
+#
+# These extend the AUTO_GATE catalog with stricter checks used by the
+# offline phase-contract test runner (``aise.testing.phase_test``). They
+# all accept a JSON deliverable and a structured ``arg`` dict; runtime
+# AUTO_GATE callers can opt into them too once they prove stable.
+
+
+def _resolve_dotted(data: Any, dotted: str) -> Any:
+    """Walk a simple dotted path like ``language`` or
+    ``subsystems.0.name``. Integer parts index into lists; string parts
+    index into dicts. Leading ``$.`` is tolerated for JSONPath-style
+    callers. Raises KeyError/IndexError/TypeError on miss so the caller
+    can surface a precise error."""
+    cur = data
+    if dotted.startswith("$"):
+        dotted = dotted[1:]
+    parts = [p for p in dotted.lstrip(".").split(".") if p]
+    for p in parts:
+        if isinstance(cur, list):
+            cur = cur[int(p)]
+        elif isinstance(cur, dict):
+            cur = cur[p]
+        else:
+            raise TypeError(f"cannot index {type(cur).__name__} with {p!r}")
+    return cur
+
+
+def _load_json_deliverable(ctx: PredicateContext, kind: str) -> tuple[Any, PredicateResult | None]:
+    """Read ctx.deliverable_path as JSON. Returns (data, error_result).
+    On success, error_result is None."""
+    path = ctx.deliverable_path
+    if not path.is_file():
+        return None, PredicateResult(kind, False, f"missing: {path}")
+    try:
+        return json.loads(path.read_text(encoding="utf-8")), None
+    except json.JSONDecodeError as exc:
+        return None, PredicateResult(kind, False, f"invalid JSON: {exc}")
+
+
+@register("json_field_equals")
+def _json_field_equals(arg: Any, ctx: PredicateContext) -> PredicateResult:
+    """``arg`` is ``{"field": "<dotted.path>", "expected": <value>}``.
+    Reads the deliverable as JSON and compares the resolved field to
+    ``expected`` with ``==``. ``expected: null`` matches Python ``None``.
+    """
+    if not isinstance(arg, dict) or "field" not in arg or "expected" not in arg:
+        return PredicateResult("json_field_equals", False, f"invalid arg {arg!r}")
+    data, err = _load_json_deliverable(ctx, "json_field_equals")
+    if err is not None:
+        return err
+    field_path = arg["field"]
+    try:
+        actual = _resolve_dotted(data, field_path)
+    except (KeyError, IndexError, TypeError) as exc:
+        return PredicateResult(
+            "json_field_equals",
+            False,
+            f"field {field_path!r} not resolvable: {type(exc).__name__}: {exc}",
+        )
+    expected = arg["expected"]
+    if actual == expected:
+        return PredicateResult(
+            "json_field_equals",
+            True,
+            f"{field_path}={actual!r}",
+        )
+    return PredicateResult(
+        "json_field_equals",
+        False,
+        f"{field_path}={actual!r}, expected {expected!r}",
+    )
+
+
+@register("json_field_one_of")
+def _json_field_one_of(arg: Any, ctx: PredicateContext) -> PredicateResult:
+    """``arg`` is ``{"field": "<dotted.path>", "allowed": [v1, v2, ...]}``.
+    Resolved value must be in ``allowed``."""
+    if not isinstance(arg, dict) or "field" not in arg or "allowed" not in arg:
+        return PredicateResult("json_field_one_of", False, f"invalid arg {arg!r}")
+    allowed = arg["allowed"]
+    if not isinstance(allowed, list):
+        return PredicateResult("json_field_one_of", False, "allowed must be a list")
+    data, err = _load_json_deliverable(ctx, "json_field_one_of")
+    if err is not None:
+        return err
+    field_path = arg["field"]
+    try:
+        actual = _resolve_dotted(data, field_path)
+    except (KeyError, IndexError, TypeError) as exc:
+        return PredicateResult(
+            "json_field_one_of",
+            False,
+            f"field {field_path!r} not resolvable: {type(exc).__name__}: {exc}",
+        )
+    if actual in allowed:
+        return PredicateResult("json_field_one_of", True, f"{field_path}={actual!r}")
+    return PredicateResult(
+        "json_field_one_of",
+        False,
+        f"{field_path}={actual!r}, expected one of {allowed!r}",
+    )
+
+
+@register("contains_keywords")
+def _contains_keywords(arg: Any, ctx: PredicateContext) -> PredicateResult:
+    """``arg`` is ``{"all_of": [...], "any_of": [...]}`` (either or both).
+    Reads the deliverable as text. Substring match, case-insensitive by
+    default; pass ``"case_sensitive": true`` to disable folding."""
+    if not isinstance(arg, dict) or ("all_of" not in arg and "any_of" not in arg):
+        return PredicateResult("contains_keywords", False, f"invalid arg {arg!r}")
+    if not ctx.deliverable_path.is_file():
+        return PredicateResult("contains_keywords", False, f"missing: {ctx.deliverable_path}")
+    body = ctx.read_text()
+    case_sensitive = bool(arg.get("case_sensitive", False))
+    haystack = body if case_sensitive else body.lower()
+
+    def _present(kw: str) -> bool:
+        return (kw if case_sensitive else kw.lower()) in haystack
+
+    all_of = arg.get("all_of") or []
+    any_of = arg.get("any_of") or []
+    if not isinstance(all_of, list) or not isinstance(any_of, list):
+        return PredicateResult("contains_keywords", False, "all_of/any_of must be lists")
+    missing_all = [k for k in all_of if not _present(k)]
+    if missing_all:
+        return PredicateResult(
+            "contains_keywords",
+            False,
+            f"missing all-of keywords: {missing_all}",
+        )
+    if any_of and not any(_present(k) for k in any_of):
+        return PredicateResult(
+            "contains_keywords",
+            False,
+            f"none of any-of keywords present: {any_of}",
+        )
+    parts = []
+    if all_of:
+        parts.append(f"all {len(all_of)}")
+    if any_of:
+        parts.append(f"any-of (≥1 of {len(any_of)})")
+    return PredicateResult("contains_keywords", True, f"matched: {', '.join(parts) or 'vacuous'}")
+
+
+@register("forbidden_patterns")
+def _forbidden_patterns(arg: Any, ctx: PredicateContext) -> PredicateResult:
+    """``arg`` is ``{"patterns": ["regex1", "regex2", ...]}``. Fails if
+    any pattern matches the deliverable body. Patterns are full regex
+    (use re.search semantics). Use this to encode "must NOT mention X"
+    rules, e.g. Flutter projects must not reference ``src/`` paths."""
+    if not isinstance(arg, dict) or "patterns" not in arg:
+        return PredicateResult("forbidden_patterns", False, f"invalid arg {arg!r}")
+    patterns = arg["patterns"]
+    if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
+        return PredicateResult("forbidden_patterns", False, "patterns must be list[str]")
+    if not ctx.deliverable_path.is_file():
+        return PredicateResult("forbidden_patterns", False, f"missing: {ctx.deliverable_path}")
+    body = ctx.read_text()
+    hit = [p for p in patterns if re.search(p, body)]
+    if hit:
+        return PredicateResult(
+            "forbidden_patterns",
+            False,
+            f"forbidden pattern(s) present: {hit}",
+        )
+    return PredicateResult(
+        "forbidden_patterns",
+        True,
+        f"none of {len(patterns)} forbidden patterns present",
+    )
+
+
+@register("count_at_least")
+def _count_at_least(arg: Any, ctx: PredicateContext) -> PredicateResult:
+    """``arg`` is ``{"field": "<dotted.path>", "min": <int>}``. Resolves
+    the field on a JSON deliverable, then asserts ``len(value) >= min``.
+    The resolved value must be a list."""
+    if not isinstance(arg, dict) or "field" not in arg or "min" not in arg:
+        return PredicateResult("count_at_least", False, f"invalid arg {arg!r}")
+    min_n = arg["min"]
+    if not isinstance(min_n, int) or min_n < 0:
+        return PredicateResult("count_at_least", False, f"invalid min {min_n!r}")
+    data, err = _load_json_deliverable(ctx, "count_at_least")
+    if err is not None:
+        return err
+    field_path = arg["field"]
+    try:
+        actual = _resolve_dotted(data, field_path)
+    except (KeyError, IndexError, TypeError) as exc:
+        return PredicateResult(
+            "count_at_least",
+            False,
+            f"field {field_path!r} not resolvable: {type(exc).__name__}: {exc}",
+        )
+    if not isinstance(actual, list):
+        return PredicateResult(
+            "count_at_least",
+            False,
+            f"{field_path} is {type(actual).__name__}, expected list",
+        )
+    n = len(actual)
+    if n >= min_n:
+        return PredicateResult("count_at_least", True, f"len({field_path})={n} >= {min_n}")
+    return PredicateResult("count_at_least", False, f"len({field_path})={n} < {min_n}")
+
+
+@register("count_at_most")
+def _count_at_most(arg: Any, ctx: PredicateContext) -> PredicateResult:
+    """``arg`` is ``{"field": "<dotted.path>", "max": <int>}``."""
+    if not isinstance(arg, dict) or "field" not in arg or "max" not in arg:
+        return PredicateResult("count_at_most", False, f"invalid arg {arg!r}")
+    max_n = arg["max"]
+    if not isinstance(max_n, int) or max_n < 0:
+        return PredicateResult("count_at_most", False, f"invalid max {max_n!r}")
+    data, err = _load_json_deliverable(ctx, "count_at_most")
+    if err is not None:
+        return err
+    field_path = arg["field"]
+    try:
+        actual = _resolve_dotted(data, field_path)
+    except (KeyError, IndexError, TypeError) as exc:
+        return PredicateResult(
+            "count_at_most",
+            False,
+            f"field {field_path!r} not resolvable: {type(exc).__name__}: {exc}",
+        )
+    if not isinstance(actual, list):
+        return PredicateResult(
+            "count_at_most",
+            False,
+            f"{field_path} is {type(actual).__name__}, expected list",
+        )
+    n = len(actual)
+    if n <= max_n:
+        return PredicateResult("count_at_most", True, f"len({field_path})={n} <= {max_n}")
+    return PredicateResult("count_at_most", False, f"len({field_path})={n} > {max_n}")
+
+
 # -- Top-level evaluation -------------------------------------------------
 
 

@@ -1,0 +1,40 @@
+aise_version: "0.1.0"
+scenario_id: go_api
+phase: implementation
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a Go HTTP server using net/http.
+
+max_review_iterations: 1
+timeout_sec: 1800
+
+assertions:
+  # Go convention: source under internal/ (not src/), ``cmd/<app>/main.go`` is entry.
+  - name: echo_handler_present
+    path: internal/handlers/echo_handler.go
+    predicate: file_exists
+    severity: warn
+
+  - name: health_handler_present
+    path: internal/handlers/health_handler.go
+    predicate: file_exists
+    severity: warn
+
+  - name: echo_handler_test_present
+    path: internal/handlers/echo_handler_test.go
+    predicate: file_exists
+    severity: warn
+
+  - name: health_handler_test_present
+    path: internal/handlers/health_handler_test.go
+    predicate: file_exists
+    severity: warn
+
+  # implementation MUST NOT write cmd/server/main.go (entry — main_entry's job)
+  - name: implementation_does_not_write_main
+    path: cmd/server/main.go
+    predicate: { forbidden_patterns: { patterns: ["func main\\(", "ListenAndServe\\("] } }
+    severity: warn

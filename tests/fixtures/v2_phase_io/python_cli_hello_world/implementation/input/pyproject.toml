@@ -1,0 +1,17 @@
+[project]
+name = "hello-world-cli"
+version = "0.1.0"
+description = "A Python CLI tool that prints 'hello, world' to standard output"
+readme = "README.md"
+requires-python = ">=3.7"
+dependencies = []
+
+[project.scripts]
+hello = "main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "e2e_*.py"]
+
+[tool.ruff]
+line-length = 88

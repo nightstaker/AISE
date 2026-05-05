@@ -1,0 +1,87 @@
+# Phase-contract test case: implementation phase against the hello-world
+# Python CLI scenario.
+#
+# Input: post-architecture snapshot (docs/* + pyproject.toml).
+# Output expected: developer fans out to write per-component .py files
+# under src/ and matching unit tests under tests/.
+#
+# Run with:
+#   aise v2-phase-test --case tests/fixtures/v2_phase_io/python_cli_hello_world/implementation/case.yaml
+
+aise_version: "0.1.0"
+scenario_id: python_cli_hello_world
+phase: implementation
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a Python CLI tool that prints 'hello, world' when run.
+
+max_review_iterations: 1
+timeout_sec: 1800
+
+assertions:
+  # -- Per-component source files (declared in stack_contract.subsystems[].components[].file) --
+  - name: greet_module_present
+    path: src/greet.py
+    predicate: file_exists
+
+  - name: version_module_present
+    path: src/version.py
+    predicate: file_exists
+
+  # -- Per-component unit tests (developer is required to write tests
+  #    alongside its source files; this is the discriminator vs main_entry
+  #    which only writes the entry point). --
+  - name: greet_test_present
+    path: tests/test_greet.py
+    predicate: file_exists
+
+  - name: version_test_present
+    path: tests/test_version.py
+    predicate: file_exists
+
+  # -- Source content sanity: the greet module must implement the user
+  #    requirement. We don't pin the exact API (greet() vs say_hello() vs
+  #    main()), only that "hello" + "world" appear somewhere in the
+  #    source body — covering both ``print('hello, world')`` and
+  #    ``return 'hello, world'`` shapes. --
+  - name: greet_implements_hello_world
+    path: src/greet.py
+    predicate:
+      contains_keywords:
+        all_of: [hello, world]
+
+  # -- Tests must actually invoke / assert behavior, not just be empty
+  #    placeholders. ``assert`` is the canonical pytest signal. --
+  - name: greet_test_has_assertion
+    path: tests/test_greet.py
+    predicate:
+      regex_count:
+        pattern: "\\bassert\\b"
+        min: 1
+
+  - name: version_test_has_assertion
+    path: tests/test_version.py
+    predicate:
+      regex_count:
+        pattern: "\\bassert\\b"
+        min: 1
+
+  # -- Implementation phase MUST NOT write the entry point — that's
+  #    main_entry's job. Catches developer over-reach where it tries to
+  #    wire main() prematurely (observed pre-PR-#137 in the field). --
+  - name: implementation_does_not_write_main
+    path: src/main.py
+    predicate:
+      forbidden_patterns:
+        # If the file exists at all and contains either of these markers
+        # (typical entry-point shapes), implementation overreached.
+        # The predicate is run regardless of file existence; if the file
+        # is missing, ctx.read_text raises and the predicate fails — but
+        # in our pipeline ``forbidden_patterns`` returns FAIL on missing
+        # file, so we wrap with severity=warn to allow either "main.py
+        # absent" (ideal) or "main.py present but empty" (acceptable).
+        patterns: ["if __name__ == .__main__.", "def main\\("]
+    severity: warn

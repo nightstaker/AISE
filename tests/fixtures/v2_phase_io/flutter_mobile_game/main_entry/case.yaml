@@ -1,0 +1,54 @@
+# Phase-contract test case: main_entry phase against the Flutter
+# magic-tower scenario.
+#
+# Input: post-implementation snapshot (lib/{ui,gameplay,system,data}/*.dart
+# + test/* but no lib/main.dart yet). Output expected: lib/main.dart
+# wires Flutter's runApp + lifecycle_inits in declared order.
+#
+# Run with:
+#   aise v2-phase-test --case tests/fixtures/v2_phase_io/flutter_mobile_game/main_entry/case.yaml
+
+aise_version: "0.1.0"
+scenario_id: flutter_mobile_game
+phase: main_entry
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  开发一款可以上架商店的商用魔塔（Magic Tower）手机游戏 APP（Flutter + Dart）。
+
+max_review_iterations: 1
+timeout_sec: 1500
+
+assertions:
+  - name: main_dart_present
+    path: lib/main.dart
+    predicate: file_exists
+
+  - name: main_dart_substantial
+    path: lib/main.dart
+    predicate:
+      min_bytes: 200
+
+  # -- Canonical Flutter entry-point: runApp(...) call --
+  - name: has_runApp_call
+    path: lib/main.dart
+    predicate:
+      regex_count:
+        pattern: "runApp\\s*\\("
+        min: 1
+
+  - name: has_void_main_function
+    path: lib/main.dart
+    predicate:
+      regex_count:
+        pattern: "void\\s+main\\s*\\("
+        min: 1
+
+  # -- Flutter framework imports --
+  - name: imports_flutter_material
+    path: lib/main.dart
+    predicate:
+      contains_keywords:
+        any_of: ["package:flutter/material.dart", "package:flutter/widgets.dart"]

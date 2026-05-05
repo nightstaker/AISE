@@ -1,0 +1,56 @@
+{
+  "toolchain_check": {
+    "tsc": "present",
+    "vitest": "present",
+    "node": "present",
+    "npm": "present",
+    "npx": "present"
+  },
+  "vitest": {
+    "ran": true,
+    "passed": 11,
+    "failed": 0,
+    "skipped": 0,
+    "total_tests": 36
+  },
+  "scenarios": [
+    {
+      "id": "health_check_returns_ok",
+      "file": "tests/scenarios/health_check_returns_ok.ts",
+      "status": "passed",
+      "tests": 1
+    },
+    {
+      "id": "echo_normal_request",
+      "file": "tests/scenarios/echo_normal_request.ts",
+      "status": "passed",
+      "tests": 3
+    },
+    {
+      "id": "echo_missing_field",
+      "file": "tests/scenarios/echo_missing_field.ts",
+      "status": "passed",
+      "tests": 3
+    },
+    {
+      "id": "echo_invalid_json",
+      "file": "tests/scenarios/echo_invalid_json.ts",
+      "status": "passed",
+      "tests": 3
+    },
+    {
+      "id": "typescript_compiles",
+      "file": "tests/scenarios/typescript_compiles.ts",
+      "status": "passed",
+      "tests": 3
+    },
+    {
+      "id": "full_app_integration",
+      "file": "tests/scenarios/full_app_integration.ts",
+      "status": "passed",
+      "tests": 7
+    }
+  ],
+  "ui_required": false,
+  "summary": "All 36 tests pass across 11 test files including 6 behavioral scenario tests and 5 unit tests. No failures."
+}

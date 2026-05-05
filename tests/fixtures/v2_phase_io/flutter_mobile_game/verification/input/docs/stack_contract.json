@@ -1,0 +1,306 @@
+{
+  "language": "dart",
+  "runtime": "dart",
+  "framework_backend": "",
+  "framework_frontend": "flutter",
+  "package_manager": "pub",
+  "project_config_file": "pubspec.yaml",
+  "test_runner": "flutter test",
+  "static_analyzer": ["dart analyze"],
+  "entry_point": "lib/main.dart",
+  "run_command": "flutter run",
+  "ui_required": true,
+  "ui_kind": "flutter",
+  "subsystems": [
+    {
+      "name": "ui",
+      "src_dir": "lib/ui",
+      "responsibilities": "所有用户界面和交互组件",
+      "components": [
+        {
+          "name": "menu_screen",
+          "file": "lib/ui/menu_screen.dart",
+          "test_file": "test/ui/menu_screen_test.dart",
+          "responsibility": "启动画面 + 主菜单（开始/继续/设置/关于）"
+        },
+        {
+          "name": "hud_ui",
+          "file": "lib/ui/hud_ui.dart",
+          "test_file": "test/ui/hud_ui_test.dart",
+          "responsibility": "游戏内 HUD 显示四维+楼层+操作按钮"
+        },
+        {
+          "name": "game_screen",
+          "file": "lib/ui/game_screen.dart",
+          "test_file": "test/ui/game_screen_test.dart",
+          "responsibility": "游戏主界面：地图渲染 + 玩家移动 + 事件处理"
+        },
+        {
+          "name": "battle_screen",
+          "file": "lib/ui/battle_screen.dart",
+          "test_file": "test/ui/battle_screen_test.dart",
+          "responsibility": "回合制战斗动画 + 伤害展示"
+        },
+        {
+          "name": "shop_screen",
+          "file": "lib/ui/shop_screen.dart",
+          "test_file": "test/ui/shop_screen_test.dart",
+          "responsibility": "商店界面：道具购买 + 金币扣除"
+        },
+        {
+          "name": "dialogue_screen",
+          "file": "lib/ui/dialogue_screen.dart",
+          "test_file": "test/ui/dialogue_screen_test.dart",
+          "responsibility": "NPC 对话界面：多页滚动剧情显示"
+        },
+        {
+          "name": "settings_screen",
+          "file": "lib/ui/settings_screen.dart",
+          "test_file": "test/ui/settings_screen_test.dart",
+          "responsibility": "设置界面：音量/语言/清除存档"
+        }
+      ]
+    },
+    {
+      "name": "gameplay",
+      "src_dir": "lib/gameplay",
+      "responsibilities": "核心玩法和规则引擎",
+      "components": [
+        {
+          "name": "player_mgr",
+          "file": "lib/gameplay/player_mgr.dart",
+          "test_file": "test/gameplay/player_mgr_test.dart",
+          "responsibility": "玩家状态管理：HP/ATK/DEF/Gold/EXP/Lv"
+        },
+        {
+          "name": "battle_engine",
+          "file": "lib/gameplay/battle_engine.dart",
+          "test_file": "test/gameplay/battle_engine_test.dart",
+          "responsibility": "回合制伤害计算：max(ATK−DEF, 1)"
+        },
+        {
+          "name": "floor_mgr",
+          "file": "lib/gameplay/floor_mgr.dart",
+          "test_file": "test/gameplay/floor_mgr_test.dart",
+          "responsibility": "11×11 地图管理 + 楼层切换逻辑"
+        },
+        {
+          "name": "inventory_mgr",
+          "file": "lib/gameplay/inventory_mgr.dart",
+          "test_file": "test/gameplay/inventory_mgr_test.dart",
+          "responsibility": "道具拾取/使用：钥匙/血瓶/宝石"
+        },
+        {
+          "name": "npc_mgr",
+          "file": "lib/gameplay/npc_mgr.dart",
+          "test_file": "test/gameplay/npc_mgr_test.dart",
+          "responsibility": "剧情对话管理 + 线索提示"
+        },
+        {
+          "name": "boss_engine",
+          "file": "lib/gameplay/boss_engine.dart",
+          "test_file": "test/gameplay/boss_engine_test.dart",
+          "responsibility": "多阶段 BOSS 战斗 + 阶段转换逻辑"
+        },
+        {
+          "name": "level_up_mgr",
+          "file": "lib/gameplay/level_up_mgr.dart",
+          "test_file": "test/gameplay/level_up_mgr_test.dart",
+          "responsibility": "EXP 升级公式 + 属性提升"
+        },
+        {
+          "name": "map_renderer",
+          "file": "lib/gameplay/map_renderer.dart",
+          "test_file": "test/gameplay/map_renderer_test.dart",
+          "responsibility": "Tile 渲染逻辑 + 颜色占位"
+        },
+        {
+          "name": "shop_engine",
+          "file": "lib/gameplay/shop_engine.dart",
+          "test_file": "test/gameplay/shop_engine_test.dart",
+          "responsibility": "商品列表管理 + 购买流程"
+        }
+      ]
+    },
+    {
+      "name": "system",
+      "src_dir": "lib/system",
+      "responsibilities": "跨切面服务：存档、国际化、音频、设置",
+      "components": [
+        {
+          "name": "save_mgr",
+          "file": "lib/system/save_mgr.dart",
+          "test_file": "test/system/save_mgr_test.dart",
+          "responsibility": "自动存档/手动存档 JSON 文件读写"
+        },
+        {
+          "name": "i18n_mgr",
+          "file": "lib/system/i18n_mgr.dart",
+          "test_file": "test/system/i18n_mgr_test.dart",
+          "responsibility": "中英文切换 i18n JSON 加载"
+        },
+        {
+          "name": "audio_mgr",
+          "file": "lib/system/audio_mgr.dart",
+          "test_file": "test/system/audio_mgr_test.dart",
+          "responsibility": "BGM/SFX 音量控制 播放占位"
+        },
+        {
+          "name": "settings_mgr",
+          "file": "lib/system/settings_mgr.dart",
+          "test_file": "test/system/settings_mgr_test.dart",
+          "responsibility": "设置持久化 配置管理"
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "src_dir": "lib/data",
+      "responsibilities": "数据模型和加载：核心数据结构 + 楼层数据驱动",
+      "components": [
+        {
+          "name": "models",
+          "file": "lib/data/models.dart",
+          "test_file": "test/data/models_test.dart",
+          "responsibility": "PlayerState/Item/Floor 等核心数据结构"
+        },
+        {
+          "name": "floor_loader",
+          "file": "lib/data/floor_loader.dart",
+          "test_file": "test/data/floor_loader_test.dart",
+          "responsibility": "floor_*.json 解析 地图数据驱动"
+        }
+      ]
+    }
+  ],
+  "event_loop_owner": null,
+  "lifecycle_inits": [
+    {
+      "attr": "menuScreen",
+      "method": "initialize",
+      "class": "MenuScreen",
+      "module": "lib/ui/menu_screen.dart"
+    },
+    {
+      "attr": "hudUI",
+      "method": "initialize",
+      "class": "HUDUI",
+      "module": "lib/ui/hud_ui.dart"
+    },
+    {
+      "attr": "gameScreen",
+      "method": "initialize",
+      "class": "GameScreen",
+      "module": "lib/ui/game_screen.dart"
+    },
+    {
+      "attr": "battleScreen",
+      "method": "initialize",
+      "class": "BattleScreen",
+      "module": "lib/ui/battle_screen.dart"
+    },
+    {
+      "attr": "shopScreen",
+      "method": "initialize",
+      "class": "ShopScreen",
+      "module": "lib/ui/shop_screen.dart"
+    },
+    {
+      "attr": "dialogueScreen",
+      "method": "initialize",
+      "class": "DialogueScreen",
+      "module": "lib/ui/dialogue_screen.dart"
+    },
+    {
+      "attr": "settingsScreen",
+      "method": "initialize",
+      "class": "SettingsScreen",
+      "module": "lib/ui/settings_screen.dart"
+    },
+    {
+      "attr": "playerMgr",
+      "method": "initialize",
+      "class": "PlayerMgr",
+      "module": "lib/gameplay/player_mgr.dart"
+    },
+    {
+      "attr": "battleEngine",
+      "method": "initialize",
+      "class": "BattleEngine",
+      "module": "lib/gameplay/battle_engine.dart"
+    },
+    {
+      "attr": "floorMgr",
+      "method": "initialize",
+      "class": "FloorMgr",
+      "module": "lib/gameplay/floor_mgr.dart"
+    },
+    {
+      "attr": "inventoryMgr",
+      "method": "initialize",
+      "class": "InventoryMgr",
+      "module": "lib/gameplay/inventory_mgr.dart"
+    },
+    {
+      "attr": "npcMgr",
+      "method": "initialize",
+      "class": "NPCMgr",
+      "module": "lib/gameplay/npc_mgr.dart"
+    },
+    {
+      "attr": "bossEngine",
+      "method": "initialize",
+      "class": "BossEngine",
+      "module": "lib/gameplay/boss_engine.dart"
+    },
+    {
+      "attr": "levelUpMgr",
+      "method": "initialize",
+      "class": "LevelUpMgr",
+      "module": "lib/gameplay/level_up_mgr.dart"
+    },
+    {
+      "attr": "mapRenderer",
+      "method": "initialize",
+      "class": "MapRenderer",
+      "module": "lib/gameplay/map_renderer.dart"
+    },
+    {
+      "attr": "shopEngine",
+      "method": "initialize",
+      "class": "ShopEngine",
+      "module": "lib/gameplay/shop_engine.dart"
+    },
+    {
+      "attr": "saveMgr",
+      "method": "initialize",
+      "class": "SaveMgr",
+      "module": "lib/system/save_mgr.dart"
+    },
+    {
+      "attr": "i18nMgr",
+      "method": "initialize",
+      "class": "I18nMgr",
+      "module": "lib/system/i18n_mgr.dart"
+    },
+    {
+      "attr": "audioMgr",
+      "method": "initialize",
+      "class": "AudioMgr",
+      "module": "lib/system/audio_mgr.dart"
+    },
+    {
+      "attr": "settingsMgr",
+      "method": "initialize",
+      "class": "SettingsMgr",
+      "module": "lib/system/settings_mgr.dart"
+    },
+    {
+      "attr": "floorLoader",
+      "method": "initialize",
+      "class": "FloorLoader",
+      "module": "lib/data/floor_loader.dart"
+    }
+  ],
+  "event_loop_owner": null
+}

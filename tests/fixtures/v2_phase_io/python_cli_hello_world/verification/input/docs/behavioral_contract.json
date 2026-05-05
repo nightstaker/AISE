@@ -1,0 +1,134 @@
+{
+  "scenarios": [
+    {
+      "id": "test_default_print",
+      "name": "默认输出 hello, world",
+      "description": "当运行工具无参数时，应该向 stdout 输出 'hello, world' 字符串并附带换行符。",
+      "preconditions": ["No prior state required"],
+      "trigger": {
+        "type": "pytest_test",
+        "file": "tests/test_greet.py::test_default_print",
+        "command": "python -m pytest tests/test_greet.py::test_default_print -v"
+      },
+      "effect": {"stdout_contains": "hello, world"},
+      "covers_requirements": ["FR-001", "FR-004"]
+    },
+    {
+      "id": "test_version_flag",
+      "name": "版本查询输出版本号",
+      "description": "当使用 --version 参数运行时，应该输出版本号字符串 '0.1.0'。",
+      "preconditions": ["No prior state required"],
+      "trigger": {
+        "type": "pytest_test",
+        "file": "tests/test_version.py::test_version_flag",
+        "command": "python -m pytest tests/test_version.py::test_version_flag -v"
+      },
+      "effect": {"stdout_contains": "0.1.0"},
+      "covers_requirements": ["FR-002"]
+    },
+    {
+      "id": "test_exit_code_zero",
+      "name": "退出状态码为 0",
+      "description": "工具在所有正常执行路径下应返回退出状态码 0。",
+      "preconditions": ["No prior state required"],
+      "trigger": {
+        "type": "pytest_test",
+        "file": "tests/test_main.py::test_exit_code_zero_default",
+        "command": "python -m pytest tests/test_main.py -v"
+      },
+      "effect": {"exit_code": 0},
+      "covers_requirements": ["FR-001", "FR-002", "FR-003"]
+    },
+    {
+      "id": "test_exact_output",
+      "name": "输出内容精确匹配",
+      "description": "工具的默认输出应该精确匹配 'hello, world'（区分大小写，无额外空格或引号）。",
+      "preconditions": ["No prior state required"],
+      "trigger": {
+        "type": "pytest_test",
+        "file": "tests/test_greet.py::test_exact_output",
+        "command": "python -m pytest tests/test_greet.py::test_exact_output -v"
+      },
+      "effect": {"stdout_exact": "hello, world"},
+      "covers_requirements": ["FR-001"]
+    },
+    {
+      "id": "e2e_default_run",
+      "name": "集成测试：直接运行工具输出 hello, world",
+      "description": "通过 subprocess 直接调用 src/main.py 脚本，模拟用户在终端中运行工具。验证完整执行路径下 stdout 输出 'hello, world'。",
+      "preconditions": ["项目已构建，src/main.py 存在"],
+      "trigger": {
+        "type": "e2e",
+        "command": "python src/main.py",
+        "cwd": "项目根目录"
+      },
+      "effect": {"stdout_contains": "hello, world", "exit_code": 0},
+      "covers_requirements": ["FR-001", "FR-004"]
+    },
+    {
+      "id": "e2e_version_run",
+      "name": "集成测试：直接运行 --version",
+      "description": "通过 subprocess 直接调用 src/main.py --version，模拟用户在终端中查询版本。验证 stdout 包含版本号且退出码为 0。",
+      "preconditions": ["项目已构建，src/main.py 存在"],
+      "trigger": {
+        "type": "e2e",
+        "command": "python src/main.py --version",
+        "cwd": "项目根目录"
+      },
+      "effect": {"stdout_contains": "0.1.0", "exit_code": 0},
+      "covers_requirements": ["FR-002"]
+    },
+    {
+      "id": "e2e_help_run",
+      "name": "集成测试：直接运行 --help",
+      "description": "通过 subprocess 直接调用 src/main.py --help，模拟用户在终端中获取帮助。验证 stdout 包含使用说明且退出码为 0。",
+      "preconditions": ["项目已构建，src/main.py 存在"],
+      "trigger": {
+        "type": "e2e",
+        "command": "python src/main.py --help",
+        "cwd": "项目根目录"
+      },
+      "effect": {"stdout_contains": "usage", "exit_code": 0},
+      "covers_requirements": ["FR-003"]
+    },
+    {
+      "id": "test_no_args_default",
+      "name": "无参数时默认打印问候语",
+      "description": "当运行工具不带任何参数时，应执行默认行为，输出 'hello, world'。",
+      "preconditions": ["No prior state required"],
+      "trigger": {
+        "type": "pytest_test",
+        "file": "tests/test_main.py::test_no_args_prints_greeting",
+        "command": "python -m pytest tests/test_main.py::test_no_args_prints_greeting -v"
+      },
+      "effect": {"stdout_contains": "hello, world"},
+      "covers_requirements": ["FR-004"]
+    },
+    {
+      "id": "test_greet_returns_string",
+      "name": "greet 函数返回值正确",
+      "description": "greet() 函数应返回 'hello, world' 字符串。",
+      "preconditions": ["No prior state required"],
+      "trigger": {
+        "type": "pytest_test",
+        "file": "tests/test_greet.py::test_greet_returns_string",
+        "command": "python -m pytest tests/test_greet.py::test_greet_returns_string -v"
+      },
+      "effect": {"stdout_contains": "hello, world"},
+      "covers_requirements": ["FR-001"]
+    },
+    {
+      "id": "test_version_format",
+      "name": "版本号格式正确",
+      "description": "版本号应符合语义化版本格式（如 0.1.0）。",
+      "preconditions": ["No prior state required"],
+      "trigger": {
+        "type": "pytest_test",
+        "file": "tests/test_version.py::test_version_format",
+        "command": "python -m pytest tests/test_version.py::test_version_format -v"
+      },
+      "effect": {"stdout_contains": "0.1.0"},
+      "covers_requirements": ["FR-002"]
+    }
+  ]
+}

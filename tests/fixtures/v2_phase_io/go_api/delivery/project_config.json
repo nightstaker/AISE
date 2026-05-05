@@ -1,0 +1,72 @@
+{
+  "project_name": "go_api",
+  "development_mode": "local",
+  "process_type": "waterfall_v2",
+  "ui_language": "en",
+  "default_model": {
+    "provider": "Local",
+    "model": "qwen3.6-35b",
+    "api_key": "",
+    "base_url": "http://127.0.0.1:8088/v1",
+    "temperature": 0.7,
+    "max_tokens": 4096
+  },
+  "model_providers": [
+    {
+      "provider": "Local",
+      "api_key": "",
+      "base_url": "http://127.0.0.1:8088/v1",
+      "enabled": true
+    }
+  ],
+  "agents": {
+    "product_manager": {
+      "name": "product_manager",
+      "enabled": true
+    },
+    "architect": {
+      "name": "architect",
+      "enabled": true
+    },
+    "developer": {
+      "name": "developer",
+      "enabled": true
+    },
+    "qa_engineer": {
+      "name": "qa_engineer",
+      "enabled": true
+    },
+    "project_manager": {
+      "name": "project_manager",
+      "enabled": true
+    },
+    "rd_director": {
+      "name": "rd_director",
+      "enabled": true
+    }
+  },
+  "agent_model_selection": {},
+  "workflow": {
+    "max_review_iterations": 3,
+    "fail_on_review_rejection": false
+  },
+  "session": {
+    "max_concurrent_sessions": 5
+  },
+  "workspace": {
+    "projects_root": "projects",
+    "artifacts_root": "artifacts",
+    "auto_create_dirs": true
+  },
+  "logging": {
+    "level": "INFO",
+    "log_dir": "logs",
+    "json_format": false,
+    "rotate_daily": true
+  },
+  "github": {
+    "token": "",
+    "repo_owner": "",
+    "repo_name": ""
+  }
+}

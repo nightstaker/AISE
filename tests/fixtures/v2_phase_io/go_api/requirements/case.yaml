@@ -1,0 +1,42 @@
+aise_version: "0.1.0"
+scenario_id: go_api
+phase: requirements
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a Go HTTP server using the standard library net/http.
+  - GET /healthz returning JSON {"status":"ok"}
+  - POST /api/echo accepting JSON {"message":string} and returning {"echo":<message>,"length":<int>}
+  - Use Go modules (go.mod) and the standard testing package
+  - No DB, no third-party deps, single-binary on port 8080.
+
+max_review_iterations: 1
+timeout_sec: 600
+
+assertions:
+  - { name: requirement_md_present,         path: docs/requirement.md, predicate: file_exists }
+  - { name: requirement_md_substantial,     path: docs/requirement.md, predicate: { min_bytes: 1500 } }
+  - { name: requirement_contract_present,   path: docs/requirement_contract.json, predicate: file_exists }
+  - name: requirement_contract_schema_valid
+    path: docs/requirement_contract.json
+    predicate: { schema: schemas/requirement_contract.schema.json }
+  - name: covers_go
+    path: docs/requirement.md
+    predicate: { contains_keywords: { all_of: [Go] } }
+  - name: covers_endpoints
+    path: docs/requirement.md
+    predicate: { contains_keywords: { all_of: [healthz, echo] } }
+  - name: covers_stdlib
+    path: docs/requirement.md
+    predicate: { contains_keywords: { any_of: ["net/http", "standard library", "stdlib"] } }
+  - name: at_least_three_FRs
+    path: docs/requirement.md
+    predicate: { regex_count: { pattern: "FR-\\d+", min: 3 } }
+  - name: contract_lists_FRs
+    path: docs/requirement_contract.json
+    predicate: { count_at_least: { field: functional_requirements, min: 3 } }
+  - name: not_a_python_or_typescript
+    path: docs/requirement.md
+    predicate: { forbidden_patterns: { patterns: ["pyproject\\.toml", "package\\.json", "tsconfig\\.json"] } }

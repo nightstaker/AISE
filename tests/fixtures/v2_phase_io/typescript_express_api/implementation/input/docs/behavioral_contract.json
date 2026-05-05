@@ -1,0 +1,95 @@
+{
+  "scenarios": [
+    {
+      "id": "health_check_returns_ok",
+      "name": "健康检查端点返回正常状态",
+      "description": "GET /healthz 端点应返回 HTTP 200 和 JSON 响应 {\"status\":\"ok\"}。",
+      "preconditions": ["应用已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "npm test -- tests/routes/health_handler.test.ts"
+      },
+      "effect": {
+        "test_passes": true
+      },
+      "covers_requirements": ["FR-001"],
+      "test_code": "import { describe, it, expect } from 'vitest';\nimport { Request, Response } from 'express';\nimport { healthHandler } from '../../src/routes/health_handler';\n\ndescribe('Health Check', () => {\n  it('GET /healthz returns 200 with {status: ok}', () => {\n    const req = {\n      method: 'GET',\n      url: '/healthz',\n      body: {},\n      headers: { 'content-type': 'application/json' },\n    } as Request;\n    const res: Partial<Response> = {};\n    res.status = function(this: Response) { (this as any).statusCode = 200; return this; } as any;\n    res.json = function(this: Response, data: any) { (this as any).jsonData = data; return this; } as any;\n\n    healthHandler(req, res as Response);\n\n    expect((res as any).statusCode).toBe(200);\n    const json = (res as any).jsonData as { status: string };\n    expect(json.status).toBe('ok');\n  });\n});"
+    },
+    {
+      "id": "echo_normal_request",
+      "name": "回显端点正常请求",
+      "description": "POST /api/echo 端点接收有效 JSON 应返回正确的回显结果。",
+      "preconditions": ["应用已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "npm test -- tests/routes/echo_handler.test.ts"
+      },
+      "effect": {
+        "test_passes": true
+      },
+      "covers_requirements": ["FR-002"],
+      "test_code": "import { describe, it, expect } from 'vitest';\nimport { Request, Response } from 'express';\nimport { echoHandler } from '../../src/routes/echo_handler';\n\ndescribe('Echo Handler - Normal Request', () => {\n  it('POST /api/echo returns correct echo and length', () => {\n    const req = {\n      method: 'POST',\n      url: '/api/echo',\n      body: { message: 'hello' },\n      headers: { 'content-type': 'application/json' },\n    } as Request;\n    const res: Partial<Response> = {};\n    res.status = function(this: Response) { (this as any).statusCode = 200; return this; } as any;\n    res.json = function(this: Response, data: any) { (this as any).jsonData = data; return this; } as any;\n\n    echoHandler(req, res as Response);\n\n    expect((res as any).statusCode).toBe(200);\n    const json = (res as any).jsonData as { echo: string; length: number };\n    expect(json.echo).toBe('hello');\n    expect(json.length).toBe(5);\n  });\n});"
+    },
+    {
+      "id": "echo_missing_field",
+      "name": "回显端点缺失 message 字段",
+      "description": "POST /api/echo 端点缺少 message 字段应返回 HTTP 400。",
+      "preconditions": ["应用已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "npm test -- tests/routes/echo_handler.test.ts"
+      },
+      "effect": {
+        "test_passes": true
+      },
+      "covers_requirements": ["FR-002", "NFR-005"],
+      "test_code": "import { describe, it, expect } from 'vitest';\nimport { Request, Response } from 'express';\nimport { echoHandler } from '../../src/routes/echo_handler';\n\ndescribe('Echo Handler - Missing Field', () => {\n  it('POST /api/echo without message field returns 400', () => {\n    const req = {\n      method: 'POST',\n      url: '/api/echo',\n      body: { name: 'test' },\n      headers: { 'content-type': 'application/json' },\n    } as Request;\n    const res: Partial<Response> = {};\n    res.status = function(this: Response) { (this as any).statusCode = 0; return this; } as any;\n    res.json = function(this: Response, data: any) { (this as any).jsonData = data; return this; } as any;\n\n    echoHandler(req, res as Response);\n\n    expect((res as any).statusCode).toBe(400);\n    const json = (res as any).jsonData as { error: string };\n    expect(json.error).toBeDefined();\n  });\n});"
+    },
+    {
+      "id": "echo_invalid_json",
+      "name": "回显端点非 JSON 请求体",
+      "description": "POST /api/echo 端点接收非 JSON 请求体应返回 HTTP 400。",
+      "preconditions": ["应用已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "npm test -- tests/middleware/error_handler.test.ts"
+      },
+      "effect": {
+        "test_passes": true
+      },
+      "covers_requirements": ["FR-002", "NFR-005"],
+      "test_code": "import { describe, it, expect } from 'vitest';\nimport { Request, Response, NextFunction } from 'express';\nimport { errorHandler } from '../../src/middleware/error_handler';\n\ndescribe('Error Middleware - Invalid JSON', () => {\n  it('malformed JSON triggers 400 error response', () => {\n    const syntaxError = new SyntaxError('Unexpected token');\n    syntaxError.name = 'SyntaxError';\n    const req = {} as Request;\n    const res: Partial<Response> = {};\n    res.status = function(this: Response) { (this as any).statusCode = 0; return this; } as any;\n    res.json = function(this: Response, data: any) { (this as any).jsonData = data; return this; } as any;\n    const next = {} as NextFunction;\n\n    errorHandler(syntaxError, req, res as Response, next);\n\n    expect((res as any).statusCode).toBe(400);\n    const json = (res as any).jsonData as { error: string };\n    expect(json.error).toBeDefined();\n  });\n});"
+    },
+    {
+      "id": "typescript_compiles",
+      "name": "TypeScript 编译通过",
+      "description": "项目应能使用 tsc 编译成功，输出到 dist/ 目录。",
+      "preconditions": ["项目根目录包含 package.json 和 tsconfig.json"],
+      "trigger": {
+        "action": "run",
+        "command": "npm test -- tests/server/typescript_compilation.test.ts"
+      },
+      "effect": {
+        "exit_code": 0,
+        "files_exist": ["dist/index.js", "dist/server/app_builder.js", "dist/server/router.js", "dist/routes/health_handler.js", "dist/routes/echo_handler.js", "dist/middleware/error_handler.js"]
+      },
+      "covers_requirements": ["FR-003", "FR-004"],
+      "test_code": "import { describe, it, expect } from 'vitest';\nimport { execSync } from 'child_process';\nimport { existsSync } from 'fs';\n\ndescribe('TypeScript Compilation', () => {\n  it('tsc compiles successfully with exit code 0', () => {\n    const output = execSync('npm run build', { encoding: 'utf-8' });\n    expect(output).toBeDefined();\n  });\n\n  it('compiled files exist in dist/', () => {\n    const files = [\n      'dist/index.js',\n      'dist/server/app_builder.js',\n      'dist/server/router.js',\n      'dist/routes/health_handler.js',\n      'dist/routes/echo_handler.js',\n      'dist/middleware/error_handler.js'\n    ];\n    files.forEach(f => expect(existsSync(f)).toBe(true));\n  });\n});"
+    },
+    {
+      "id": "full_app_integration",
+      "name": "完整应用集成测试",
+      "description": "使用 Supertest 对 Express 应用进行端到端集成测试，验证路由注册和中间件配置正确。",
+      "preconditions": ["应用已构建"],
+      "trigger": {
+        "action": "run",
+        "command": "npm test -- tests/server/app_builder.test.ts"
+      },
+      "effect": {
+        "test_passes": true
+      },
+      "covers_requirements": ["FR-001", "FR-002"],
+      "test_code": "import { describe, it, expect } from 'vitest';\nimport request from 'supertest';\nimport { createApp } from '../../src/server/app_builder';\nimport { registerRoutes } from '../../src/server/router';\n\ndescribe('Full App Integration', () => {\n  let app: ReturnType<typeof createApp>;\n\n  beforeAll(() => {\n    app = createApp();\n    registerRoutes(app);\n  });\n\n  it('GET /healthz returns 200 with correct body', async () => {\n    const res = await request(app).get('/healthz');\n    expect(res.statusCode).toBe(200);\n    expect(res.body).toEqual({ status: 'ok' });\n  });\n\n  it('POST /api/echo returns correct echo and length', async () => {\n    const res = await request(app)\n      .post('/api/echo')\n      .send({ message: 'hello' })\n      .set('Content-Type', 'application/json');\n    expect(res.statusCode).toBe(200);\n    expect(res.body.echo).toBe('hello');\n    expect(res.body.length).toBe(5);\n  });\n\n  it('POST /api/echo without message returns 400', async () => {\n    const res = await request(app)\n      .post('/api/echo')\n      .send({ name: 'test' })\n      .set('Content-Type', 'application/json');\n    expect(res.statusCode).toBe(400);\n  });\n});"
+    }
+  ]
+}

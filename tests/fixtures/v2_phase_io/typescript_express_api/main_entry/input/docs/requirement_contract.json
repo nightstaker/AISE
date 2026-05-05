@@ -1,0 +1,163 @@
+{
+  "project_name": "TypeScript REST API Server",
+  "summary": "A minimal TypeScript REST API server built with Node.js and Express, exposing a health-check endpoint and an echo endpoint. The project uses TypeScript strict mode, bundles via tsc, includes Vitest unit tests, and runs as a single-process server on port 3000 with no database or authentication dependencies.",
+  "functional_requirements": [
+    {
+      "id": "FR-001",
+      "title": "Health Check Endpoint",
+      "description": "The server must expose a GET /healthz endpoint that returns a JSON response with status 'ok' and HTTP 200.",
+      "acceptance_criteria": [
+        "A GET /healthz request returns HTTP 200",
+        "The response body is valid JSON containing {\"status\":\"ok\"}",
+        "The response content-type is application/json"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-002",
+      "title": "Echo Endpoint",
+      "description": "The server must expose a POST /api/echo endpoint that accepts a JSON body with a message string and returns the message and its character length.",
+      "acceptance_criteria": [
+        "A POST /api/echo request with valid JSON body returns HTTP 200",
+        "The response body contains echo field matching the input message",
+        "The response body contains length field equal to message.length",
+        "Malformed JSON requests return HTTP 400"
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-003",
+      "title": "Build and Package Configuration",
+      "description": "The project must include a package.json with scripts for building, starting, and testing the application.",
+      "acceptance_criteria": [
+        "package.json defines build, start, and test scripts",
+        "The build script compiles TypeScript using tsc",
+        "The test script runs Vitest"
+      ],
+      "priority": "P1"
+    },
+    {
+      "id": "FR-004",
+      "title": "TypeScript Strict Compilation",
+      "description": "The project must configure TypeScript with strict mode enabled in tsconfig.json.",
+      "acceptance_criteria": [
+        "tsconfig.json sets strict to true",
+        "Compiled JavaScript is emitted to a dist/ directory"
+      ],
+      "priority": "P1"
+    }
+  ],
+  "non_functional_requirements": [
+    {
+      "id": "NFR-001",
+      "title": "Port Configuration",
+      "description": "The server must listen on port 3000 by default.",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-002",
+      "title": "Single-Process Architecture",
+      "description": "The server must run as a single-process application with no clustering or worker pool.",
+      "priority": "P2"
+    },
+    {
+      "id": "NFR-003",
+      "title": "No External Dependencies",
+      "description": "The server must not connect to any database, use authentication middleware, or depend on external services at runtime.",
+      "priority": "P2"
+    },
+    {
+      "id": "NFR-004",
+      "title": "Response Latency",
+      "description": "All endpoints must respond within 100ms under normal conditions on a standard development machine.",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-005",
+      "title": "Error Handling",
+      "description": "The server must handle malformed JSON requests gracefully and return HTTP 400 with a descriptive error message.",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-006",
+      "title": "TypeScript Strict Mode",
+      "description": "All source code must compile without errors under strict TypeScript mode.",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-007",
+      "title": "Startup Time",
+      "description": "The server must be ready to accept requests within 5 seconds of launch.",
+      "priority": "P1"
+    }
+  ],
+  "use_cases": [
+    {
+      "id": "UC-001",
+      "actor": "Client / Monitoring System",
+      "goal": "Verify the server is running and healthy",
+      "preconditions": [
+        "Server is started and listening on port 3000"
+      ],
+      "main_flow": [
+        "Client sends GET /healthz",
+        "Server returns {\"status\":\"ok\"} with HTTP 200"
+      ],
+      "covers_requirements": [
+        "FR-001",
+        "NFR-001"
+      ]
+    },
+    {
+      "id": "UC-002",
+      "actor": "Client",
+      "goal": "Send a message to the server and receive an echo with character length",
+      "preconditions": [
+        "Server is started and listening on port 3000"
+      ],
+      "main_flow": [
+        "Client sends POST /api/echo with {\"message\":\"hello\"}",
+        "Server validates the request body contains valid JSON and a message field",
+        "Server calculates the character length of the message",
+        "Server returns {\"echo\":\"hello\",\"length\":5} with HTTP 200"
+      ],
+      "covers_requirements": [
+        "FR-002",
+        "NFR-005"
+      ]
+    },
+    {
+      "id": "UC-003",
+      "actor": "Developer",
+      "goal": "Compile TypeScript source code into JavaScript",
+      "preconditions": [
+        "Node.js and npm are installed"
+      ],
+      "main_flow": [
+        "Developer runs npm run build",
+        "tsc reads tsconfig.json configuration",
+        "TypeScript source code is compiled to JavaScript and output to dist/ directory"
+      ],
+      "covers_requirements": [
+        "FR-003",
+        "FR-004"
+      ]
+    },
+    {
+      "id": "UC-004",
+      "actor": "Developer",
+      "goal": "Run unit tests to verify functional correctness",
+      "preconditions": [
+        "Project has been built"
+      ],
+      "main_flow": [
+        "Developer runs npm test",
+        "Vitest executes all unit test files",
+        "Reports test pass/fail results"
+      ],
+      "covers_requirements": [
+        "FR-003"
+      ]
+    }
+  ]
+}

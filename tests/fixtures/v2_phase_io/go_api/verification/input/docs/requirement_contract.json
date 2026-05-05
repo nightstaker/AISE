@@ -1,0 +1,211 @@
+{
+  "project_name": "Go HTTP Echo Server",
+  "summary": "A single-binary Go HTTP server built with the standard library net/http that exposes a health-check endpoint (GET /healthz) and an echo endpoint (POST /api/echo). The echo endpoint accepts JSON with a message field and returns the message along with its byte length. The server uses no third-party dependencies, includes unit tests via Go's standard testing package, and listens on port 8080 by default.",
+  "functional_requirements": [
+    {
+      "id": "FR-001",
+      "title": "Health Check Endpoint",
+      "description": "The server MUST expose a GET /healthz endpoint that returns a JSON body {\"status\":\"ok\"} with HTTP status code 200 and Content-Type application/json.",
+      "acceptance_criteria": [
+        "The server listens on port 8080 by default.",
+        "A GET /healthz request returns HTTP 200 with body exactly {\"status\":\"ok\"} (no trailing newline).",
+        "The response header Content-Type is application/json.",
+        "The endpoint responds within 100 ms under normal conditions."
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-002",
+      "title": "Echo Endpoint",
+      "description": "The server MUST expose a POST /api/echo endpoint that accepts a JSON body containing a message field of type string, and returns a JSON body with the echoed message and its length.",
+      "acceptance_criteria": [
+        "The request body MUST be valid JSON with a message key whose value is a string.",
+        "If the request body is missing, malformed, or message is absent, the server returns HTTP 400 with {\"error\":\"invalid input\"}.",
+        "If the message value is not a string type, the server returns HTTP 400 with {\"error\":\"invalid input\"}.",
+        "On success, the server returns HTTP 200 with body {\"echo\":\"<message>\",\"length\":<int>} where <int> is the byte length of the message.",
+        "The response header Content-Type is application/json."
+      ],
+      "priority": "P0"
+    },
+    {
+      "id": "FR-003",
+      "title": "Unsupported Methods",
+      "description": "The server MUST reject unsupported HTTP methods on known endpoints with HTTP 405 (Method Not Allowed).",
+      "acceptance_criteria": [
+        "POST /healthz returns 405.",
+        "GET /api/echo returns 405."
+      ],
+      "priority": "P1"
+    },
+    {
+      "id": "FR-004",
+      "title": "Unknown Routes",
+      "description": "The server MUST return HTTP 404 (Not Found) for any path that is not a registered endpoint.",
+      "acceptance_criteria": [
+        "Any request to an unregistered path returns 404 with {\"error\":\"not found\"}."
+      ],
+      "priority": "P1"
+    },
+    {
+      "id": "FR-005",
+      "title": "Unit Tests",
+      "description": "The project MUST include unit tests using Go's standard testing package that cover health check, echo endpoint valid/invalid inputs, unsupported methods, and unknown routes.",
+      "acceptance_criteria": [
+        "Health check endpoint returns correct status code and body.",
+        "Echo endpoint with valid input returns correct echo and length.",
+        "Echo endpoint with missing message field returns 400.",
+        "Echo endpoint with malformed JSON returns 400.",
+        "Echo endpoint with non-string message value returns 400.",
+        "Unsupported method returns 405.",
+        "Unknown route returns 404."
+      ],
+      "priority": "P0"
+    }
+  ],
+  "non_functional_requirements": [
+    {
+      "id": "NFR-001",
+      "title": "Performance",
+      "description": "The server MUST handle at least 100 concurrent requests on a single core without exceeding 500 ms response latency (p95). The server MUST start within 2 seconds of execution.",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-002",
+      "title": "Resource Constraints",
+      "description": "The server MUST NOT allocate more than 32 MB of memory under normal operation. The server MUST NOT depend on any third-party Go modules — only the standard library is allowed.",
+      "priority": "P0"
+    },
+    {
+      "id": "NFR-003",
+      "title": "Input Validation",
+      "description": "The maximum accepted message length is 10 000 bytes. Messages exceeding this limit return HTTP 400 with {\"error\":\"message too long\"}.",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-004",
+      "title": "Content-Type Enforcement",
+      "description": "All responses MUST include the Content-Type: application/json header.",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-005",
+      "title": "Error Response Format",
+      "description": "All error responses MUST follow the JSON structure {\"error\":\"<reason>\"} with an appropriate HTTP status code.",
+      "priority": "P1"
+    },
+    {
+      "id": "NFR-006",
+      "title": "Deterministic Output",
+      "description": "The health check endpoint MUST always return the identical response body {\"status\":\"ok\"} with no randomness or timestamps.",
+      "priority": "P1"
+    }
+  ],
+  "use_cases": [
+    {
+      "id": "UC-001",
+      "actor": "HTTP Client",
+      "goal": "Verify that the server is running and healthy.",
+      "preconditions": [
+        "The server is started and listening on port 8080."
+      ],
+      "main_flow": [
+        "Client sends GET /healthz.",
+        "Server returns 200 OK with {\"status\":\"ok\"}.",
+        "Client parses the response and confirms health."
+      ],
+      "postconditions": [
+        "Server continues to serve requests normally."
+      ],
+      "covers_requirements": [
+        "FR-001",
+        "NFR-001",
+        "NFR-004",
+        "NFR-006"
+      ]
+    },
+    {
+      "id": "UC-002",
+      "actor": "HTTP Client",
+      "goal": "Send a message to the server and receive it back with its length.",
+      "preconditions": [
+        "The server is started and listening on port 8080."
+      ],
+      "main_flow": [
+        "Client sends POST /api/echo with JSON body {\"message\":\"hello\"}.",
+        "Server validates the input.",
+        "Server returns 200 OK with {\"echo\":\"hello\",\"length\":5}.",
+        "Client parses and processes the response."
+      ],
+      "alternate_flow": [
+        "If the message is missing or malformed, the server returns 400 Bad Request.",
+        "If the message exceeds 10 000 bytes, the server returns 400 Bad Request with {\"error\":\"message too long\"}."
+      ],
+      "postconditions": [
+        "Server continues to serve requests normally."
+      ],
+      "covers_requirements": [
+        "FR-002",
+        "NFR-001",
+        "NFR-003",
+        "NFR-004"
+      ]
+    },
+    {
+      "id": "UC-003",
+      "actor": "HTTP Client",
+      "goal": "Attempt an unsupported HTTP method and receive a 405 response.",
+      "preconditions": [
+        "The server is started and listening on port 8080."
+      ],
+      "main_flow": [
+        "Client sends POST /healthz or GET /api/echo.",
+        "Server rejects the request with 405 Method Not Allowed."
+      ],
+      "postconditions": [
+        "No state is changed on the server."
+      ],
+      "covers_requirements": [
+        "FR-003",
+        "NFR-005"
+      ]
+    },
+    {
+      "id": "UC-004",
+      "actor": "HTTP Client",
+      "goal": "Access an unregistered path and receive a 404 response.",
+      "preconditions": [
+        "The server is started and listening on port 8080."
+      ],
+      "main_flow": [
+        "Client sends GET /unknown or any other unregistered path.",
+        "Server returns 404 Not Found with {\"error\":\"not found\"}."
+      ],
+      "postconditions": [
+        "No state is changed on the server."
+      ],
+      "covers_requirements": [
+        "FR-004",
+        "NFR-005"
+      ]
+    },
+    {
+      "id": "UC-005",
+      "actor": "Developer / Tester",
+      "goal": "Execute all unit tests using Go's standard testing package and verify they pass.",
+      "preconditions": [
+        "The server code is written and go.mod is initialized."
+      ],
+      "main_flow": [
+        "Developer runs go test ./....",
+        "All test cases execute against the in-memory server or handlers.",
+        "All tests pass with zero failures."
+      ],
+      "postconditions": [
+        "Codebase is verified to meet all acceptance criteria."
+      ],
+      "covers_requirements": [
+        "FR-005"
+      ]
+    }
+  ]
+}

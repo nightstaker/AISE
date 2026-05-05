@@ -1,0 +1,45 @@
+aise_version: "0.1.0"
+scenario_id: typescript_express_api
+phase: requirements
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a TypeScript REST API server using Node.js + Express.
+  - GET /healthz returning {"status":"ok"}
+  - POST /api/echo accepting JSON {"message":string} and returning {"echo":<message>,"length":<int>}
+  - TypeScript strict mode, tsc bundle, package.json scripts for build/start/test
+  - Vitest unit tests
+  - No DB / auth, single-process, port 3000
+
+max_review_iterations: 1
+timeout_sec: 600
+
+assertions:
+  - { name: requirement_md_present,         path: docs/requirement.md, predicate: file_exists }
+  - { name: requirement_md_substantial,     path: docs/requirement.md, predicate: { min_bytes: 1500 } }
+  - { name: requirement_contract_present,   path: docs/requirement_contract.json, predicate: file_exists }
+  - name: requirement_contract_schema_valid
+    path: docs/requirement_contract.json
+    predicate: { schema: schemas/requirement_contract.schema.json }
+  - name: covers_typescript
+    path: docs/requirement.md
+    predicate: { contains_keywords: { all_of: [TypeScript] } }
+  - name: covers_endpoints
+    path: docs/requirement.md
+    predicate: { contains_keywords: { all_of: [healthz, echo] } }
+  - name: contains_canonical_sections
+    path: docs/requirement.md
+    predicate: { contains_sections: ["功能需求", "Functional"], }
+    severity: warn   # PM may write English-only sections for English requirements
+  - name: at_least_three_FRs
+    path: docs/requirement.md
+    predicate: { regex_count: { pattern: "FR-\\d+", min: 3 } }
+  - name: contract_lists_FRs
+    path: docs/requirement_contract.json
+    predicate: { count_at_least: { field: functional_requirements, min: 3 } }
+  - name: not_a_python_project
+    path: docs/requirement.md
+    predicate: { forbidden_patterns: { patterns: ["pyproject\\.toml", "import \\w"] } }
+    severity: warn   # PM may casually mention import in pseudocode

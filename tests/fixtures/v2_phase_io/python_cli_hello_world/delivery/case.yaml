@@ -1,0 +1,54 @@
+# Phase-contract test case: delivery phase (phase 6) against the
+# hello-world Python CLI scenario.
+#
+# Input: post-verification snapshot (full source + tests + qa_report).
+# Output expected: docs/delivery_report.md summarizing the journey.
+#
+# Run with:
+#   aise v2-phase-test --case tests/fixtures/v2_phase_io/python_cli_hello_world/delivery/case.yaml
+
+aise_version: "0.1.0"
+scenario_id: python_cli_hello_world
+phase: delivery
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a Python CLI tool that prints 'hello, world' when run.
+
+max_review_iterations: 1
+timeout_sec: 900
+
+assertions:
+  - name: delivery_report_present
+    path: docs/delivery_report.md
+    predicate: file_exists
+
+  - name: delivery_report_substantial
+    path: docs/delivery_report.md
+    predicate:
+      min_bytes: 600  # one paragraph + bullet list, minimum
+
+  # -- The delivery report must reference at least 4 of the 5 prior
+  #    canonical artifacts (requirement.md / architecture.md /
+  #    stack_contract.json / behavioral_contract.json / qa_report.json).
+  #    The ``prior_phases_summarized`` predicate caps to len(canonical)
+  #    so passing arg=5 effectively means "≥ all of them". --
+  - name: report_summarizes_prior_phases
+    path: docs/delivery_report.md
+    predicate:
+      prior_phases_summarized: 4
+
+  # -- Content sanity: report must mention what was actually delivered. --
+  - name: report_mentions_python_cli
+    path: docs/delivery_report.md
+    predicate:
+      contains_keywords:
+        all_of: [Python]
+
+  - name: report_mentions_hello_world
+    path: docs/delivery_report.md
+    predicate:
+      contains_keywords:
+        any_of: ["hello, world", "hello world"]

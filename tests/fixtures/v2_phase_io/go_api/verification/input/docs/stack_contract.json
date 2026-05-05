@@ -1,0 +1,82 @@
+{
+  "language": "go",
+  "runtime": "native",
+  "framework_backend": "net/http",
+  "framework_frontend": "",
+  "package_manager": "go",
+  "project_config_file": "go.mod",
+  "test_runner": "go test",
+  "static_analyzer": ["go vet"],
+  "entry_point": "cmd/server/main.go",
+  "run_command": "go run cmd/server/main.go",
+  "ui_required": false,
+  "ui_kind": "",
+  "subsystems": [
+    {
+      "name": "server",
+      "src_dir": "internal/server",
+      "responsibilities": "Server bootstrap, listen address configuration, and HTTP server lifecycle management",
+      "components": [
+        {
+          "name": "server",
+          "file": "internal/server/server.go",
+          "test_file": "internal/server/server_test.go",
+          "responsibility": "Server struct with Start() and Shutdown() methods for HTTP server lifecycle"
+        }
+      ]
+    },
+    {
+      "name": "router",
+      "src_dir": "internal/router",
+      "responsibilities": "Route registration with http.ServeMux and method restriction enforcement",
+      "components": [
+        {
+          "name": "router",
+          "file": "internal/router/router.go",
+          "test_file": "internal/router/router_test.go",
+          "responsibility": "Router struct for registering health, echo, and not-found handlers on the ServeMux"
+        }
+      ]
+    },
+    {
+      "name": "handlers",
+      "src_dir": "internal/handlers",
+      "responsibilities": "HTTP request handlers for health check and echo endpoints with input validation",
+      "components": [
+        {
+          "name": "health_handler",
+          "file": "internal/handlers/health_handler.go",
+          "test_file": "internal/handlers/health_handler_test.go",
+          "responsibility": "HealthHandler implements http.Handler for GET /healthz returning {\"status\":\"ok\"}"
+        },
+        {
+          "name": "echo_handler",
+          "file": "internal/handlers/echo_handler.go",
+          "test_file": "internal/handlers/echo_handler_test.go",
+          "responsibility": "EchoHandler implements http.Handler for POST /api/echo with JSON message validation and echo response"
+        }
+      ]
+    },
+    {
+      "name": "entry",
+      "src_dir": "cmd/server",
+      "responsibilities": "Application entry point: constructs subsystems, registers routes, and starts the HTTP server",
+      "components": [
+        {
+          "name": "main",
+          "file": "cmd/server/main.go",
+          "test_file": "cmd/server/main_test.go",
+          "responsibility": "Entry point that wires server, router, and handlers together and starts listening on port 8080"
+        }
+      ]
+    }
+  ],
+  "lifecycle_inits": [
+    {
+      "attr": "server",
+      "method": "Start",
+      "class": "Server",
+      "module": "internal/server/server.go"
+    }
+  ]
+}

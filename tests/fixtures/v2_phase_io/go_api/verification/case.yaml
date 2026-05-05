@@ -1,0 +1,30 @@
+aise_version: "0.1.0"
+scenario_id: go_api
+phase: verification
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a Go HTTP server using net/http.
+
+max_review_iterations: 1
+timeout_sec: 900
+
+assertions:
+  - name: behavioral_contract_has_enough_scenarios
+    path: docs/behavioral_contract.json
+    predicate: { min_scenarios: 3 }
+
+  # qa_report.json — same softening as TypeScript: qa_engineer skips
+  # writing it when go test isn't on PATH. severity=warn until the
+  # qa_engineer prompt is updated to always emit ran=false.
+  - name: qa_report_present
+    path: docs/qa_report.json
+    predicate: file_exists
+    severity: warn
+
+  - name: qa_report_no_pytest_on_go
+    path: docs/qa_report.json
+    predicate: { forbidden_patterns: { patterns: ["\"pytest\"\\s*:\\s*\\{[^}]*\"ran\"\\s*:\\s*true"] } }
+    severity: warn

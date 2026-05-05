@@ -1,0 +1,38 @@
+aise_version: "0.1.0"
+scenario_id: go_api
+phase: main_entry
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  Build a Go HTTP server using net/http.
+
+max_review_iterations: 1
+timeout_sec: 900
+
+assertions:
+  - name: entry_present
+    path: cmd/server/main.go
+    predicate: file_exists
+
+  - name: entry_substantial
+    path: cmd/server/main.go
+    predicate: { min_bytes: 100 }
+
+  - name: has_func_main
+    path: cmd/server/main.go
+    predicate: { regex_count: { pattern: "^func main\\s*\\(", min: 1 } }
+
+  - name: starts_http_server
+    path: cmd/server/main.go
+    predicate: { regex_count: { pattern: "ListenAndServe", min: 1 } }
+
+  # Wires the routes — at least imports the router or handlers package
+  - name: wires_routes
+    path: cmd/server/main.go
+    predicate: { contains_keywords: { any_of: [router, handlers, "internal/router", "internal/handlers"] } }
+
+  - name: imports_nethttp
+    path: cmd/server/main.go
+    predicate: { contains_keywords: { all_of: ["\"net/http\""] } }

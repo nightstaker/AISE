@@ -1,0 +1,33 @@
+name: magic_tower
+description: 魔塔 (Magic Tower) — 经典回合制 RPG 手机游戏
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  path_provider: ^2.1.0
+  flutter_audio_query: ^0.7.0
+  in_app_purchase: ^3.2.0
+  riverpod: ^2.5.0
+  flutter_riverpod: ^2.5.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  test: ^1.24.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/data/
+    - assets/i18n.json
+    - assets/images/
+    - assets/audio/

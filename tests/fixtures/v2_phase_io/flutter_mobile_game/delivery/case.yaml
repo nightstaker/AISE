@@ -1,0 +1,49 @@
+# Phase-contract test case: delivery phase (phase 6) against the Flutter
+# magic-tower scenario.
+#
+# Input: post-verification snapshot (full Flutter project + tests/scenarios/*
+# + docs/qa_report.json). Output expected: docs/delivery_report.md
+# summarizing the build journey and citing prior phase artifacts.
+#
+# Run with:
+#   aise v2-phase-test --case tests/fixtures/v2_phase_io/flutter_mobile_game/delivery/case.yaml
+
+aise_version: "0.1.0"
+scenario_id: flutter_mobile_game
+phase: delivery
+
+input_dir: input/
+project_config_file: project_config.json
+
+requirement: |
+  开发一款可以上架商店的商用魔塔（Magic Tower）手机游戏 APP（Flutter + Dart）。
+
+max_review_iterations: 1
+timeout_sec: 900
+
+assertions:
+  - name: delivery_report_present
+    path: docs/delivery_report.md
+    predicate: file_exists
+
+  - name: delivery_report_substantial
+    path: docs/delivery_report.md
+    predicate:
+      min_bytes: 800  # commercial-app delivery report should be substantive
+
+  - name: report_summarizes_prior_phases
+    path: docs/delivery_report.md
+    predicate:
+      prior_phases_summarized: 4
+
+  - name: report_mentions_flutter
+    path: docs/delivery_report.md
+    predicate:
+      contains_keywords:
+        all_of: [Flutter]
+
+  - name: report_mentions_magic_tower
+    path: docs/delivery_report.md
+    predicate:
+      contains_keywords:
+        any_of: ["魔塔", "Magic Tower"]

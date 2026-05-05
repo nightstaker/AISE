@@ -415,6 +415,22 @@ def main() -> None:
         help="Base URL of the running aise web server (default: http://127.0.0.1:8000)",
     )
 
+    # waterfall_v2: phase-contract test (single-phase iteration loop)
+    phase_test_parser = subparsers.add_parser(
+        "v2-phase-test",
+        help="Run a single waterfall_v2 phase against a frozen input snapshot + assertion list",
+    )
+    phase_test_parser.add_argument(
+        "--case",
+        required=True,
+        help="Path to a phase-test case YAML (see aise.testing.phase_test docstring)",
+    )
+    phase_test_parser.add_argument(
+        "--keep-workdir",
+        action="store_true",
+        help="Keep the temp project root after the run (path printed in report)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "run":
@@ -582,6 +598,9 @@ def main() -> None:
         _cmd_abort_task(args.task_id, args.web_url)
     elif args.command == "active_tasks":
         _cmd_active_tasks(args.web_url)
+    elif args.command == "v2-phase-test":
+        rc = _cmd_v2_phase_test(args.case, keep_workdir=args.keep_workdir)
+        sys.exit(rc)
     else:
         parser.print_help()
         sys.exit(1)
@@ -683,6 +702,45 @@ def _cmd_active_tasks(web_url: str) -> None:
             f"{t.get('llm_call_count', 0):>5d}  "
             f"{t.get('loop_detector_hits', 0):>5d}"
         )
+
+
+def _cmd_v2_phase_test(case_path: str, *, keep_workdir: bool) -> int:
+    """Run one phase-contract test case. Returns process exit code:
+    0 on PASS, 1 on assertion FAIL, 2 on phase halt, 3 on version
+    mismatch, 4 on usage error.
+    """
+    from pathlib import Path
+
+    from .testing.phase_test import (
+        PhaseTestVersionMismatch,
+        load_case,
+        run_phase_test,
+    )
+
+    path = Path(case_path).resolve()
+    if not path.is_file():
+        print(f"v2-phase-test: case file not found: {path}")
+        return 4
+
+    try:
+        case = load_case(path)
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"v2-phase-test: failed to load case {path}: {exc}")
+        return 4
+
+    print(f"v2-phase-test: case={case.scenario_id} phase={case.phase} from={path}")
+    try:
+        report = run_phase_test(case, keep_workdir=keep_workdir)
+    except PhaseTestVersionMismatch as exc:
+        print(f"v2-phase-test: VERSION MISMATCH — {exc}")
+        return 3
+
+    print(report.summary())
+    if report.passed:
+        return 0
+    if report.phase_status == "failed":
+        return 2
+    return 1
 
 
 if __name__ == "__main__":

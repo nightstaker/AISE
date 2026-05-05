@@ -1,0 +1,42 @@
+{
+  "language": "python",
+  "runtime": "cpython",
+  "framework_backend": "",
+  "framework_frontend": "",
+  "package_manager": "pip",
+  "project_config_file": "pyproject.toml",
+  "test_runner": "pytest",
+  "static_analyzer": ["ruff check"],
+  "entry_point": "src/main.py",
+  "run_command": "python src/main.py",
+  "ui_required": false,
+  "ui_kind": "",
+  "subsystems": [
+    {
+      "name": "cli",
+      "src_dir": "src",
+      "responsibilities": "CLI 入口、参数解析、问候语输出、版本查询",
+      "components": [
+        {
+          "name": "main",
+          "file": "src/main.py",
+          "test_file": "tests/test_main.py",
+          "responsibility": "程序入口点，命令行参数解析，分发到对应处理函数"
+        },
+        {
+          "name": "greet",
+          "file": "src/greet.py",
+          "test_file": "tests/test_greet.py",
+          "responsibility": "生成和输出问候语 'hello, world'"
+        },
+        {
+          "name": "version",
+          "file": "src/version.py",
+          "test_file": "tests/test_version.py",
+          "responsibility": "处理版本查询，返回语义化版本号"
+        }
+      ]
+    }
+  ],
+  "lifecycle_inits": []
+}
