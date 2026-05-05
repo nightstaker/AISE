@@ -76,6 +76,27 @@ def _passing_produce(tmp_path: Path):
         (tmp_path / "tests" / "scenarios").mkdir(parents=True, exist_ok=True)
         for sid in (f"s{i}" for i in range(5)):
             (tmp_path / "tests" / "scenarios" / f"{sid}.py").write_text("# scenario\n" + "x" * 250, encoding="utf-8")
+        # Phase 5 also requires docs/qa_report.json (promoted to an
+        # AUTO_GATE deliverable on 2026-05-05). Schema validates against
+        # schemas/qa_report.schema.json — minimal valid shape below.
+        (docs / "qa_report.json").write_text(
+            json.dumps(
+                {
+                    "phase": "qa",
+                    "completed_at": "2026-05-05T00:00:00Z",
+                    "toolchain_check": {"pytest": "present"},
+                    "pytest": {
+                        "command": "python -m pytest -q",
+                        "ran": True,
+                        "passed": 5,
+                        "failed": 0,
+                        "skipped": 0,
+                        "failed_tests": [],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
 
         # Phase 6 delivery
         (docs / "delivery_report.md").write_text(

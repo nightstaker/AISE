@@ -324,6 +324,31 @@ class TestScenarioParallelFanout:
                 p = tmp_path / rel.lstrip("/")
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text("# valid\n" + "x" * 250, encoding="utf-8")
+            # docs/qa_report.json is a phase-level ``document`` deliverable,
+            # not part of the per-scenario fanout's ``expected``. The
+            # real qa_engineer writes it on its own initiative
+            # (qa_engineer.md STOPPING RULE); the test mock does the same
+            # so AUTO_GATE's schema check passes.
+            qa_report = tmp_path / "docs" / "qa_report.json"
+            if not qa_report.exists():
+                qa_report.parent.mkdir(parents=True, exist_ok=True)
+                qa_report.write_text(
+                    json.dumps(
+                        {
+                            "phase": "qa",
+                            "toolchain_check": {"pytest": "present"},
+                            "pytest": {
+                                "command": "pytest",
+                                "ran": True,
+                                "passed": 1,
+                                "failed": 0,
+                                "skipped": 0,
+                                "failed_tests": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
             return "ok"
 
         executor = PhaseExecutor(

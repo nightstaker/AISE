@@ -156,6 +156,33 @@ class TestLoadBundledWaterfallV2:
         ((stage,)) = ver.fanout.stages
         assert stage.mode_when_runner_unavailable == "write_only"
 
+    def test_verification_has_qa_report_deliverable(self):
+        """Regression: 2026-05-05 phase-test matrix found qa_engineer
+        skipping docs/qa_report.json on TS / Go / C++ runs because the
+        artifact was REQUIRED only in qa_engineer.md prose, not in
+        the process spec. The fix promoted it to an AUTO_GATE
+        deliverable with file_exists + schema acceptance. This test
+        guards against silent removal."""
+        spec = load_waterfall_v2(default_waterfall_v2_path())
+        ver = spec.phase_by_id("verification")
+        assert ver is not None
+        qa_report_dlv = [d for d in ver.deliverables if d.kind == "document" and d.path == "docs/qa_report.json"]
+        assert qa_report_dlv, (
+            "verification phase must declare docs/qa_report.json as a "
+            "document deliverable; otherwise qa_engineer can skip writing it "
+            "and phase 6 (delivery) reads garbage"
+        )
+        kinds = [a.kind for a in qa_report_dlv[0].acceptance]
+        assert "file_exists" in kinds
+        assert "schema" in kinds, (
+            "qa_report.json deliverable must carry a schema-validation "
+            "predicate so toolchain-missing branches that fabricate counts "
+            "still get caught at AUTO_GATE"
+        )
+        # The schema arg points at the bundled JSON-Schema file.
+        schema_arg = [a for a in qa_report_dlv[0].acceptance if a.kind == "schema"][0].arg
+        assert schema_arg == "schemas/qa_report.schema.json"
+
     def test_acceptance_predicates_parsed(self):
         spec = load_waterfall_v2(default_waterfall_v2_path())
         req = spec.phase_by_id("requirements")

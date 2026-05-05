@@ -57,6 +57,14 @@ class MockLLM:
                 p = self.project_root / path.lstrip("/")
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(f"# qa stub for {path}\n" + "x" * 250, encoding="utf-8")
+            # docs/qa_report.json is now an AUTO_GATE-enforced
+            # deliverable (waterfall_v2.process.md verification phase
+            # promoted it from prose-only on 2026-05-05). It is NOT in
+            # ``expected`` for fanout dispatches — it's a phase-level
+            # ``kind: document`` deliverable, so the real qa_engineer
+            # writes it on its own initiative per qa_engineer.md's
+            # STOPPING RULE. The mock does the same.
+            self._write_qa_report()
         elif role == "project_manager":
             self._write_phase_6()
         return f"{role} produced"
@@ -125,6 +133,31 @@ class MockLLM:
             "## 验收结论\nshipped.\n## 已知 issue\nnone.\n## 下一步建议\niter.\n"
             "Built per docs/requirement.md and docs/architecture.md.\n"
             "Stack: docs/stack_contract.json. Behavior: docs/behavioral_contract.json.\n" + "x" * 1500,
+            encoding="utf-8",
+        )
+
+    def _write_qa_report(self) -> None:
+        """Write a minimal valid docs/qa_report.json. Verification phase
+        AUTO_GATE-enforces this artifact (schema check) since
+        2026-05-05; without it the phase halts."""
+        docs = self.project_root / "docs"
+        docs.mkdir(parents=True, exist_ok=True)
+        (docs / "qa_report.json").write_text(
+            json.dumps(
+                {
+                    "phase": "qa",
+                    "completed_at": "2026-05-05T00:00:00Z",
+                    "toolchain_check": {"pytest": "present"},
+                    "pytest": {
+                        "command": "python -m pytest -q",
+                        "ran": True,
+                        "passed": 1,
+                        "failed": 0,
+                        "skipped": 0,
+                        "failed_tests": [],
+                    },
+                }
+            ),
             encoding="utf-8",
         )
 

@@ -187,6 +187,18 @@ phases:
         acceptance:
           - file_exists
           - { min_bytes: 200 }
+      # qa_report.json gate: phase 6 (delivery) reads this verbatim.
+      # Promoted from "REQUIRED prose in qa_engineer.md" to a hard
+      # AUTO_GATE deliverable on 2026-05-05 because TS / Go / C++
+      # phase-test runs showed qa_engineer occasionally skipped
+      # writing it when the toolchain was missing (the prose said
+      # "ran=false" was required, but a soft prose rule wasn't
+      # enough — see PR description for the matrix).
+      - kind: document
+        path: docs/qa_report.json
+        acceptance:
+          - file_exists
+          - { schema: schemas/qa_report.schema.json }
     review:
       consensus: ALL_PASS
       revise_budget: 3
