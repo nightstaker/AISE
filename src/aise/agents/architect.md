@@ -208,6 +208,75 @@ own — if you don't lay down the skeleton, nobody will.
   project_7-tower's three-stacks-coexist AND 24-flat-directories
   failure modes.**
 
+- **`docs/data_dependency_contract.json` — OPTIONAL (write only when
+  the project ships data files that runtime code MUST consume).** If the
+  architecture has any of: external level/world data, asset bundles,
+  fixtures, i18n string tables, config JSON loaded at startup — declare
+  every such pipe here. Schema is `schemas/data_dependency_contract.schema.json`.
+  Minimum example:
+
+  ```json
+  {
+    "version": "1",
+    "data_dependencies": [
+      {
+        "name": "level_data",
+        "files_glob": "assets/level_*.json",
+        "consumer_module": "src/level/loader.*",
+        "min_files": 1,
+        "load_invariant": {"kind": "collection_non_empty",
+                            "expr": "loader.levels"}
+      }
+    ]
+  }
+  ```
+
+  The main_entry phase's `data_dependency_wiring_static` AUTO_GATE
+  re-runs `grep` on each `consumer_module` looking for any reference
+  to `files_glob` (literal prefix or any concrete file the glob
+  resolves to). If you declare a dependency the developer doesn't
+  wire, the gate FAILS the phase and the developer must fix the
+  loader. Do NOT declare data files that the design intends to ship
+  unread (e.g. examples in `docs/`); only declare paths whose contents
+  the runtime is expected to load.
+
+- **`docs/action_contract.json` — OPTIONAL (write only when the
+  project has user/external triggers whose handlers MUST do real
+  work).** Examples: a game's "primary attack" key, a CLI's
+  `--upgrade` flag, an HTTP endpoint POST /transfer. For each action,
+  list the symbols the handler must call so the static gate catches
+  "key wired to empty stub" assemblies. Schema is
+  `schemas/action_contract.schema.json`. Minimum example:
+
+  ```json
+  {
+    "version": "1",
+    "actions": [
+      {
+        "name": "primary_attack",
+        "trigger": {"kind": "key", "value": "Space"},
+        "expected_change": {"kind": "state_field_changes",
+                             "field": "currentScreen"},
+        "handler_must_call": ["combat.calculateBattle",
+                                "player.applyBattleResult"]
+      }
+    ]
+  }
+  ```
+
+  The main_entry phase's `action_contract_wiring_static` AUTO_GATE
+  scans the entry-point file (or `action.handler_module` when set)
+  for every symbol in `handler_must_call`, looking for a call site
+  matching `\bsymbol\s*\(`. Missing → gate FAILS. Use this when the
+  cost of a "wire ran but did nothing" bug is high (game combat,
+  payment, security-sensitive flows).
+
+  Both contracts are OPTIONAL. Projects without runtime data pipes /
+  important user actions can skip them — the main_entry static gates
+  vacuous-pass when the contract files are absent. Skipping is fine
+  for trivial CLIs and pure-library packages; producing them is
+  STRONGLY recommended for any project with a runtime-driven loop.
+
 - **Subsystem directories — MANDATORY (one directory per *subsystem*,
   NOT one directory per component).** A "subsystem" is the unit of
   decomposition the architecture document draws an outline around —

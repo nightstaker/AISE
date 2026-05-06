@@ -1,0 +1,77 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "integration_report",
+  "title": "Integration report (developer output, phase 4 / main_entry)",
+  "description": "Structural report written by the developer at the end of the main_entry phase to attest that the assembly is wired (lifecycle inits reached, data dependencies referenced, action handlers non-trivial). The hard gates are independent predicates re-executing the static checks; this report is the developer's self-disclosure for the delivery report's audit trail. Phase 6 (delivery) reads this verbatim.",
+  "type": "object",
+  "required": ["phase", "verdict"],
+  "properties": {
+    "phase": {
+      "type": "string",
+      "const": "main_entry"
+    },
+    "completed_at": { "type": "string" },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "fail", "skipped"]
+    },
+    "lifecycle_init_check": {
+      "type": "object",
+      "properties": {
+        "expected": { "type": "integer", "minimum": 0 },
+        "reached": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "data_wiring_check": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "static_refs"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "static_refs": { "type": "integer", "minimum": 0 },
+          "consumer_module_resolved": { "type": "string" },
+          "runtime_invariant_ok": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "action_wiring_check": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "handler_calls_found"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "handler_calls_found": { "type": "integer", "minimum": 0 },
+          "handler_calls_missing": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "state_changed": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "boot_check": {
+      "type": "object",
+      "properties": {
+        "ran": { "type": "boolean" },
+        "verdict": {
+          "type": "string",
+          "enum": ["pass", "fail", "skipped"]
+        },
+        "exit_code": { "type": "integer" },
+        "duration_s": { "type": "number" },
+        "reason": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "violations": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": true
+}
