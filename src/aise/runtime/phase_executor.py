@@ -56,6 +56,7 @@ deliberately a pure state machine that returns a PhaseResult.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from enum import Enum
@@ -130,6 +131,55 @@ class PhaseResult:
 
 
 _PRODUCER_AUTO_GATE_RETRIES = 3
+
+
+# -- Fan-out parallelism cap ---------------------------------------------
+#
+# A3 (2026-05-05): the spec's static ``max_workers: 3`` was chosen for
+# small Python CLIs and serialized 22-Dart-component fan-outs into 7+
+# batches. We widen at runtime based on task count, capped here.
+# Above ~8 we hit local-vLLM queue saturation (no real parallelism left)
+# and on a cloud LLM with prompt caching the marginal speedup vs queue
+# pressure flattens around the same number.
+_MAX_FANOUT_PARALLELISM = 8
+
+
+def _file_fingerprint(path: Path) -> str:
+    """Cheap content fingerprint used by the AUTO_GATE incremental
+    cache (B3). Returns ``"missing"`` for non-existent files (treated
+    as a distinct cache key from any present-file fingerprint), and
+    ``size:hex(sha256)`` otherwise. Reading the file twice in the same
+    AUTO_GATE pass is fine — it's small (architect docs / contract
+    JSON / per-component source); the cache only helps across
+    *retries*, not within one pass.
+    """
+    if not path.is_file():
+        return "missing"
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return "missing"
+    return f"{len(data)}:{hashlib.sha256(data).hexdigest()[:32]}"
+
+
+def _adaptive_max_workers(task_count: int) -> int:
+    """Return a sensible per-stage worker count for ``task_count`` tasks.
+
+    The mapping is intentionally coarse — 3 buckets:
+
+    - ≤ 4 tasks: 2 workers (small project; saturating 3+ wastes setup)
+    - 5–15 tasks: 4 workers (medium; balance of throughput vs LLM queue)
+    - 16+ tasks: 8 workers (large project; full parallelism cap)
+
+    Callers (``_run_fanout``) treat this as a *floor* combined with the
+    spec's static ``max_workers``; the larger of the two wins, so a
+    spec author can still pin a higher value if their stack supports it.
+    """
+    if task_count <= 4:
+        return 2
+    if task_count <= 15:
+        return 4
+    return _MAX_FANOUT_PARALLELISM
 
 
 # -- Inline JSON contract examples ---------------------------------------
@@ -367,6 +417,11 @@ class PhaseExecutor:
     stack_contract: dict[str, Any] | None = None
     behavioral_contract: dict[str, Any] | None = None
     requirement_contract: dict[str, Any] | None = None
+    # B3 (2026-05-05): per-(path, kind, file_fp, contracts_fp) cache of
+    # previously-PASSED DeliverableReports. Skips re-running the predicate
+    # sweep on retries when nothing relevant has changed. Reset implicitly
+    # whenever a new PhaseExecutor is built (one per phase invocation).
+    _gate_cache: dict[tuple, DeliverableReport] = field(default_factory=dict)
 
     # -- Phase prompt builder (caller can override per-phase via DI) -----
     # Default builder lazily resolves to ``_default_build_phase_prompt``
@@ -556,11 +611,19 @@ class PhaseExecutor:
             group_by = None
             if stage.group_by == "subsystem":
                 group_by = lambda payload: payload.subsystem  # noqa: E731
+            # Adaptive max_workers: scale with task count (perf opt A3,
+            # 2026-05-05). The spec's static value is a floor; we widen
+            # it up to ``_MAX_FANOUT_PARALLELISM`` when fan-out is fat
+            # (e.g. 22-component Flutter project would otherwise sit at
+            # 3-wide and serialize 7 batches). For small projects the
+            # static value still wins because there aren't enough tasks
+            # to fill more workers anyway.
+            adaptive_workers = max(stage.concurrency.max_workers, _adaptive_max_workers(len(tasks)))
             stage_specs.append(
                 StageSpec(
                     id=stage.id,
                     tasks=tasks,
-                    max_workers=stage.concurrency.max_workers,
+                    max_workers=adaptive_workers,
                     depends_on=stage.depends_on,
                     group_by=group_by,
                 )
@@ -598,10 +661,30 @@ class PhaseExecutor:
         # stack_contract.json / behavioral_contract.json).
         self._refresh_contracts_from_disk()
 
+        # B3 (2026-05-05): incremental cache. Re-checking deliverables
+        # whose file content + contracts haven't changed across
+        # producer attempts is wasted IO + CPU. We hash (sha256) the
+        # deliverable file plus a fingerprint of the loaded contracts
+        # and skip the per-deliverable predicate sweep when the same
+        # tuple was just verified PASS. Cache is per-PhaseExecutor so
+        # a fresh phase execution starts clean.
+        contracts_fp = self._contracts_fingerprint()
+
         reports: list[DeliverableReport] = []
         for deliverable in phase.deliverables:
             paths = self._resolve_deliverable_paths(deliverable)
             for p in paths:
+                file_fp = _file_fingerprint(p)
+                cache_key = (str(p), deliverable.kind, file_fp, contracts_fp)
+                cached = self._gate_cache.get(cache_key)
+                if cached is not None and cached.passed:
+                    # Re-evaluating a passing predicate set on identical
+                    # input is deterministic — safe to reuse. We do NOT
+                    # cache failing reports (the failure detail string
+                    # contains paths that may surface differently across
+                    # attempts; safer to re-run them).
+                    reports.append(cached)
+                    continue
                 ctx = PredicateContext(
                     project_root=self.project_root,
                     deliverable_path=p,
@@ -609,8 +692,25 @@ class PhaseExecutor:
                     behavioral_contract=self.behavioral_contract,
                     requirement_contract=self.requirement_contract,
                 )
-                reports.append(evaluate_deliverable(deliverable, ctx))
+                report = evaluate_deliverable(deliverable, ctx)
+                if report.passed:
+                    self._gate_cache[cache_key] = report
+                reports.append(report)
         return tuple(reports)
+
+    def _contracts_fingerprint(self) -> str:
+        """Cheap content-hash of the 3 loaded contracts. When any
+        contract changes between producer attempts, every deliverable's
+        cache entry is invalidated — even if the deliverable file
+        itself is unchanged — because the predicate evaluator reads
+        the contracts via PredicateContext."""
+        h = hashlib.sha256()
+        for c in (self.stack_contract, self.behavioral_contract, self.requirement_contract):
+            h.update(b"\x00")
+            if c is not None:
+                # sort_keys to make this deterministic across dict ordering
+                h.update(json.dumps(c, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+        return h.hexdigest()
 
     def _refresh_contracts_from_disk(self) -> None:
         """Re-read docs/{stack,behavioral,requirement}_contract.json so

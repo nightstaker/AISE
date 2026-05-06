@@ -216,12 +216,21 @@ def run_review_round(
     """Dispatch each reviewer, parse their verdicts, return the
     aggregated ConsensusResult.
 
-    Reviewers run sequentially (cheap relative to producer work, and
-    sequential keeps trace order deterministic). Use the ``decision``
-    helper module if you want to fan reviewers in parallel later.
+    A1 (2026-05-05): when there are 2+ reviewers (currently only the
+    architecture phase is dual-reviewer with developer + qa_engineer)
+    we dispatch them concurrently via a small thread pool. Each
+    reviewer is fully independent — they read the same deliverable
+    paths and respond with their own PASS/REVISE/REJECT verdict — so
+    parallelizing has zero quality impact and saves ~50% of the
+    review-round wall on the only phase that has multiple reviewers.
+
+    Single-reviewer phases (the other 5 phases) skip the pool and run
+    inline; the trace order is deterministic for either path because
+    we emit ``feedbacks`` in ``reviewer_roles`` order regardless of
+    completion order.
     """
-    feedbacks: list[ReviewerFeedback] = []
-    for role in reviewer_roles:
+
+    def _run_single(role: str) -> ReviewerFeedback:
         question = reviewer_questions.get(role, "Review the deliverables and verdict PASS / REVISE / REJECT.")
         prompt = build_reviewer_prompt(deliverable_paths, question, project_root=ctx.project_root)
         try:
@@ -229,24 +238,35 @@ def run_review_round(
         except Exception as exc:
             # A reviewer infra failure is a soft REVISE — don't halt
             # the run on a transient model error.
-            feedbacks.append(
-                ReviewerFeedback(
-                    reviewer_role=role,
-                    verdict="REVISE",
-                    feedback_text=f"reviewer dispatch raised {type(exc).__name__}: {exc}",
-                    raw_response="",
-                )
-            )
-            continue
-        verdict, feedback_text = parse_verdict(raw)
-        feedbacks.append(
-            ReviewerFeedback(
+            return ReviewerFeedback(
                 reviewer_role=role,
-                verdict=verdict,
-                feedback_text=feedback_text,
-                raw_response=raw,
+                verdict="REVISE",
+                feedback_text=f"reviewer dispatch raised {type(exc).__name__}: {exc}",
+                raw_response="",
             )
+        verdict, feedback_text = parse_verdict(raw)
+        return ReviewerFeedback(
+            reviewer_role=role,
+            verdict=verdict,
+            feedback_text=feedback_text,
+            raw_response=raw,
         )
+
+    if len(reviewer_roles) <= 1:
+        feedbacks = [_run_single(role) for role in reviewer_roles]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        # Cap pool size at 4 — currently only architecture has 2
+        # reviewers but headroom is cheap and bounds the per-round
+        # parallelism if we ever add 3+ reviewers to a phase.
+        with ThreadPoolExecutor(max_workers=min(4, len(reviewer_roles))) as pool:
+            # Preserve reviewer_roles order in the output regardless of
+            # which thread finishes first — both ConsensusResult and
+            # downstream prepend_reviewer_feedback rely on stable order.
+            futures = [pool.submit(_run_single, role) for role in reviewer_roles]
+            feedbacks = [f.result() for f in futures]
+
     consensus_pass = all(f.is_pass for f in feedbacks) and len(feedbacks) > 0
     return ConsensusResult(
         feedbacks=tuple(feedbacks),

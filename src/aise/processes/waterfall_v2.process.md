@@ -41,7 +41,7 @@ phases:
           - { schema: schemas/requirement_contract.schema.json }
     review:
       consensus: ALL_PASS
-      revise_budget: 3
+      revise_budget: 2
       on_revise_exhausted: continue_with_marker
       reviewer_questions:
         architect: |
@@ -131,7 +131,7 @@ phases:
           - { min_bytes: 100 }
     review:
       consensus: ALL_PASS
-      revise_budget: 3
+      revise_budget: 2
       on_revise_exhausted: continue_with_marker
       reviewer_questions:
         qa_engineer: |
@@ -153,7 +153,7 @@ phases:
           - contains_all_lifecycle_inits
     review:
       consensus: ALL_PASS
-      revise_budget: 3
+      revise_budget: 2
       on_revise_exhausted: continue_with_marker
       reviewer_questions:
         qa_engineer: |
@@ -201,7 +201,7 @@ phases:
           - { schema: schemas/qa_report.schema.json }
     review:
       consensus: ALL_PASS
-      revise_budget: 3
+      revise_budget: 2
       on_revise_exhausted: continue_with_marker
       reviewer_questions:
         project_manager: |
@@ -224,7 +224,7 @@ phases:
           - { prior_phases_summarized: 5 }
     review:
       consensus: ALL_PASS
-      revise_budget: 3
+      revise_budget: 1
       on_revise_exhausted: continue_with_marker
       reviewer_questions:
         rd_director: |
