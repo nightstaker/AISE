@@ -773,22 +773,116 @@ def _glob_substring_keys(glob: str) -> list[str]:
     return out or [glob]
 
 
+def _looks_like_call_argument(body: str, key: str) -> bool:
+    """Language-agnostic heuristic: does ``key`` appear inside a call-site
+    rather than as a bare declaration value?
+
+    A call-site occurrence is detected when the key (or a string literal
+    containing it) is immediately preceded by ``(`` or ``,`` (with
+    optional whitespace and an optional opening quote between them).
+    This catches:
+        load("path/to/x")
+        load('path')
+        loader.register("path", ...)
+        await fetch(`path`)
+    But excludes:
+        const X = "path"
+        let X: string = "path"
+        const X = ['path1', 'path2'];
+        # path
+
+    Bundler / framework imports also count: lines containing the key as
+    a quoted string and starting with import / require / from / use
+    are accepted (these statements are calls in spirit even when the
+    surface syntax differs across languages).
+    """
+    # Per-occurrence call-context probe.
+    # Walk every offset of ``key`` and look back for a call-site signal.
+    idx = 0
+    while True:
+        pos = body.find(key, idx)
+        if pos < 0:
+            return False
+        # Look back over up to ~3 characters of optional whitespace + quote
+        # to find the immediately-preceding non-whitespace, non-quote char.
+        i = pos - 1
+        skipped_quote = False
+        while i >= 0 and body[i] in " \t":
+            i -= 1
+        if i >= 0 and body[i] in ('"', "'", "`"):
+            skipped_quote = True
+            i -= 1
+            while i >= 0 and body[i] in " \t":
+                i -= 1
+        if i >= 0 and body[i] in ("(", ","):
+            return True
+        # Bundler / framework import on the line containing this occurrence.
+        line_start = body.rfind("\n", 0, pos) + 1
+        line_end = body.find("\n", pos)
+        if line_end < 0:
+            line_end = len(body)
+        line = body[line_start:line_end].lstrip()
+        # Cover most languages' import / require / use / from / include.
+        IMPORT_PREFIXES = (
+            "import ",
+            "import\t",
+            "require(",
+            "from ",
+            "use ",
+            "include ",
+            "#include",
+            "@import",
+            "load ",
+        )
+        if any(line.startswith(p) for p in IMPORT_PREFIXES):
+            return True
+        # As an additional positive signal: the key appears inside a
+        # template literal that itself sits inside a call site — e.g.
+        # ``loader.json(`assets/${i}.json`)``. Without an AST we approximate
+        # by checking if there's an unmatched ``(`` before the line's
+        # opening template quote.
+        if skipped_quote and "(" in body[max(0, line_start) : pos]:
+            # crude: ensure the ``(`` is unmatched on this line up to pos
+            opens = body[line_start:pos].count("(")
+            closes = body[line_start:pos].count(")")
+            if opens > closes:
+                return True
+        idx = pos + 1
+    # Unreachable
+    return False  # pragma: no cover
+
+
+# Stack-profile-independent call-context categories. The schema's
+# consume_call enum mirrors this set; behaviour for each category is
+# the same heuristic — the category is recorded for human/audit value
+# and to support future profile-specific upgrades. The only category
+# we treat as "always pass" is ``embedded_resource`` because some build
+# systems consume the file via a manifest declaration outside the
+# consumer source itself.
+_CONSUME_CALL_BYPASS = {"embedded_resource"}
+
+
 @register("data_dependency_wiring_static")
 def _data_dependency_wiring_static(arg: Any, ctx: PredicateContext) -> PredicateResult:
     """Verify each entry in data_dependency_contract.data_dependencies has
-    its consumer_module file referencing the declared files_glob.
+    its consumer_module file consuming (not just naming) the data.
 
     Pass conditions per entry:
-    - the consumer_module glob resolves to ≥1 file in src/, AND
-    - at least one of those files contains a substring matching either
-      the static prefix of files_glob (e.g. ``assets/level_``) or the
-      literal glob itself, OR the name of any concrete file the
-      files_glob expands to.
+    - the consumer_module glob resolves to >=1 file, AND
+    - the data path appears in the consumer source as either:
+      (a) when ``consume_call`` is unset → any substring match
+          (legacy behaviour for backward compatibility), OR
+      (b) when ``consume_call`` is set → an occurrence inside a call-site
+          (preceded by ``(`` / ``,`` after optional whitespace+quote, or
+          on an import/require/use/from/include statement line).
 
-    Vacuous-pass (skipped=True) when the contract is absent or has zero
-    entries — projects that don't declare data dependencies are not
-    required to wire them. ``arg`` is currently unused (reserved for
-    future per-call overrides like ``min_files``).
+    The call-site heuristic is intentionally language-agnostic: it
+    checks for syntactic markers (``(``, ``,``, import keywords) common
+    across most mainstream stacks. ``consume_call=embedded_resource``
+    bypasses the call-site check because manifest-based asset bundling
+    happens outside the consumer module.
+
+    Vacuous-pass when the contract is absent / has zero entries.
     """
     del arg  # reserved
     contract = ctx.data_dependency_contract
@@ -814,12 +908,17 @@ def _data_dependency_wiring_static(arg: Any, ctx: PredicateContext) -> Predicate
         name = dep.get("name") or "?"
         files_glob = dep.get("files_glob") or ""
         consumer_module = dep.get("consumer_module") or ""
+        consume_call = dep.get("consume_call")
         if not files_glob or not consumer_module:
             violations.append(f"{name}: missing files_glob or consumer_module")
             continue
         consumers = _expand_glob(ctx.project_root, consumer_module)
         if not consumers:
             violations.append(f"{name}: consumer_module {consumer_module!r} matched no files")
+            continue
+        if consume_call in _CONSUME_CALL_BYPASS:
+            # embedded_resource: declared as consumed via manifest /
+            # build-time bundler outside the source; static gate accepts.
             continue
         # Build the candidate substrings the source must contain at
         # least one of.
@@ -835,19 +934,38 @@ def _data_dependency_wiring_static(arg: Any, ctx: PredicateContext) -> Predicate
             keys.append(f.name)
         keys = list(dict.fromkeys(keys))  # de-dup, preserve order
         found = False
+        consume_signal_seen = False
         for c in consumers:
             try:
                 body = c.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if any(k and k in body for k in keys):
-                found = True
+            for k in keys:
+                if not k or k not in body:
+                    continue
+                consume_signal_seen = True
+                if not consume_call:
+                    # Legacy: bare substring is enough.
+                    found = True
+                    break
+                # consume_call set → require call-site context.
+                if _looks_like_call_argument(body, k):
+                    found = True
+                    break
+            if found:
                 break
         if not found:
-            violations.append(
-                f"{name}: consumer {consumer_module!r} contains no reference to "
-                f"files_glob {files_glob!r} (tried keys: {keys[:3]})"
-            )
+            if consume_call and consume_signal_seen:
+                violations.append(
+                    f"{name}: consumer {consumer_module!r} mentions files_glob "
+                    f"{files_glob!r} but only as a bare declaration; consume_call={consume_call!r} "
+                    f"requires a call-site occurrence (e.g. import / loader / fetch / read)"
+                )
+            else:
+                violations.append(
+                    f"{name}: consumer {consumer_module!r} contains no reference to "
+                    f"files_glob {files_glob!r} (tried keys: {keys[:3]})"
+                )
     if violations:
         return PredicateResult(
             "data_dependency_wiring_static",
@@ -1031,6 +1149,318 @@ def _lint_integration_test_imports(arg: Any, ctx: PredicateContext) -> Predicate
         True,
         detail,
         skipped=True,
+    )
+
+
+# -- Quality-control predicates (cross-phase) -----------------------------
+#
+# These three predicates close the gaps surfaced by the project_4 review:
+# - quantitative_coverage: every requirement_contract.quantitative_constraints[]
+#   is satisfied by a measurable artifact on disk.
+# - tool_ran_completeness: every toolchain_check[k] == "present" has a
+#   corresponding ran=true|reason field somewhere in qa_report.
+# - unresolved_review_listed: every reviewer_feedback file marked REVISE/REJECT
+#   appears in delivery_report.md (verbatim location string match).
+
+
+def _resolve_constraint_actual(constraint: dict[str, Any], ctx: PredicateContext) -> tuple[float | None, str]:
+    """Compute the actual measured value for a quantitative_constraint.
+
+    Resolves ``verifiable_via`` expressions of the form:
+      - ``count(<glob>)`` → number of files matching the glob
+      - ``len(<dotted.path>)`` → length of resolved list/string in stack/behavioral contract
+      - ``sum(<dotted.path>)`` → sum of resolved numeric list
+
+    When ``verifiable_via`` is missing or unparseable, falls back to
+    counting components in stack_contract whose ``name`` substring-matches
+    the ``target`` string. Returns (actual_value, descriptor) — actual
+    is None when nothing could be resolved (treated as a violation).
+    """
+    expr = (constraint.get("verifiable_via") or "").strip()
+    target = constraint.get("target") or ""
+    if expr.startswith("count(") and expr.endswith(")"):
+        glob = expr[len("count(") : -1].strip().strip("'\"")
+        n = len(_expand_glob(ctx.project_root, glob))
+        return float(n), f"count({glob!r})={n}"
+    if expr.startswith("len(") and expr.endswith(")"):
+        dotted = expr[len("len(") : -1].strip()
+        contract_name, _, path = dotted.partition(".")
+        contract_dict = {
+            "stack_contract": ctx.stack_contract,
+            "behavioral_contract": ctx.behavioral_contract,
+            "requirement_contract": ctx.requirement_contract,
+            "data_dependency_contract": ctx.data_dependency_contract,
+            "action_contract": ctx.action_contract,
+        }.get(contract_name)
+        if contract_dict is None:
+            return None, f"unknown contract {contract_name!r} in expr"
+        try:
+            value = _resolve_dotted(contract_dict, path)
+        except (KeyError, IndexError, TypeError) as exc:
+            return None, f"len(): {type(exc).__name__}: {exc}"
+        if isinstance(value, (list, str, dict)):
+            return float(len(value)), f"len({dotted})={len(value)}"
+        return None, f"len() of non-collection {type(value).__name__}"
+    if expr.startswith("sum(") and expr.endswith(")"):
+        dotted = expr[len("sum(") : -1].strip()
+        contract_name, _, path = dotted.partition(".")
+        contract_dict = {
+            "stack_contract": ctx.stack_contract,
+            "behavioral_contract": ctx.behavioral_contract,
+            "requirement_contract": ctx.requirement_contract,
+            "data_dependency_contract": ctx.data_dependency_contract,
+            "action_contract": ctx.action_contract,
+        }.get(contract_name)
+        if contract_dict is None:
+            return None, f"unknown contract {contract_name!r}"
+        try:
+            value = _resolve_dotted(contract_dict, path)
+        except (KeyError, IndexError, TypeError) as exc:
+            return None, f"sum(): {type(exc).__name__}: {exc}"
+        if isinstance(value, list) and all(isinstance(x, (int, float)) for x in value):
+            return float(sum(value)), f"sum({dotted})={sum(value)}"
+        return None, "sum() requires numeric list"
+    # Fallback: count components in stack_contract whose name contains target.
+    if ctx.stack_contract and target:
+        n = 0
+        for ss in ctx.stack_contract.get("subsystems", []) or []:
+            for c in ss.get("components", []) or []:
+                if isinstance(c, dict) and target.lower() in (c.get("name") or "").lower():
+                    n += 1
+        return float(n), f"fallback: stack_contract components matching {target!r} = {n}"
+    return None, f"unresolvable verifiable_via {expr!r}"
+
+
+def _check_quantitative_op(op: str, actual: float, value: float) -> bool:
+    if op == "min_count" or op == "min_value":
+        return actual >= value
+    if op == "max_count" or op == "max_value":
+        return actual <= value
+    if op == "ratio_at_least":
+        return actual >= value
+    if op == "ratio_at_most":
+        return actual <= value
+    if op == "equal_to":
+        return actual == value
+    return False  # unknown operator → treat as violation
+
+
+@register("quantitative_coverage")
+def _quantitative_coverage(arg: Any, ctx: PredicateContext) -> PredicateResult:
+    """Verify every entry in requirement_contract.quantitative_constraints[]
+    is satisfied by a measurable artifact in the project tree.
+
+    For each constraint:
+      1. Resolve ``verifiable_via`` to a numeric ``actual``.
+      2. Apply ``operator`` against ``value``; pass / fail per constraint.
+
+    Vacuous-pass (skipped=True) when the contract is absent or has zero
+    constraints — projects with no quantified requirements behave the
+    same as before.
+    """
+    del arg
+    contract = ctx.requirement_contract
+    if not contract or not isinstance(contract, dict):
+        return PredicateResult(
+            "quantitative_coverage",
+            True,
+            "no requirement_contract loaded; skipping",
+            skipped=True,
+        )
+    constraints = contract.get("quantitative_constraints") or []
+    if not constraints:
+        return PredicateResult(
+            "quantitative_coverage",
+            True,
+            "no quantitative_constraints declared; skipping",
+            skipped=True,
+        )
+    violations: list[str] = []
+    for c in constraints:
+        if not isinstance(c, dict):
+            continue
+        cid = c.get("id") or "?"
+        op = c.get("operator") or ""
+        value = c.get("value")
+        if not isinstance(value, (int, float)):
+            violations.append(f"{cid}: invalid value {value!r}")
+            continue
+        actual, descriptor = _resolve_constraint_actual(c, ctx)
+        if actual is None:
+            violations.append(f"{cid}: {descriptor}")
+            continue
+        if not _check_quantitative_op(op, actual, float(value)):
+            violations.append(f"{cid}: {descriptor}; required {op} {value} (target={c.get('target')!r})")
+    if violations:
+        return PredicateResult(
+            "quantitative_coverage",
+            False,
+            "quantitative constraints not satisfied: " + "; ".join(violations),
+        )
+    return PredicateResult(
+        "quantitative_coverage",
+        True,
+        f"all {len(constraints)} quantitative constraints satisfied",
+    )
+
+
+@register("tool_ran_completeness")
+def _tool_ran_completeness(arg: Any, ctx: PredicateContext) -> PredicateResult:
+    """For every tool in qa_report.toolchain_check whose value is
+    'present', verify a corresponding top-level block has ``ran=true``
+    OR ``ran=false`` plus ``reason``. Cross-checks the qa_engineer's
+    "probed but didn't actually run" failure mode.
+
+    The deliverable_path is the qa_report.json file. Vacuous-pass when
+    the file is missing (other predicates own that signal); skipped
+    when toolchain_check is empty.
+    """
+    del arg
+    path = ctx.deliverable_path
+    if not path.is_file():
+        return PredicateResult("tool_ran_completeness", False, f"missing: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return PredicateResult("tool_ran_completeness", False, f"invalid JSON: {exc}")
+    if not isinstance(data, dict):
+        return PredicateResult("tool_ran_completeness", False, "not a JSON object")
+    toolchain = data.get("toolchain_check") or {}
+    if not isinstance(toolchain, dict) or not toolchain:
+        return PredicateResult(
+            "tool_ran_completeness",
+            True,
+            "toolchain_check empty; skipping",
+            skipped=True,
+        )
+    static_block = data.get("static_analysis") or {}
+    if not isinstance(static_block, dict):
+        static_block = {}
+    violations: list[str] = []
+    for tool, status in toolchain.items():
+        if status != "present":
+            continue
+        # Tool has a "ran" field somewhere if any of these branches holds:
+        # - top-level <tool>.ran exists (existing pattern: pytest, vitest)
+        # - static_analysis.<tool>.ran exists (new in qa_report.schema)
+        # - build_check.ran exists (when tool is a build tool)
+        candidates = [
+            data.get(tool),
+            static_block.get(tool),
+        ]
+        # Build tools mapped to build_check
+        if tool in ("npm", "go", "cargo", "make", "mvn", "gradle", "dotnet", "tsc"):
+            candidates.append(data.get("build_check"))
+        ran_seen = False
+        for cand in candidates:
+            if isinstance(cand, dict) and "ran" in cand:
+                ran_seen = True
+                if cand.get("ran") is False and not cand.get("reason"):
+                    violations.append(f"{tool}: ran=false but no reason field")
+                break
+        if not ran_seen:
+            violations.append(
+                f"{tool}: probed as present but no ran=true|false field "
+                f"(expected at qa_report.{tool}.ran or qa_report.static_analysis.{tool}.ran)"
+            )
+    if violations:
+        return PredicateResult(
+            "tool_ran_completeness",
+            False,
+            "toolchain probe-but-no-run: " + "; ".join(violations),
+        )
+    return PredicateResult(
+        "tool_ran_completeness",
+        True,
+        f"all {sum(1 for v in toolchain.values() if v == 'present')} present tools have ran field",
+    )
+
+
+@register("unresolved_review_listed")
+def _unresolved_review_listed(arg: Any, ctx: PredicateContext) -> PredicateResult:
+    """Verify every persisted reviewer feedback whose verdict is REVISE
+    or REJECT is referenced at least once in delivery_report.md.
+
+    Reads ``runs/reviewer_feedback/*.json`` (best-effort). For each
+    REVISE/REJECT feedback, looks for at least one of its gap_list
+    items' ``location.file`` value (or the reviewer_role + phase id pair
+    when no gap_list is present) in the deliverable body.
+
+    Vacuous-pass when no reviewer_feedback directory exists or no
+    REVISE/REJECT entries are present.
+    """
+    del arg
+    path = ctx.deliverable_path
+    if not path.is_file():
+        return PredicateResult("unresolved_review_listed", False, f"missing: {path}")
+    feedback_dir = ctx.project_root / "runs" / "reviewer_feedback"
+    if not feedback_dir.is_dir():
+        return PredicateResult(
+            "unresolved_review_listed",
+            True,
+            "no runs/reviewer_feedback/ directory; skipping",
+            skipped=True,
+        )
+    body = ctx.read_text()
+    unresolved: list[tuple[str, dict[str, Any]]] = []
+    for fb_file in sorted(feedback_dir.glob("*.json")):
+        try:
+            entry = json.loads(fb_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        verdict = (entry.get("verdict") or "").upper()
+        if verdict in ("REVISE", "REJECT"):
+            unresolved.append((fb_file.name, entry))
+    if not unresolved:
+        return PredicateResult(
+            "unresolved_review_listed",
+            True,
+            "no REVISE/REJECT feedback persisted; skipping",
+            skipped=True,
+        )
+    missing: list[str] = []
+    for fb_name, entry in unresolved:
+        gap_list = entry.get("gap_list") or []
+        # Build the set of location signatures the body could reference.
+        signatures: list[str] = []
+        for gap in gap_list:
+            if not isinstance(gap, dict):
+                continue
+            loc = gap.get("location") or {}
+            if isinstance(loc, dict):
+                f_path = loc.get("file")
+                if isinstance(f_path, str) and f_path:
+                    signatures.append(f_path)
+                sym = loc.get("symbol")
+                if isinstance(sym, str) and sym:
+                    signatures.append(sym)
+            issue = gap.get("issue")
+            if isinstance(issue, str) and issue:
+                # Substring of the issue (first 30 chars) as a fallback.
+                signatures.append(issue[:30])
+        # When no gap_list, fall back to the phase_id + reviewer_role pair.
+        if not signatures:
+            phase_id = entry.get("phase_id") or ""
+            reviewer = entry.get("reviewer_role") or ""
+            if phase_id and reviewer:
+                signatures.append(f"{phase_id}")
+                signatures.append(reviewer)
+        if not signatures:
+            continue  # nothing to look for
+        if not any(sig and sig in body for sig in signatures):
+            missing.append(fb_name)
+    if missing:
+        return PredicateResult(
+            "unresolved_review_listed",
+            False,
+            f"delivery_report missing reference to {len(missing)} unresolved review file(s): {missing[:5]}",
+        )
+    return PredicateResult(
+        "unresolved_review_listed",
+        True,
+        f"delivery_report references all {len(unresolved)} unresolved review file(s)",
     )
 
 

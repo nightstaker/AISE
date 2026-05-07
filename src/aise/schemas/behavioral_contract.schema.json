@@ -10,6 +10,11 @@
       "type": "array",
       "minItems": 1,
       "items": { "$ref": "#/definitions/scenario" }
+    },
+    "domain_invariants": {
+      "type": "array",
+      "description": "Domain formulas the architect locks in for downstream phases. Mirrors requirement_contract.standard_formulas (when present) but binds each formula to a worked input/output table verification will run as data-driven tests. Empty array allowed only when the requirement contract has no standard_formulas. Implementation must match the formula bit-for-bit; deviations are rejected at code review.",
+      "items": { "$ref": "#/definitions/domain_invariant" }
     }
   },
   "additionalProperties": true,
@@ -41,6 +46,38 @@
           "type": "array",
           "items": { "type": "string", "pattern": "^(FR|NFR)-\\d{2,4}$" }
         }
+      },
+      "additionalProperties": true
+    },
+
+    "domain_invariant": {
+      "type": "object",
+      "required": ["name", "formula", "examples"],
+      "description": "One domain formula plus a worked example table. 'formula' is single-line language-agnostic pseudocode; verification phase generates one test case per example. At least 5 examples required, including at least one edge case (boundary / clamp / overflow / empty).",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "formula": {
+          "type": "string",
+          "minLength": 1
+        },
+        "examples": {
+          "type": "array",
+          "minItems": 5,
+          "items": {
+            "type": "object",
+            "required": ["inputs", "expected_output"],
+            "properties": {
+              "inputs": { "type": "object" },
+              "expected_output": {},
+              "comment": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "rationale": { "type": "string" }
       },
       "additionalProperties": true
     }

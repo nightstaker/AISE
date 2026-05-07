@@ -71,6 +71,35 @@
         "scenario_count": { "type": "integer", "minimum": 0 }
       },
       "additionalProperties": true
+    },
+    "static_analysis": {
+      "type": "object",
+      "description": "Aggregate report for every static analyser declared in stack_contract.static_analyzer (compiler-as-checker counts here too). Each entry must have ran=true|false; ran=false MUST be accompanied by reason. The 'tool_ran_completeness' AUTO_GATE rejects any toolchain_check[k]='present' that has no corresponding entry here.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["ran"],
+        "properties": {
+          "command": { "type": "string" },
+          "ran": { "type": "boolean" },
+          "reason": { "type": "string" },
+          "errors": { "type": "integer", "minimum": 0 },
+          "warnings": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": true
+      }
+    },
+    "build_check": {
+      "type": "object",
+      "description": "If stack_contract declares a build command (project_config_file present + 'build' script), qa_engineer must run it once after tests pass. ran=false requires a reason.",
+      "required": ["ran"],
+      "properties": {
+        "command": { "type": "string" },
+        "ran": { "type": "boolean" },
+        "reason": { "type": "string" },
+        "exit_code": { "type": "integer" },
+        "artifact_path": { "type": "string" }
+      },
+      "additionalProperties": true
     }
   },
   "additionalProperties": true

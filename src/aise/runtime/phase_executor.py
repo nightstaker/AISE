@@ -219,6 +219,29 @@ _CONTRACT_EXAMPLES: dict[str, str] = {
       "main_flow": ["<step 1>", "<step 2>"],
       "covers_requirements": ["FR-001"]
     }
+  ],
+  "quantitative_constraints": [
+    {
+      "id": "FR-001.q1",
+      "owns_requirement": "FR-001",
+      "operator": "min_count",
+      "target": "<abstract artifact>",
+      "value": <number>,
+      "unit": "<free-form unit>",
+      "verifiable_via": "count(<glob>) | len(<contract>.<dotted.path>) | sum(<contract>.<dotted.path>)"
+    }
+  ],
+  "standard_formulas": [
+    {
+      "name": "<short_id>",
+      "domain": "<domain category>",
+      "formula": "<single-line pseudocode using max/min/sum/round/clamp/abs>",
+      "examples": [
+        {"inputs": {"<arg>": <value>}, "expected_output": <value>, "comment": "<typical case>"},
+        {"inputs": {"<arg>": <value>}, "expected_output": <value>, "comment": "<edge case>"}
+      ],
+      "rationale": "<why this exact form>"
+    }
   ]
 }""",
     "stack_contract.json": """{
@@ -258,9 +281,23 @@ _CONTRACT_EXAMPLES: dict[str, str] = {
       "name": "Boot shows main entry",
       "description": "When the program starts, it produces the expected initial output.",
       "preconditions": ["No prior state required"],
-      "trigger": {"action": "run", "command": "python -m src.main"},
-      "effect": {"stdout_contains": "<expected substring>"},
+      "trigger": {"action": "<abstract trigger>"},
+      "effect": {"<abstract effect kind>": "<expected value>"},
       "covers_requirements": ["FR-001"]
+    }
+  ],
+  "domain_invariants": [
+    {
+      "name": "<short_id matching requirement_contract.standard_formulas[].name>",
+      "formula": "<single-line pseudocode>",
+      "examples": [
+        {"inputs": {"<arg>": <value>}, "expected_output": <value>, "comment": "<typical>"},
+        {"inputs": {"<arg>": <value>}, "expected_output": <value>, "comment": "<typical>"},
+        {"inputs": {"<arg>": <value>}, "expected_output": <value>, "comment": "<typical>"},
+        {"inputs": {"<arg>": <value>}, "expected_output": <value>, "comment": "<edge case>"},
+        {"inputs": {"<arg>": <value>}, "expected_output": <value>, "comment": "<another edge>"}
+      ],
+      "rationale": "<why this exact form>"
     }
   ]
 }""",
@@ -268,13 +305,14 @@ _CONTRACT_EXAMPLES: dict[str, str] = {
   "version": "1",
   "data_dependencies": [
     {
-      "name": "level_data",
-      "files_glob": "assets/level_*.json",
-      "consumer_module": "src/level/loader.*",
+      "name": "<dep_name>",
+      "files_glob": "<project-relative glob, e.g. assets/data_*.json>",
+      "consumer_module": "<project-relative source glob>",
       "min_files": 1,
+      "consume_call": "runtime_io_read",
       "load_invariant": {
         "kind": "collection_non_empty",
-        "expr": "loader.levels",
+        "expr": "<consumer>.<field>",
         "after": "boot+init"
       }
     }
@@ -965,4 +1003,5 @@ class PhaseExecutor:
             ctx,
             revise_callback,
             revise_budget=phase.review.revise_budget,
+            phase_id=phase.id,
         )

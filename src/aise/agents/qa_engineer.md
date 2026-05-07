@@ -108,6 +108,32 @@ test file: read the architecture doc and the project config file
    execute(command="mvn test")
    ```
    This is **REQUIRED** — do not skip it.
+
+5a. **Run EVERY toolchain probed as `present` — not just the test
+    runner.** Verification is "the project's tooling actually
+    succeeds on the project", not "I ran one tool and it printed
+    green". For every binary your `toolchain_check` says
+    `"present"`, run the corresponding command and record
+    structurally in `qa_report.json`:
+
+    | Tool category | Run | Record under |
+    | ------------- | --- | ------------ |
+    | Static type / compile checker | full-tree analysis (e.g. `<typechecker> --noEmit` / `<compiler> --check`) | `qa_report.static_analysis.<tool>` |
+    | Linter / formatter | full-tree scan | `qa_report.static_analysis.<tool>` |
+    | Build script | full build to artifact | `qa_report.build_check` |
+    | Test runner | full suite (step 5) | `qa_report.<runner>` |
+
+    Each of those entries MUST have a `ran` field (`true` / `false`)
+    and, when `ran=false`, a `reason` field. Probing a tool as
+    `present` and then *not* running it is a delivery-blocking bug —
+    the verification phase's `tool_ran_completeness` AUTO_GATE will
+    fail the phase if any present tool has no corresponding `ran`
+    record. This rule is the natural extension of the "ran=false +
+    reason" honesty rule from step 0.
+
+    Stack-specific command names are read from `stack_contract.json`
+    (`static_analyzer`, `test_cmd`, `run_command`); do NOT hardcode
+    a particular language's tool names.
 6. If the integration tests fail, fix the integration test file (or
    flag a real product bug in your summary) and re-run the full
    suite. At most **3 fix attempts**.

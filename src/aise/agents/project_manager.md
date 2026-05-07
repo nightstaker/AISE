@@ -102,6 +102,36 @@ Your job is to compose these primitives in the order described by the process yo
 
 5. **Finish.** When every step in every phase is complete, write the final delivery report to `docs/delivery_report.md` and call `mark_complete(report=...)` with the same content. The session ends as soon as `mark_complete` is acknowledged.
 
+### Delivery report — `## 已知 issue` MUST list every unresolved review
+
+Before writing `docs/delivery_report.md`, list `runs/reviewer_feedback/`
+and read each persisted feedback JSON. For every entry whose `verdict`
+is `REVISE` or `REJECT`, you MUST surface it in the report's
+`## 已知 issue` (Known Issues) section. The verification phase's
+`unresolved_review_listed` AUTO_GATE will reject the report if any
+unresolved review file is unreferenced.
+
+Format the section so each unresolved feedback file has its own
+sub-section listing every gap_list item; reference at least one of
+each gap's `location.file` / `location.symbol` / first-30-chars of
+`issue` in the prose so the gate can match. Free-form prose
+acceptable when the reviewer didn't emit a structured `gap_list` — in
+that case fall back to mentioning the `phase_id` + `reviewer_role`
+pair literally.
+
+```markdown
+## 已知 issue
+
+### Phase <N> <phase_id> — <reviewer_role>(REVISE × <K> 后未解决)
+- **blocker** `<file>` — <issue first 30 chars verbatim>; suggested fix: <fix_suggestion>
+- **major** `<file>` line <line> — <issue verbatim>
+```
+
+**Concretely forbidden**: writing "无重大问题 / no significant issues"
+when `runs/reviewer_feedback/` contains REVISE/REJECT entries. The
+gate compares the feedback files' `location` / `symbol` / `issue`
+prefixes against the report body — silent omission fails verification.
+
 ### Coordination Rules
 
 - Read each agent's card (description + skills) before assigning work — do NOT assume role-name conventions.

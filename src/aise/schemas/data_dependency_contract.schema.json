@@ -39,6 +39,17 @@
           "minimum": 0,
           "description": "Optional: minimum number of files matching files_glob expected on disk. Used by the runtime probe; ignored by the pure-static gate."
         },
+        "consume_call": {
+          "type": "string",
+          "enum": [
+            "runtime_io_read",
+            "bundler_static_import",
+            "framework_loader_register",
+            "embedded_resource",
+            "streaming_read"
+          ],
+          "description": "Abstract semantic category for how the consumer module consumes the data at runtime. Categories: runtime_io_read = stdlib/runtime IO call with the path as argument; bundler_static_import = language-level import/require resolves the path; framework_loader_register = framework loader API receives the path; embedded_resource = compile-time embedding; streaming_read = path used to initialise a stream then consumed. The wiring gate uses the stack profile to translate the chosen category into language-specific identification rules. An inert path constant whose value is never passed to any of these forms does NOT count as consumption."
+        },
         "load_invariant": {
           "type": "object",
           "required": ["kind"],

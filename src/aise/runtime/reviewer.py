@@ -33,22 +33,36 @@ testing uses qwen, production swaps via config without code changes).
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
+
+from ..utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 # -- Verdict types --------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class ReviewerFeedback:
-    """One reviewer's verdict + feedback on a phase's deliverables."""
+    """One reviewer's verdict + feedback on a phase's deliverables.
+
+    ``gap_list`` is the structured form of ``feedback_text`` when the
+    reviewer follows the recommended JSON-block protocol (see
+    build_reviewer_prompt). Tuple of ``{severity, location, issue,
+    fix_suggestion}`` dicts. Empty when the reviewer responded freeform —
+    delivery_report's ``unresolved_review_listed`` predicate falls back
+    to the prose feedback in that case.
+    """
 
     reviewer_role: str
     verdict: str  # "PASS" | "REVISE" | "REJECT"
     feedback_text: str = ""
     raw_response: str = ""
+    gap_list: tuple[dict[str, Any], ...] = ()
 
     @property
     def is_pass(self) -> bool:
@@ -118,6 +132,104 @@ def parse_verdict(response: str) -> tuple[str, str]:
             tail = "\n".join(lines[i + 1 :]).strip()
             return verdict, tail
     return "REVISE", response.strip()
+
+
+# Recognise the structured gap-list JSON block the reviewer prompt asks for.
+# Tolerant — accepts either a fenced ```json ... ``` block, an unfenced
+# ``"gap_list": [...]`` snippet, or a top-level array literal at the end.
+_FENCED_JSON_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
+_GAP_LIST_KEY_RE = re.compile(r'"gap_list"\s*:\s*(\[.*?\])', re.DOTALL)
+
+
+def parse_gap_list(feedback_text: str) -> tuple[dict[str, Any], ...]:
+    """Best-effort extraction of the structured gap_list from a reviewer
+    feedback body. Returns the parsed tuple of dicts, or empty tuple
+    when the reviewer responded freeform / the JSON couldn't be parsed.
+
+    Recognised forms:
+    1. fenced ```json {...gap_list: [...]...} ``` block
+    2. inline ``"gap_list": [...]`` substring (with the array balanced)
+    3. trailing top-level JSON array
+    """
+    if not feedback_text:
+        return ()
+    candidates: list[str] = []
+    for m in _FENCED_JSON_RE.finditer(feedback_text):
+        candidates.append(m.group(1).strip())
+    candidates.append(feedback_text.strip())
+    for blob in candidates:
+        # Try as full JSON object with gap_list key
+        try:
+            parsed = json.loads(blob)
+            if isinstance(parsed, dict) and isinstance(parsed.get("gap_list"), list):
+                return tuple(g for g in parsed["gap_list"] if isinstance(g, dict))
+            if isinstance(parsed, list):
+                return tuple(g for g in parsed if isinstance(g, dict))
+        except (json.JSONDecodeError, ValueError):
+            pass
+        # Fall back to substring extraction
+        m = _GAP_LIST_KEY_RE.search(blob)
+        if m:
+            try:
+                arr = json.loads(m.group(1))
+                if isinstance(arr, list):
+                    return tuple(g for g in arr if isinstance(g, dict))
+            except (json.JSONDecodeError, ValueError):
+                continue
+    return ()
+
+
+# -- Persistence ---------------------------------------------------------
+
+
+def reviewer_feedback_dir(project_root: Path) -> Path:
+    """Standard directory for persisted reviewer feedback files.
+    ``runs/reviewer_feedback/`` lives next to ``runs/HALTED.json`` and
+    ``runs/trace/``; downstream phases (delivery) read from here."""
+    return project_root / "runs" / "reviewer_feedback"
+
+
+def persist_feedback(
+    project_root: Path,
+    phase_id: str,
+    iteration: int,
+    feedback: ReviewerFeedback,
+) -> Path | None:
+    """Write one ReviewerFeedback to ``runs/reviewer_feedback/`` as JSON.
+
+    Filename: ``<phase_id>_<reviewer_role>_iter<n>.json``.
+
+    Returns the written path on success, None on any IO/JSON error
+    (best-effort — never raises; the run continues even if persistence
+    fails so a disk-full disk doesn't halt the pipeline).
+    """
+    try:
+        out_dir = reviewer_feedback_dir(project_root)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Sanitise phase_id / role for filename safety; both are short
+        # tokens already ([a-z_]+) but defensive replace anyway.
+        safe_phase = re.sub(r"[^A-Za-z0-9_-]", "_", phase_id)
+        safe_role = re.sub(r"[^A-Za-z0-9_-]", "_", feedback.reviewer_role)
+        out_path = out_dir / f"{safe_phase}_{safe_role}_iter{iteration}.json"
+        payload = {
+            "phase_id": phase_id,
+            "iteration": iteration,
+            "reviewer_role": feedback.reviewer_role,
+            "verdict": feedback.verdict,
+            "feedback_text": feedback.feedback_text,
+            "gap_list": list(feedback.gap_list),
+        }
+        out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        return out_path
+    except (OSError, TypeError, ValueError) as exc:
+        logger.warning(
+            "Failed to persist reviewer feedback for phase=%s reviewer=%s iter=%d: %s",
+            phase_id,
+            feedback.reviewer_role,
+            iteration,
+            exc,
+        )
+        return None
 
 
 # -- Reviewer dispatch ----------------------------------------------------
@@ -198,7 +310,30 @@ def build_reviewer_prompt(
     blocks.append("")
     blocks.append("[REQUIRED RESPONSE FORMAT]")
     blocks.append("First line MUST be exactly one of: PASS / REVISE / REJECT")
-    blocks.append("Subsequent lines: free-form feedback. For REVISE, list the specific gaps the producer must fix.")
+    blocks.append(
+        "Subsequent lines: feedback. For REVISE / REJECT, the body MUST "
+        "include a fenced JSON block (```json ... ```) with this shape:"
+    )
+    blocks.append("")
+    blocks.append("```json")
+    blocks.append("{")
+    blocks.append('  "summary": "<<= 200 chars>",')
+    blocks.append('  "gap_list": [')
+    blocks.append("    {")
+    blocks.append('      "severity": "blocker | major | minor",')
+    blocks.append('      "location": {"file": "<src path>", "line": null, "symbol": null},')
+    blocks.append('      "issue": "<what is wrong, observable>",')
+    blocks.append('      "fix_suggestion": "<concrete suggestion>"')
+    blocks.append("    }")
+    blocks.append("  ]")
+    blocks.append("}")
+    blocks.append("```")
+    blocks.append("")
+    blocks.append(
+        "The structured gap_list is required so the project_manager can "
+        "list every unresolved item in docs/delivery_report.md. Free-form "
+        "prose is still accepted but the JSON block is strongly preferred."
+    )
     return "\n".join(blocks)
 
 
@@ -245,11 +380,13 @@ def run_review_round(
                 raw_response="",
             )
         verdict, feedback_text = parse_verdict(raw)
+        gap_list = parse_gap_list(feedback_text)
         return ReviewerFeedback(
             reviewer_role=role,
             verdict=verdict,
             feedback_text=feedback_text,
             raw_response=raw,
+            gap_list=gap_list,
         )
 
     if len(reviewer_roles) <= 1:
@@ -311,6 +448,7 @@ def run_review_loop(
     revise_callback: Callable[[Sequence[ReviewerFeedback]], None],
     *,
     revise_budget: int = 3,
+    phase_id: str | None = None,
 ) -> ReviewLoopResult:
     """Drive the review-and-revise loop for one phase.
 
@@ -327,6 +465,12 @@ def run_review_loop(
     of revisions all failed; per process.md
     on_revise_exhausted=continue_with_marker the caller treats this
     as ``passed_with_unresolved_review`` and continues to next phase.
+
+    When ``phase_id`` is provided, every reviewer feedback (PASS,
+    REVISE, REJECT) is persisted to ``runs/reviewer_feedback/<phase_id>_<role>_iter<n>.json``
+    so the delivery phase can audit unresolved items. Persistence is
+    best-effort and never raises (an IO failure is logged and the loop
+    continues).
     """
     iteration = 0
     last_consensus: ConsensusResult | None = None
@@ -339,6 +483,12 @@ def run_review_loop(
             ctx,
             iteration=iteration,
         )
+        # Persist every reviewer's feedback for this iteration so the
+        # delivery phase can audit unresolved items even when the
+        # revise_budget is exhausted.
+        if phase_id:
+            for fb in consensus.feedbacks:
+                persist_feedback(ctx.project_root, phase_id, iteration, fb)
         last_consensus = consensus
         if consensus.consensus_pass:
             return ReviewLoopResult(
