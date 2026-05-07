@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "action_contract",
+  "title": "Action contract (architect output, phase 2)",
+  "description": "Declares the user/external-trigger actions whose handlers MUST be wired to non-trivial behaviour. Drives the main_entry phase's action_contract_wiring_static AUTO_GATE — for each action's handler_must_call entries the gate verifies that the symbol appears as a call site in the entry_point (or in the action's handler_module). Modeled as additive: projects without this file behave exactly as before.",
+  "type": "object",
+  "required": ["actions"],
+  "properties": {
+    "version": { "type": "string" },
+    "actions": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/action" }
+    }
+  },
+  "additionalProperties": true,
+
+  "definitions": {
+    "action": {
+      "type": "object",
+      "required": ["name", "trigger", "expected_change"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable id (e.g. 'primary_attack', 'open_dialogue')."
+        },
+        "trigger": {
+          "$ref": "#/definitions/trigger"
+        },
+        "expected_change": {
+          "$ref": "#/definitions/expected_change"
+        },
+        "handler_module": {
+          "type": "string",
+          "description": "Optional override. When omitted, the static gate searches in stack_contract.entry_point. Use this when the action handler lives in a non-main file (e.g. controller / dispatcher)."
+        },
+        "handler_must_call": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Symbols (function or method names; dotted form like 'combat.calculateBattle' is allowed) that MUST appear as a call site in the handler. Static gate uses regex '<symbol>\\s*\\('. Use this to forbid handler-binds-to-empty-stub assemblies."
+        }
+      },
+      "additionalProperties": true
+    },
+    "trigger": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "key",
+            "click",
+            "interact_npc",
+            "stdin",
+            "http",
+            "timer",
+            "lifecycle"
+          ]
+        },
+        "value": { "type": "string" },
+        "selector": { "type": "string" }
+      },
+      "additionalProperties": true,
+      "description": "How the action is initiated. The stack profile's action_probes table maps each trigger.kind to a concrete probe in the runtime harness (puppeteer key press, stdin write, http request)."
+    },
+    "expected_change": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "state_field_changes",
+            "ui_node_appears",
+            "ui_node_disappears",
+            "stdout_contains",
+            "http_status",
+            "any_observable_change"
+          ]
+        },
+        "field": { "type": "string" },
+        "selector": { "type": "string" },
+        "expected": {}
+      },
+      "additionalProperties": true,
+      "description": "What must observably differ before vs. after the trigger. The runtime probe captures both snapshots and diffs them; the static gate does not enforce expected_change (it only verifies handler symbols exist)."
+    }
+  }
+}

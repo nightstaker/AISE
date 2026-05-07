@@ -72,6 +72,27 @@ def _passing_produce(tmp_path: Path):
         (tmp_path / "src" / "core" / "__init__.py").write_text("# barrel\n" + "x" * 200, encoding="utf-8")
         (tmp_path / "src" / "main.py").write_text("# entry\n" + "x" * 200, encoding="utf-8")
 
+        # Phase 4 (main_entry) requires integration_report.json (added
+        # 2026-05-06 to harden assembly). Project has no
+        # data_dependency_contract / action_contract on disk, so the
+        # static gates vacuous-pass and a verdict=skipped is the
+        # natural value.
+        (docs / "integration_report.json").write_text(
+            json.dumps(
+                {
+                    "phase": "main_entry",
+                    "completed_at": "2026-05-06T00:00:00Z",
+                    "verdict": "skipped",
+                    "boot_check": {
+                        "ran": False,
+                        "verdict": "skipped",
+                        "reason": "no contracts to enforce; legacy project shape",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
         # Phase 5 fanout: write scenario tests
         (tmp_path / "tests" / "scenarios").mkdir(parents=True, exist_ok=True)
         for sid in (f"s{i}" for i in range(5)):

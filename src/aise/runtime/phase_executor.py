@@ -264,6 +264,47 @@ _CONTRACT_EXAMPLES: dict[str, str] = {
     }
   ]
 }""",
+    "data_dependency_contract.json": """{
+  "version": "1",
+  "data_dependencies": [
+    {
+      "name": "level_data",
+      "files_glob": "assets/level_*.json",
+      "consumer_module": "src/level/loader.*",
+      "min_files": 1,
+      "load_invariant": {
+        "kind": "collection_non_empty",
+        "expr": "loader.levels",
+        "after": "boot+init"
+      }
+    }
+  ]
+}""",
+    "action_contract.json": """{
+  "version": "1",
+  "actions": [
+    {
+      "name": "primary_action",
+      "trigger": { "kind": "key", "value": "Enter" },
+      "expected_change": { "kind": "state_field_changes", "field": "currentScreen" },
+      "handler_must_call": ["controller.handlePrimary"]
+    }
+  ]
+}""",
+    "integration_report.json": """{
+  "phase": "main_entry",
+  "completed_at": "<ISO timestamp>",
+  "verdict": "pass",
+  "lifecycle_init_check": { "expected": 0, "reached": 0 },
+  "data_wiring_check": [
+    { "name": "<dep name>", "static_refs": 1, "consumer_module_resolved": "src/<file>", "runtime_invariant_ok": true }
+  ],
+  "action_wiring_check": [
+    { "name": "<action name>", "handler_calls_found": 1, "handler_calls_missing": [] }
+  ],
+  "boot_check": { "ran": false, "verdict": "skipped", "reason": "no headless harness available in sandbox" },
+  "violations": []
+}""",
 }
 
 
@@ -417,6 +458,8 @@ class PhaseExecutor:
     stack_contract: dict[str, Any] | None = None
     behavioral_contract: dict[str, Any] | None = None
     requirement_contract: dict[str, Any] | None = None
+    data_dependency_contract: dict[str, Any] | None = None
+    action_contract: dict[str, Any] | None = None
     # B3 (2026-05-05): per-(path, kind, file_fp, contracts_fp) cache of
     # previously-PASSED DeliverableReports. Skips re-running the predicate
     # sweep on retries when nothing relevant has changed. Reset implicitly
@@ -691,6 +734,8 @@ class PhaseExecutor:
                     stack_contract=self.stack_contract,
                     behavioral_contract=self.behavioral_contract,
                     requirement_contract=self.requirement_contract,
+                    data_dependency_contract=self.data_dependency_contract,
+                    action_contract=self.action_contract,
                 )
                 report = evaluate_deliverable(deliverable, ctx)
                 if report.passed:
@@ -699,13 +744,19 @@ class PhaseExecutor:
         return tuple(reports)
 
     def _contracts_fingerprint(self) -> str:
-        """Cheap content-hash of the 3 loaded contracts. When any
+        """Cheap content-hash of the loaded contracts. When any
         contract changes between producer attempts, every deliverable's
         cache entry is invalidated — even if the deliverable file
         itself is unchanged — because the predicate evaluator reads
         the contracts via PredicateContext."""
         h = hashlib.sha256()
-        for c in (self.stack_contract, self.behavioral_contract, self.requirement_contract):
+        for c in (
+            self.stack_contract,
+            self.behavioral_contract,
+            self.requirement_contract,
+            self.data_dependency_contract,
+            self.action_contract,
+        ):
             h.update(b"\x00")
             if c is not None:
                 # sort_keys to make this deterministic across dict ordering
@@ -713,13 +764,16 @@ class PhaseExecutor:
         return h.hexdigest()
 
     def _refresh_contracts_from_disk(self) -> None:
-        """Re-read docs/{stack,behavioral,requirement}_contract.json so
-        AUTO_GATE sees the just-produced state. Idempotent — silent on
-        missing files (predicates handle that themselves)."""
+        """Re-read docs/*_contract.json so AUTO_GATE sees the just-produced
+        state. Idempotent — silent on missing files (predicates handle
+        that themselves; the integration-assembly predicates vacuous-pass
+        when their driving contract is absent)."""
         for attr, fname in (
             ("stack_contract", "stack_contract.json"),
             ("behavioral_contract", "behavioral_contract.json"),
             ("requirement_contract", "requirement_contract.json"),
+            ("data_dependency_contract", "data_dependency_contract.json"),
+            ("action_contract", "action_contract.json"),
         ):
             path = self.project_root / "docs" / fname
             if not path.is_file():

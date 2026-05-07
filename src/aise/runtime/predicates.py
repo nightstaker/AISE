@@ -94,6 +94,8 @@ class PredicateContext:
     stack_contract: dict[str, Any] | None = None
     behavioral_contract: dict[str, Any] | None = None
     requirement_contract: dict[str, Any] | None = None
+    data_dependency_contract: dict[str, Any] | None = None
+    action_contract: dict[str, Any] | None = None
     extras: dict[str, Any] = field(default_factory=dict)
 
     def read_text(self) -> str:
@@ -188,35 +190,62 @@ def _regex_count(arg: Any, ctx: PredicateContext) -> PredicateResult:
     return PredicateResult("regex_count", False, f"matched {n} < {min_n} for {pattern!r}")
 
 
+def _schema_validate(arg: Any, ctx: PredicateContext, kind: str) -> PredicateResult:
+    """Shared body for the ``schema`` and ``schema_optional`` predicates.
+    Caller decides whether a missing file is FAIL (``schema``) or
+    skipped=True (``schema_optional``)."""
+    if not isinstance(arg, str):
+        return PredicateResult(kind, False, f"invalid arg {arg!r}")
+    path = ctx.deliverable_path
+    # Caller is expected to have handled the missing-file case before
+    # calling us; we re-check defensively for robustness.
+    if not path.is_file():
+        return PredicateResult(kind, False, f"missing: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return PredicateResult(kind, False, f"invalid JSON: {exc}")
+    schema_path = _resolve_schema_path(arg, ctx)
+    if not schema_path.is_file():
+        return PredicateResult(kind, False, f"schema file missing: {schema_path}")
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return PredicateResult(kind, False, f"schema is invalid JSON: {exc}")
+    errors = validate(data, schema)
+    if errors:
+        joined = "; ".join(errors[:5])  # cap to keep error preview readable
+        more = f" (+{len(errors) - 5} more)" if len(errors) > 5 else ""
+        return PredicateResult(kind, False, f"{joined}{more}")
+    return PredicateResult(kind, True, f"valid against {arg}")
+
+
 @register("schema")
 def _schema(arg: Any, ctx: PredicateContext) -> PredicateResult:
     """``schema: schemas/foo.schema.json`` — validate JSON deliverable
     against the named schema. Schema path is relative to ``src/aise/``
     (so ``schemas/foo.schema.json`` resolves to
-    ``src/aise/schemas/foo.schema.json``).
+    ``src/aise/schemas/foo.schema.json``). Fails when the deliverable
+    file is missing.
     """
-    if not isinstance(arg, str):
-        return PredicateResult("schema", False, f"invalid arg {arg!r}")
-    path = ctx.deliverable_path
-    if not path.is_file():
-        return PredicateResult("schema", False, f"missing: {path}")
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        return PredicateResult("schema", False, f"invalid JSON: {exc}")
-    schema_path = _resolve_schema_path(arg, ctx)
-    if not schema_path.is_file():
-        return PredicateResult("schema", False, f"schema file missing: {schema_path}")
-    try:
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        return PredicateResult("schema", False, f"schema is invalid JSON: {exc}")
-    errors = validate(data, schema)
-    if errors:
-        joined = "; ".join(errors[:5])  # cap to keep error preview readable
-        more = f" (+{len(errors) - 5} more)" if len(errors) > 5 else ""
-        return PredicateResult("schema", False, f"{joined}{more}")
-    return PredicateResult("schema", True, f"valid against {arg}")
+    return _schema_validate(arg, ctx, "schema")
+
+
+@register("schema_optional")
+def _schema_optional(arg: Any, ctx: PredicateContext) -> PredicateResult:
+    """Same as ``schema`` but vacuous-passes (skipped=True) when the
+    deliverable file is absent. Use for additive contracts that not every
+    project declares (e.g. data_dependency_contract.json,
+    action_contract.json) — when present the schema is enforced; when
+    absent the AUTO_GATE does not trip."""
+    if not ctx.deliverable_path.is_file():
+        return PredicateResult(
+            "schema_optional",
+            True,
+            f"file absent ({ctx.deliverable_path.name}); skipping",
+            skipped=True,
+        )
+    return _schema_validate(arg, ctx, "schema_optional")
 
 
 def _resolve_schema_path(arg: str, ctx: PredicateContext) -> Path:
@@ -679,6 +708,330 @@ def _count_at_most(arg: Any, ctx: PredicateContext) -> PredicateResult:
     if n <= max_n:
         return PredicateResult("count_at_most", True, f"len({field_path})={n} <= {max_n}")
     return PredicateResult("count_at_most", False, f"len({field_path})={n} > {max_n}")
+
+
+# -- Integration-assembly predicates (main_entry phase) -------------------
+#
+# These three predicates (``data_dependency_wiring_static``,
+# ``action_contract_wiring_static``, ``lint_integration_test_imports``)
+# enforce the "main_entry must prove the assembly is wired" responsibility
+# established in the v2 design. They are intentionally pure-static —
+# they read source files and contract JSON; they never spawn subprocesses
+# or browser harnesses. Runtime-side enforcement (boot probes) is a
+# separate optional layer in ``stack_profiles.py``.
+#
+# All three are vacuous-pass when their driving contract is absent, so
+# legacy projects (no data_dependency_contract.json, no action_contract.json)
+# behave exactly as before this commit.
+
+
+def _expand_glob(project_root: Path, glob: str) -> list[Path]:
+    """Expand a project-relative glob to concrete files (directories are
+    filtered out). Empty list when nothing matches; caller decides
+    whether that's an error.
+
+    Two conveniences over raw ``Path.glob``:
+    1. Leading ``/`` on the glob is stripped (project-root-rooted).
+    2. A trailing ``**`` is treated as recursive-files: e.g.
+       ``tests/integration/**`` is rewritten to expand both that
+       directory's plain ``Path.glob`` result and ``**/*`` so that files
+       at any depth are included. This matches the shell-style
+       intuition most callers have when writing globs in process.md.
+    """
+    g = glob.lstrip("/")
+    out: set[Path] = set(project_root.glob(g))
+    # Recursive-file behaviour for trailing ** (and the bare '**' case).
+    if g.endswith("**"):
+        out.update(project_root.glob(g + "/*"))
+        out.update(project_root.glob(g[:-2] + "**/*"))
+    return sorted(p for p in out if p.is_file())
+
+
+def _glob_substring_keys(glob: str) -> list[str]:
+    """Decompose a glob into substring keys used to spot-check whether
+    a source file references it. Two keys are produced:
+    1. The literal glob (less wildcards/braces) — covers the case where
+       the source builds the path with a template like
+       ``f'assets/level_{i:02d}.json'`` (the prefix ``assets/level_``
+       still appears verbatim).
+    2. The full literal — when the consumer hard-codes the glob string.
+    Returns at least one key (the prefix before the first wildcard char).
+    """
+    out: list[str] = []
+    # Stripped form: cut at the first wildcard so we keep the static
+    # prefix. e.g. 'assets/level_*.json' → 'assets/level_'.
+    cut = glob
+    for ch in ("*", "?", "[", "{"):
+        idx = cut.find(ch)
+        if idx >= 0:
+            cut = cut[:idx]
+    cut = cut.rstrip("/")
+    if cut:
+        out.append(cut)
+    if glob and glob not in out:
+        out.append(glob)
+    return out or [glob]
+
+
+@register("data_dependency_wiring_static")
+def _data_dependency_wiring_static(arg: Any, ctx: PredicateContext) -> PredicateResult:
+    """Verify each entry in data_dependency_contract.data_dependencies has
+    its consumer_module file referencing the declared files_glob.
+
+    Pass conditions per entry:
+    - the consumer_module glob resolves to ≥1 file in src/, AND
+    - at least one of those files contains a substring matching either
+      the static prefix of files_glob (e.g. ``assets/level_``) or the
+      literal glob itself, OR the name of any concrete file the
+      files_glob expands to.
+
+    Vacuous-pass (skipped=True) when the contract is absent or has zero
+    entries — projects that don't declare data dependencies are not
+    required to wire them. ``arg`` is currently unused (reserved for
+    future per-call overrides like ``min_files``).
+    """
+    del arg  # reserved
+    contract = ctx.data_dependency_contract
+    if not contract or not isinstance(contract, dict):
+        return PredicateResult(
+            "data_dependency_wiring_static",
+            True,
+            "no data_dependency_contract loaded; skipping",
+            skipped=True,
+        )
+    deps = contract.get("data_dependencies") or []
+    if not deps:
+        return PredicateResult(
+            "data_dependency_wiring_static",
+            True,
+            "data_dependency_contract has zero entries; skipping",
+            skipped=True,
+        )
+    violations: list[str] = []
+    for dep in deps:
+        if not isinstance(dep, dict):
+            continue
+        name = dep.get("name") or "?"
+        files_glob = dep.get("files_glob") or ""
+        consumer_module = dep.get("consumer_module") or ""
+        if not files_glob or not consumer_module:
+            violations.append(f"{name}: missing files_glob or consumer_module")
+            continue
+        consumers = _expand_glob(ctx.project_root, consumer_module)
+        if not consumers:
+            violations.append(f"{name}: consumer_module {consumer_module!r} matched no files")
+            continue
+        # Build the candidate substrings the source must contain at
+        # least one of.
+        keys = list(_glob_substring_keys(files_glob))
+        # Also accept any concrete file the glob expands to (basename
+        # without leading directories is still a useful signal).
+        for f in _expand_glob(ctx.project_root, files_glob):
+            try:
+                rel = str(f.relative_to(ctx.project_root))
+            except ValueError:
+                rel = str(f)
+            keys.append(rel)
+            keys.append(f.name)
+        keys = list(dict.fromkeys(keys))  # de-dup, preserve order
+        found = False
+        for c in consumers:
+            try:
+                body = c.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if any(k and k in body for k in keys):
+                found = True
+                break
+        if not found:
+            violations.append(
+                f"{name}: consumer {consumer_module!r} contains no reference to "
+                f"files_glob {files_glob!r} (tried keys: {keys[:3]})"
+            )
+    if violations:
+        return PredicateResult(
+            "data_dependency_wiring_static",
+            False,
+            "data dependency wiring gaps: " + "; ".join(violations),
+        )
+    return PredicateResult(
+        "data_dependency_wiring_static",
+        True,
+        f"all {len(deps)} data dependencies wired in source",
+    )
+
+
+@register("action_contract_wiring_static")
+def _action_contract_wiring_static(arg: Any, ctx: PredicateContext) -> PredicateResult:
+    """Verify each action's handler invokes every symbol in handler_must_call.
+
+    Pass conditions per action:
+    - handler file (action.handler_module if set, else stack_contract.entry_point)
+      exists, AND
+    - every symbol in action.handler_must_call appears as a call site
+      (regex ``\\bsymbol\\s*\\(`` — also allows dotted forms like
+      ``combat.calculateBattle`` which match as method calls).
+
+    Actions without handler_must_call entries are not graded by the
+    static gate (they may still be graded by the runtime probe).
+
+    Vacuous-pass when the contract is absent or empty.
+    """
+    del arg
+    contract = ctx.action_contract
+    if not contract or not isinstance(contract, dict):
+        return PredicateResult(
+            "action_contract_wiring_static",
+            True,
+            "no action_contract loaded; skipping",
+            skipped=True,
+        )
+    actions = contract.get("actions") or []
+    if not actions:
+        return PredicateResult(
+            "action_contract_wiring_static",
+            True,
+            "action_contract has zero entries; skipping",
+            skipped=True,
+        )
+
+    default_handler = (ctx.stack_contract or {}).get("entry_point") or ""
+    violations: list[str] = []
+    graded = 0
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        name = action.get("name") or "?"
+        must_call = action.get("handler_must_call") or []
+        if not must_call:
+            continue  # not graded by static gate
+        graded += 1
+        handler_rel = action.get("handler_module") or default_handler
+        if not handler_rel:
+            violations.append(f"{name}: no handler_module and no entry_point declared")
+            continue
+        handler_path = ctx.project_root / handler_rel.lstrip("/")
+        if not handler_path.is_file():
+            violations.append(f"{name}: handler file {handler_rel!r} does not exist")
+            continue
+        try:
+            body = handler_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            violations.append(f"{name}: read failed for {handler_rel!r}: {exc}")
+            continue
+        missing: list[str] = []
+        for sym in must_call:
+            if not isinstance(sym, str) or not sym:
+                continue
+            # Use the symbol's last token for the call-site check; allow
+            # dotted prefix as match (so 'combat.calculateBattle' matches
+            # 'combat.calculateBattle(' or '.calculateBattle(').
+            tail = sym.rsplit(".", 1)[-1]
+            pattern = rf"\b{re.escape(tail)}\s*\("
+            if not re.search(pattern, body):
+                missing.append(sym)
+        if missing:
+            violations.append(f"{name}: handler {handler_rel!r} missing call sites for {missing}")
+    if violations:
+        return PredicateResult(
+            "action_contract_wiring_static",
+            False,
+            "action wiring gaps: " + "; ".join(violations),
+        )
+    if graded == 0:
+        return PredicateResult(
+            "action_contract_wiring_static",
+            True,
+            "no actions declared handler_must_call; skipping",
+            skipped=True,
+        )
+    return PredicateResult(
+        "action_contract_wiring_static",
+        True,
+        f"all {graded} graded actions have wired handlers",
+    )
+
+
+@register("lint_integration_test_imports")
+def _lint_integration_test_imports(arg: Any, ctx: PredicateContext) -> PredicateResult:
+    """Lint-only warning: scan each declared integration-test glob; report
+    files with zero references to project source. Always returns
+    skipped=True (gate-passed regardless) — the goal is to surface a
+    warning in the AUTO_GATE log, not block the phase. The hard gate
+    against fake integration tests is the main_entry assembly check;
+    this lint is a redundant signal in case the assembly check
+    is itself bypassed.
+
+    ``arg`` is ``{"globs": ["tests/integration/**", ...], "source_globs": ["src/**"]}``.
+    Both lists are required. ``source_globs`` is used to compute the set
+    of expected source-prefix substrings.
+    """
+    if not isinstance(arg, dict) or "globs" not in arg or "source_globs" not in arg:
+        # The lint silently passes on misconfiguration — failing here would
+        # block the gate, defeating the lint-only contract.
+        return PredicateResult(
+            "lint_integration_test_imports",
+            True,
+            "no globs configured; skipping",
+            skipped=True,
+        )
+    test_globs = arg["globs"]
+    source_globs = arg["source_globs"]
+    if not isinstance(test_globs, list) or not isinstance(source_globs, list):
+        return PredicateResult(
+            "lint_integration_test_imports",
+            True,
+            "globs must be lists; skipping",
+            skipped=True,
+        )
+    # Source-prefix tokens the test file should contain at least one of.
+    prefix_tokens: list[str] = []
+    for sg in source_globs:
+        if not isinstance(sg, str):
+            continue
+        cut = sg.split("*", 1)[0].rstrip("/")
+        if cut:
+            prefix_tokens.append(cut)
+    prefix_tokens = list(dict.fromkeys(prefix_tokens))
+    test_files: list[Path] = []
+    for tg in test_globs:
+        if not isinstance(tg, str):
+            continue
+        test_files.extend(_expand_glob(ctx.project_root, tg))
+    if not test_files:
+        return PredicateResult(
+            "lint_integration_test_imports",
+            True,
+            "no integration test files found; skipping",
+            skipped=True,
+        )
+    suspect: list[str] = []
+    for tf in test_files:
+        try:
+            body = tf.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not any(tok in body for tok in prefix_tokens):
+            try:
+                rel = str(tf.relative_to(ctx.project_root))
+            except ValueError:
+                rel = str(tf)
+            suspect.append(rel)
+    detail = (
+        f"checked {len(test_files)} integration test files; {len(suspect)} "
+        f"contain no reference to source globs {prefix_tokens}"
+    )
+    if suspect:
+        # We want this surfaced — appending to detail. Still gate-passed.
+        detail += f"\n  suspect (no source refs): {suspect[:5]}"
+        if len(suspect) > 5:
+            detail += f" (+{len(suspect) - 5} more)"
+    return PredicateResult(
+        "lint_integration_test_imports",
+        True,
+        detail,
+        skipped=True,
+    )
 
 
 # -- Top-level evaluation -------------------------------------------------

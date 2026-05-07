@@ -50,7 +50,25 @@ class MockLLM:
             for path in expected:
                 p = self.project_root / path.lstrip("/")
                 p.parent.mkdir(parents=True, exist_ok=True)
-                if not p.exists():
+                # Special-case integration_report.json — the schema
+                # check + verdict gate require valid JSON, so a generic
+                # text stub would fail AUTO_GATE.
+                if p.name == "integration_report.json":
+                    p.write_text(
+                        json.dumps(
+                            {
+                                "phase": "main_entry",
+                                "verdict": "skipped",
+                                "boot_check": {
+                                    "ran": False,
+                                    "verdict": "skipped",
+                                    "reason": "mock dev: no contracts to enforce",
+                                },
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                elif not p.exists():
                     p.write_text(f"# stub for {path}\n" + "x" * 250, encoding="utf-8")
         elif role == "qa_engineer":
             for path in expected:

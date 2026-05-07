@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "data_dependency_contract",
+  "title": "Data dependency contract (architect output, phase 2)",
+  "description": "Declares which data files (assets, fixtures, config bundles) MUST be consumed by which source modules at runtime. Drives the main_entry phase's data_dependency_wiring_static AUTO_GATE — when a contract entry's consumer_module file does not contain any reference to the declared files_glob, the gate fails. Modeled as additive: projects without this file behave exactly as before (the predicates vacuous-pass).",
+  "type": "object",
+  "required": ["data_dependencies"],
+  "properties": {
+    "version": { "type": "string" },
+    "data_dependencies": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/data_dependency" }
+    }
+  },
+  "additionalProperties": true,
+
+  "definitions": {
+    "data_dependency": {
+      "type": "object",
+      "required": ["name", "files_glob", "consumer_module"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable id used by reports & cross-references."
+        },
+        "files_glob": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Glob (project-relative) for the data files. Examples: 'assets/level_*.json', 'config/i18n.json', 'data/world.bin'. The static gate accepts any source-file substring match of either the literal glob (with the wildcard part trimmed) or any concrete file the glob expands to."
+        },
+        "consumer_module": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Project-relative glob for the source file(s) that MUST consume the data. Examples: 'src/level/loader.*', 'src/i18n/**/*.ts'. Predicate fails if no matching file references files_glob."
+        },
+        "min_files": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional: minimum number of files matching files_glob expected on disk. Used by the runtime probe; ignored by the pure-static gate."
+        },
+        "load_invariant": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "collection_non_empty",
+                "map_size_at_least",
+                "string_non_empty"
+              ]
+            },
+            "expr": { "type": "string" },
+            "min": { "type": "integer", "minimum": 0 },
+            "after": { "type": "string" }
+          },
+          "additionalProperties": true,
+          "description": "Optional runtime-side invariant for the boot probe. The stack profile's invariant_emitter translates this into the host language."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -31,12 +31,16 @@ class TestRegistry:
             "contains_sections",
             "regex_count",
             "schema",
+            "schema_optional",
             "language_supported",
             "min_scenarios",
             "contains_all_lifecycle_inits",
             "prior_phases_summarized",
             "mermaid_validates_via_skill",
             "language_idiomatic_check",
+            "data_dependency_wiring_static",
+            "action_contract_wiring_static",
+            "lint_integration_test_imports",
         ]:
             assert is_registered(kind), f"{kind} should be registered"
 
@@ -239,6 +243,36 @@ class TestSchemaPredicate:
             _ctx(tmp_path, "stack_contract.json"),
         )
         assert r.passed, r.detail
+
+    def test_schema_optional_passes_when_file_absent(self, tmp_path: Path):
+        # Additive contracts (data_dependency_contract.json, action_contract.json)
+        # use schema_optional so legacy projects that don't declare them
+        # still pass the architecture phase AUTO_GATE.
+        ctx = _ctx(tmp_path, "data_dependency_contract.json")
+        r = evaluate_predicate(
+            _pred("schema_optional", "schemas/data_dependency_contract.schema.json"),
+            ctx,
+        )
+        assert r.passed and r.skipped
+
+    def test_schema_optional_validates_when_file_present(self, tmp_path: Path):
+        # When the file exists, schema_optional behaves identically to schema.
+        good = {"data_dependencies": [{"name": "x", "files_glob": "a/*", "consumer_module": "src/loader.py"}]}
+        (tmp_path / "data_dependency_contract.json").write_text(json.dumps(good), encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("schema_optional", "schemas/data_dependency_contract.schema.json"),
+            _ctx(tmp_path, "data_dependency_contract.json"),
+        )
+        assert r.passed, r.detail
+
+    def test_schema_optional_rejects_invalid_when_present(self, tmp_path: Path):
+        bad = {"data_dependencies": [{"name": "x"}]}  # missing required fields
+        (tmp_path / "data_dependency_contract.json").write_text(json.dumps(bad), encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("schema_optional", "schemas/data_dependency_contract.schema.json"),
+            _ctx(tmp_path, "data_dependency_contract.json"),
+        )
+        assert not r.passed and "files_glob" in r.detail
 
     def test_event_loop_owner_object_still_valid(self, tmp_path: Path):
         # Pygame / Qt-with-custom-loop projects fill in a real lifecycle_init

@@ -75,6 +75,23 @@ phases:
           - file_exists
           - { schema: schemas/behavioral_contract.schema.json }
           - { min_scenarios: 5 }
+      # Two assembly contracts (added 2026-05-06 to harden main_entry):
+      # - data_dependency_contract: which data/asset files MUST be consumed
+      #   by which source modules at runtime
+      # - action_contract: which user/external triggers MUST be wired to
+      #   non-trivial handlers
+      # Both are OPTIONAL on disk — projects without them keep the prior
+      # main_entry behaviour. When present, the main_entry static gates
+      # (data_dependency_wiring_static / action_contract_wiring_static)
+      # check that the assembly is actually wired.
+      - kind: contract
+        path: docs/data_dependency_contract.json
+        acceptance:
+          - { schema_optional: schemas/data_dependency_contract.schema.json }
+      - kind: contract
+        path: docs/action_contract.json
+        acceptance:
+          - { schema_optional: schemas/action_contract.schema.json }
     review:
       consensus: ALL_PASS
       revise_budget: 3
@@ -143,14 +160,36 @@ phases:
     title: Main Entry Wiring
     producer: developer
     reviewer: qa_engineer
-    inputs: [docs/stack_contract.json]
+    inputs:
+      - docs/stack_contract.json
+      - docs/data_dependency_contract.json
+      - docs/action_contract.json
     deliverables:
+      # The entry-point file carries all three assembly checks:
+      # - lifecycle_inits invoked (existing rule)
+      # - data dependencies referenced somewhere in source
+      # - action handlers wire the must-call symbols
+      # All three are vacuous-pass when their driving contract is
+      # absent, so legacy projects without data_dependency_contract /
+      # action_contract see no behaviour change.
       - kind: derived
         from: stack_contract
         rule: entry_point
         acceptance:
           - file_exists
           - contains_all_lifecycle_inits
+          - data_dependency_wiring_static
+          - action_contract_wiring_static
+      # NEW assembly self-disclosure: developer writes the integration
+      # report; AUTO_GATE validates structure + that verdict != fail.
+      # The hard gates are the three predicates above; this report is
+      # the audit-trail artefact phase 6 (delivery) reads.
+      - kind: document
+        path: docs/integration_report.json
+        acceptance:
+          - file_exists
+          - { schema: schemas/integration_report.schema.json }
+          - { json_field_one_of: { field: verdict, allowed: ["pass", "skipped"] } }
     review:
       consensus: ALL_PASS
       revise_budget: 2
@@ -159,6 +198,9 @@ phases:
         qa_engineer: |
           按 stack_contract.run_command 启动 entry_point 是否能 boot 成功？
           若沙箱无法运行该 runtime，请基于代码静态推断并说明理由。
+          额外检查：data_dependency_contract / action_contract 中的每条
+          条目是否都已在源码中真正引用/调用？docs/integration_report.json
+          的 verdict 字段必须为 "pass" 或 "skipped"（附 reason）。
 
   # --------------------------------------------------------------------
   - id: verification
@@ -199,6 +241,17 @@ phases:
         acceptance:
           - file_exists
           - { schema: schemas/qa_report.schema.json }
+          # Lint-only warning (non-blocking): scan tests/integration/**
+          # and tests/scenarios/** for files with no source-code refs;
+          # surface them in the AUTO_GATE log. The hard gate against
+          # fake integration tests is action_contract_wiring_static in
+          # the main_entry phase; this lint is a redundant signal.
+          - {
+              lint_integration_test_imports: {
+                globs: ["tests/integration/**", "tests/scenarios/**"],
+                source_globs: ["src/", "lib/"],
+              },
+            }
     review:
       consensus: ALL_PASS
       revise_budget: 2

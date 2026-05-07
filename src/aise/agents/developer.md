@@ -176,7 +176,39 @@ iterate `docs/stack_contract.json#/lifecycle_inits[]` and invoke each
 listed `<attr>.<method>()` exactly once, in the order declared.
 Skipping this loop — or hand-picking a subset of components — is the
 single most common cause of "tests pass, screen blank" delivery
-failures. The minimal pattern (Python example):
+failures.
+
+**Assembly proof is mandatory** (added 2026-05-06; harden main_entry).
+The main_entry phase is no longer "write the entry file"; it is "prove
+the assembly is wired". On top of the lifecycle loop above, you MUST
+also satisfy:
+
+1. **Data dependency wiring** — if `docs/data_dependency_contract.json`
+   exists, every entry's `consumer_module` glob MUST resolve to a
+   source file that references the corresponding `files_glob` (literal
+   prefix or any concrete file). The static gate
+   `data_dependency_wiring_static` re-runs grep; missing references
+   FAIL the phase.
+
+2. **Action handler wiring** — if `docs/action_contract.json` exists,
+   for every action with a non-empty `handler_must_call`, the handler
+   file (action.handler_module if set, else stack_contract.entry_point)
+   MUST contain a call site for each declared symbol (matched as
+   `\bsymbol\s*\(`). The static gate
+   `action_contract_wiring_static` enforces this; an empty handler
+   stub (e.g. `case 'battle': // TODO`) FAILS the phase.
+
+3. **Integration report** — write `docs/integration_report.json`
+   with the schema `schemas/integration_report.schema.json` summarising
+   the three checks above. `verdict` MUST be `"pass"` (everything
+   wired) or `"skipped"` (with a `reason` saying why a runtime probe
+   couldn't run, e.g. no headless browser); `"fail"` is rejected by
+   AUTO_GATE. The optional integration probe at
+   `python -m aise.runtime.integration_probe <project_root>` produces
+   this file automatically — invoke it with `--no-boot` if your
+   sandbox shouldn't spawn the runtime.
+
+The minimal lifecycle pattern (Python example):
 
 ```python
 import json
