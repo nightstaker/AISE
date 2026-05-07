@@ -1114,21 +1114,55 @@ function setupRunReact() {
         // the NORMALIZED stage id (e.g. ``implementation`` for
         // ``implementation_layer1``). The chip strip only shows normalized
         // ids, deduped, so multi-layer phases render as one chip.
+        //
+        // Two event families feed this:
+        //   - Legacy waterfall / agile fire ``stage_update`` from the
+        //     dispatch tool when the orchestrator agent calls it with a
+        //     phase argument.
+        //   - waterfall_v2's driver bypasses the orchestrator agent and
+        //     drives phases directly, so it only fires ``phase_plan``
+        //     (once, with the full phase list) + ``phase_start`` /
+        //     ``phase_complete`` per phase. Without consuming those here,
+        //     a v2 run renders an empty chip strip.
+        // ``activeStageIdx`` tracks the most recently *started* phase so
+        // the "current" highlight follows progress instead of always
+        // pointing at the last chip in the array (which, for v2, is
+        // pre-populated with all 6 phases up front).
         const stages = [];
         const normalizedSeen = new Set();
         let curRawStage = null;
         let curNormalizedStage = null;
+        let activeStageIdx = -1;
         const evStagesRaw = [];
         const evStagesNormalized = [];
         for (let i = 0; i < taskLog.length; i++) {
             const ev = taskLog[i];
-            if (ev.type === "stage_update" && ev.stage) {
+            if (ev.type === "phase_plan" && Array.isArray(ev.phases)) {
+                for (let j = 0; j < ev.phases.length; j++) {
+                    const norm = normalizeStageId(ev.phases[j]);
+                    if (norm && !normalizedSeen.has(norm)) {
+                        normalizedSeen.add(norm);
+                        stages.push(norm);
+                    }
+                }
+            } else if (ev.type === "phase_start" && ev.phase_name) {
+                curRawStage = ev.phase_name;
+                curNormalizedStage = normalizeStageId(ev.phase_name);
+                if (!normalizedSeen.has(curNormalizedStage)) {
+                    normalizedSeen.add(curNormalizedStage);
+                    stages.push(curNormalizedStage);
+                }
+                const idx = stages.indexOf(curNormalizedStage);
+                if (idx >= 0) activeStageIdx = idx;
+            } else if (ev.type === "stage_update" && ev.stage) {
                 curRawStage = ev.stage;
                 curNormalizedStage = normalizeStageId(ev.stage);
                 if (!normalizedSeen.has(curNormalizedStage)) {
                     normalizedSeen.add(curNormalizedStage);
                     stages.push(curNormalizedStage);
                 }
+                const idx = stages.indexOf(curNormalizedStage);
+                if (idx >= 0) activeStageIdx = idx;
             }
             evStagesRaw.push(curRawStage);
             evStagesNormalized.push(curNormalizedStage);
@@ -1395,9 +1429,13 @@ function setupRunReact() {
                 h("div", { className: "run-section-title" }, t("run.section.stage_progress") + (stageFilter ? t("run.section.stage_progress_filter_hint") : "")),
                 h("div", { className: "run-stages-flow" },
                     stages.map((s, i) => {
-                        var lastStageIdx = stages.length - 1;
-                        var isDone = isRunning ? i < lastStageIdx : true;
-                        var isCurrent = isRunning && i === lastStageIdx;
+                        // ``activeStageIdx`` is the chip the run is on right
+                        // now (last ``phase_start`` / ``stage_update``).
+                        // Fall back to the last appended chip for older
+                        // runs that pre-date the explicit pointer.
+                        var pointerIdx = activeStageIdx >= 0 ? activeStageIdx : stages.length - 1;
+                        var isDone = isRunning ? i < pointerIdx : true;
+                        var isCurrent = isRunning && i === pointerIdx;
                         var cls = "run-stage-chip run-stage-clickable"
                             + (stageFilter === s ? " run-stage-selected" : "")
                             + (isDone && !isCurrent ? " run-stage-done" : "")
