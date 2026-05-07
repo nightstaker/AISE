@@ -213,52 +213,64 @@ own — if you don't lay down the skeleton, nobody will.
   architecture has any of: external level/world data, asset bundles,
   fixtures, i18n string tables, config JSON loaded at startup — declare
   every such pipe here. Schema is `schemas/data_dependency_contract.schema.json`.
-  Minimum example:
+  Minimum example (placeholders — substitute your project's terms):
 
   ```json
   {
     "version": "1",
     "data_dependencies": [
       {
-        "name": "level_data",
-        "files_glob": "assets/level_*.json",
-        "consumer_module": "src/level/loader.*",
+        "name": "<dep_name>",
+        "files_glob": "<project-relative glob>",
+        "consumer_module": "<project-relative source glob>",
         "min_files": 1,
+        "consume_call": "runtime_io_read",
         "load_invariant": {"kind": "collection_non_empty",
-                            "expr": "loader.levels"}
+                            "expr": "<consumer>.<field>"}
       }
     ]
   }
   ```
 
-  The main_entry phase's `data_dependency_wiring_static` AUTO_GATE
-  re-runs `grep` on each `consumer_module` looking for any reference
-  to `files_glob` (literal prefix or any concrete file the glob
-  resolves to). If you declare a dependency the developer doesn't
-  wire, the gate FAILS the phase and the developer must fix the
-  loader. Do NOT declare data files that the design intends to ship
-  unread (e.g. examples in `docs/`); only declare paths whose contents
-  the runtime is expected to load.
+  **`consume_call` is REQUIRED** and pins the abstract semantic category
+  of consumption. Pick one:
+
+  | Category | Semantic |
+  | -------- | -------- |
+  | `runtime_io_read` | Program reads the path through stdlib / runtime IO at boot or on demand |
+  | `bundler_static_import` | Build tool resolves the path via language-level import / require |
+  | `framework_loader_register` | Path is handed to a framework loader registration API |
+  | `embedded_resource` | Compile-time embedding (resource file declared in build manifest) |
+  | `streaming_read` | Path opens a stream consumed sequentially |
+
+  The main_entry phase's `data_dependency_wiring_static` AUTO_GATE uses
+  this to upgrade the check from "the path string appears somewhere" to
+  "the path appears at a call-site" (preceded by `(` / `,` / inside an
+  import-like statement). An inert path constant (declared but never
+  passed to any call site) does NOT count. Do NOT declare data files
+  that the design intends to ship unread (e.g. examples in `docs/`);
+  only declare paths whose contents the runtime is expected to load.
 
 - **`docs/action_contract.json` — OPTIONAL (write only when the
   project has user/external triggers whose handlers MUST do real
-  work).** Examples: a game's "primary attack" key, a CLI's
-  `--upgrade` flag, an HTTP endpoint POST /transfer. For each action,
-  list the symbols the handler must call so the static gate catches
-  "key wired to empty stub" assemblies. Schema is
-  `schemas/action_contract.schema.json`. Minimum example:
+  work).** Use whenever the system has interactive triggers whose
+  handler is expected to drive real state change — keypress, button
+  click, CLI flag, HTTP endpoint, NPC interaction, scheduled tick, etc.
+  For each action, list the symbols the handler must call so the static
+  gate catches "wired to empty stub" assemblies. Schema is
+  `schemas/action_contract.schema.json`. Minimum example (placeholders):
 
   ```json
   {
     "version": "1",
     "actions": [
       {
-        "name": "primary_attack",
-        "trigger": {"kind": "key", "value": "Space"},
-        "expected_change": {"kind": "state_field_changes",
-                             "field": "currentScreen"},
-        "handler_must_call": ["combat.calculateBattle",
-                                "player.applyBattleResult"]
+        "name": "<action_name>",
+        "trigger": {"kind": "key | click | interact_npc | stdin | http | timer | lifecycle",
+                     "value": "<trigger value if applicable>"},
+        "expected_change": {"kind": "state_field_changes | ui_node_appears | stdout_contains | http_status | any_observable_change",
+                             "field": "<state field>"},
+        "handler_must_call": ["<symbol>", "<symbol>"]
       }
     ]
   }
@@ -276,6 +288,68 @@ own — if you don't lay down the skeleton, nobody will.
   vacuous-pass when the contract files are absent. Skipping is fine
   for trivial CLIs and pure-library packages; producing them is
   STRONGLY recommended for any project with a runtime-driven loop.
+
+### Quantitative-constraint traceability (MANDATORY when present)
+
+**Step 0 — read `docs/requirement_contract.json#/quantitative_constraints[]`.**
+Every entry must be "carried forward" into your phase-2 contracts. For
+each constraint:
+
+1. Decide WHERE it will be measured: a count of files matching a glob,
+   the length of a list in `stack_contract` / `behavioral_contract`,
+   the value of a numeric field, etc.
+2. Refine the constraint's `verifiable_via` expression so it points at
+   the concrete artifact your design will produce. If the
+   product_manager wrote a placeholder (e.g.
+   `count(<TBD by architect>)`), edit it in-place to a real expression
+   like `count(assets/<your-path>/*.json)` or
+   `len(stack_contract.subsystems[name=<X>].components)`.
+3. Ensure your `stack_contract` / `behavioral_contract` are sized so
+   the constraint will be satisfiable. Example: a "min_count = 50"
+   constraint targeting `playable_units` means **the contracts must
+   plan for 50 units**, not 5. Silent reduction is forbidden.
+
+If you must reduce a constraint (e.g. user-supplied value is
+infeasible within the chosen stack), open a `## Identified Trade-offs`
+section in `docs/architecture.md` listing: original constraint id,
+proposed value, justification, fallback path. Mark each row with
+`pending_pm_approval: true`. The reduction is provisional until the
+product_manager re-reviews.
+
+The verification phase's `quantitative_coverage` AUTO_GATE re-evaluates
+each `verifiable_via` against the on-disk state. If actual < required,
+the phase REVISE-loops until the developer satisfies it.
+
+### Domain-invariants lock-in (MANDATORY when standard_formulas exist)
+
+If `requirement_contract.json#/standard_formulas[]` is non-empty, you
+MUST mirror every formula into
+`behavioral_contract.json#/domain_invariants[]` with **at least 5
+worked examples per formula** (the requirement contract requires 2 —
+you expand them). Include at least one **edge case** (boundary / clamp
+/ overflow / empty / both-zero / negative). Verification phase will
+generate one data-driven test case per example.
+
+```json
+{
+  "domain_invariants": [
+    {
+      "name": "<short_id>",
+      "formula": "<single-line pseudocode>",
+      "examples": [
+        {"inputs": {<args>}, "expected_output": <value>, "comment": "<case>"},
+        {"inputs": {<args>}, "expected_output": <value>, "comment": "<edge case>"}
+      ],
+      "rationale": "<why this exact form>"
+    }
+  ]
+}
+```
+
+Developer is contractually bound to implement the formula bit-for-bit.
+If you discover the formula needs tweaking (e.g. domain edge case
+mishandled), update `domain_invariants[]` first, then approve the
+change in review — never let the developer improvise.
 
 - **Subsystem directories — MANDATORY (one directory per *subsystem*,
   NOT one directory per component).** A "subsystem" is the unit of

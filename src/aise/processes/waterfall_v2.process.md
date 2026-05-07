@@ -19,6 +19,14 @@ schema_version: 2
 terminal_phase: delivery
 quality_profile: balanced  # fast | balanced | thorough — tunes revise budgets only
 
+# All reviewer responses are wrapped by reviewer.build_reviewer_prompt
+# with a structured-output template asking for a fenced JSON block
+# carrying {summary, gap_list[]} alongside the verdict line. The
+# reviewer.py parser persists every iteration's feedback (including
+# gap_list) to runs/reviewer_feedback/<phase>_<role>_iter<n>.json so
+# the delivery phase's unresolved_review_listed AUTO_GATE can verify
+# every REVISE/REJECT item is surfaced in delivery_report.md.
+
 phases:
   # --------------------------------------------------------------------
   - id: requirements
@@ -75,6 +83,15 @@ phases:
           - file_exists
           - { schema: schemas/behavioral_contract.schema.json }
           - { min_scenarios: 5 }
+      # Quantitative-constraint coverage: every numeric/quantified rule
+      # registered in requirement_contract.quantitative_constraints[]
+      # must point at a concrete artifact the architect's contracts
+      # plan to produce. Vacuous-pass when the contract has no
+      # quantitative_constraints (legacy projects).
+      - kind: contract
+        path: docs/requirement_contract.json
+        acceptance:
+          - quantitative_coverage
       # Two assembly contracts (added 2026-05-06 to harden main_entry):
       # - data_dependency_contract: which data/asset files MUST be consumed
       #   by which source modules at runtime
@@ -164,10 +181,11 @@ phases:
       - docs/stack_contract.json
       - docs/data_dependency_contract.json
       - docs/action_contract.json
+      - docs/requirement_contract.json
     deliverables:
       # The entry-point file carries all three assembly checks:
       # - lifecycle_inits invoked (existing rule)
-      # - data dependencies referenced somewhere in source
+      # - data dependencies referenced at a call-site (consume_call-aware)
       # - action handlers wire the must-call symbols
       # All three are vacuous-pass when their driving contract is
       # absent, so legacy projects without data_dependency_contract /
@@ -180,7 +198,7 @@ phases:
           - contains_all_lifecycle_inits
           - data_dependency_wiring_static
           - action_contract_wiring_static
-      # NEW assembly self-disclosure: developer writes the integration
+      # Assembly self-disclosure: developer writes the integration
       # report; AUTO_GATE validates structure + that verdict != fail.
       # The hard gates are the three predicates above; this report is
       # the audit-trail artefact phase 6 (delivery) reads.
@@ -190,6 +208,15 @@ phases:
           - file_exists
           - { schema: schemas/integration_report.schema.json }
           - { json_field_one_of: { field: verdict, allowed: ["pass", "skipped"] } }
+      # Quantitative-coverage re-check at main_entry. The architect
+      # binds requirement_contract.quantitative_constraints[] to a
+      # measurable artifact; main_entry is when those artifacts must
+      # exist on disk. Vacuous-pass when the contract has no
+      # quantitative_constraints.
+      - kind: contract
+        path: docs/requirement_contract.json
+        acceptance:
+          - quantitative_coverage
     review:
       consensus: ALL_PASS
       revise_budget: 2
@@ -198,9 +225,13 @@ phases:
         qa_engineer: |
           按 stack_contract.run_command 启动 entry_point 是否能 boot 成功？
           若沙箱无法运行该 runtime，请基于代码静态推断并说明理由。
-          额外检查：data_dependency_contract / action_contract 中的每条
-          条目是否都已在源码中真正引用/调用？docs/integration_report.json
-          的 verdict 字段必须为 "pass" 或 "skipped"（附 reason）。
+          额外检查：(1) data_dependency_contract / action_contract 中的每条
+          条目是否都在源码中真消费（call-site，非装饰性常量）？(2) 是否
+          存在 placeholder 实参（addX(0) / loadY(1) / hardcoded 默认）？
+          (3) requirement_contract.quantitative_constraints 是否都满足？
+          若发现 gate-gaming 模式（"// satisfy <gate>" 注释、抑制
+          unused-warning 的 inert 常量、空 handler body），verdict=REJECT。
+          docs/integration_report.json 的 verdict 必须为 "pass" 或 "skipped"。
 
   # --------------------------------------------------------------------
   - id: verification
@@ -241,6 +272,11 @@ phases:
         acceptance:
           - file_exists
           - { schema: schemas/qa_report.schema.json }
+          # Toolchain probe-but-don't-run check: every toolchain probed
+          # as "present" in qa_report must have a corresponding ran=true
+          # OR ran=false+reason record. Closes the "qa_engineer probed
+          # tsc/eslint/etc. but only ran the test runner" gap.
+          - tool_ran_completeness
           # Lint-only warning (non-blocking): scan tests/integration/**
           # and tests/scenarios/** for files with no source-code refs;
           # surface them in the AUTO_GATE log. The hard gate against
@@ -275,6 +311,11 @@ phases:
           - { min_bytes: 1500 }
           - { contains_sections: ["验收结论", "已知 issue", "下一步建议"] }
           - { prior_phases_summarized: 5 }
+          # Every persisted reviewer feedback whose verdict is REVISE /
+          # REJECT must be referenced in the delivery report's
+          # "已知 issue" section. Vacuous-pass when no
+          # runs/reviewer_feedback/ entries exist.
+          - unresolved_review_listed
     review:
       consensus: ALL_PASS
       revise_budget: 1

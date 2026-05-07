@@ -178,35 +178,150 @@ Skipping this loop — or hand-picking a subset of components — is the
 single most common cause of "tests pass, screen blank" delivery
 failures.
 
-**Assembly proof is mandatory** (added 2026-05-06; harden main_entry).
-The main_entry phase is no longer "write the entry file"; it is "prove
-the assembly is wired". On top of the lifecycle loop above, you MUST
-also satisfy:
+**Assembly proof is mandatory** (main_entry phase). The main_entry
+phase is no longer "write the entry file"; it is "prove the assembly
+is wired". On top of the lifecycle loop above, you MUST also satisfy:
 
 1. **Data dependency wiring** — if `docs/data_dependency_contract.json`
-   exists, every entry's `consumer_module` glob MUST resolve to a
-   source file that references the corresponding `files_glob` (literal
-   prefix or any concrete file). The static gate
-   `data_dependency_wiring_static` re-runs grep; missing references
-   FAIL the phase.
+   exists, every entry's `consumer_module` MUST contain a real
+   call-site occurrence of the corresponding `files_glob` (see
+   "Real consumption vs decorative reference" below). The static gate
+   `data_dependency_wiring_static` is `consume_call`-aware: when the
+   contract specifies a category (e.g. `runtime_io_read`), an inert
+   path constant fails.
 
 2. **Action handler wiring** — if `docs/action_contract.json` exists,
    for every action with a non-empty `handler_must_call`, the handler
    file (action.handler_module if set, else stack_contract.entry_point)
-   MUST contain a call site for each declared symbol (matched as
-   `\bsymbol\s*\(`). The static gate
-   `action_contract_wiring_static` enforces this; an empty handler
-   stub (e.g. `case 'battle': // TODO`) FAILS the phase.
+   MUST contain a call site for each declared symbol. Static gate
+   `action_contract_wiring_static` enforces presence; reviewer
+   enforces the **handler-body argument-flow rule** below.
 
 3. **Integration report** — write `docs/integration_report.json`
    with the schema `schemas/integration_report.schema.json` summarising
    the three checks above. `verdict` MUST be `"pass"` (everything
    wired) or `"skipped"` (with a `reason` saying why a runtime probe
-   couldn't run, e.g. no headless browser); `"fail"` is rejected by
-   AUTO_GATE. The optional integration probe at
+   couldn't run); `"fail"` is rejected by AUTO_GATE. The optional
+   integration probe at
    `python -m aise.runtime.integration_probe <project_root>` produces
    this file automatically — invoke it with `--no-boot` if your
    sandbox shouldn't spawn the runtime.
+
+### Anti Gate-Gaming — ZERO TOLERANCE
+
+The static gates above check **presence** of references and call sites.
+They cannot tell whether you wrote real consumption or theatrical code
+that exists only to satisfy the gate. The reviewer DOES tell, and
+your phase WILL be rejected on these patterns:
+
+1. **Decorative path constant** — declaring a path string that no code
+   path actually reads. Detection: from any call to your module's
+   public API, no execution path uses the value of that constant for
+   IO. Example anti-pattern (any language):
+   ```pseudo
+   const FILES = ["<path1>", "<path2>"]   // DECORATIVE
+   _ = FILES                              // suppressing unused-variable warning
+   ```
+2. **"satisfy gate" comment** — any comment naming a gate / predicate
+   ("// satisfy data_dependency_wiring_static", "# pass action gate",
+   "// only here for the check") is a confession of theatre — REJECT.
+
+3. **Placeholder handler arguments** — handler call sites whose
+   arguments are literal zeros, empty strings, fixed IDs, default
+   structs that ignore the action's actual context:
+   ```pseudo
+   onPurchase(itemId):
+       wallet.deduct(0)              // BAD: ignores price
+       inventory.add("DEFAULT")      // BAD: ignores itemId
+       loadFloor(1)                  // BAD: always floor 1
+   ```
+   Required: arguments that flow from the action's input (event,
+   identifier, current state) into the called method. If the action
+   has `handler_must_call: ["foo.bar"]`, the call to `foo.bar(...)`
+   must use either the action's argument(s) or a value computed from
+   them, not a hardcoded literal.
+
+4. **Hardcoded constants instead of registry lookup** — when an entity
+   has a definitions table (item_defs, monster_defs, route_table,
+   pricing_book, etc.), the handler must look up via the table, not
+   inline a literal struct:
+   ```pseudo
+   onCollideEnemy(enemyId):
+       combat.compute({hp: 10, atk: 3})         // BAD: ignores enemyId
+       combat.compute(enemyDefs.find(enemyId))  // OK
+   ```
+
+5. **Empty branch / TODO placeholder** — `case X: # TODO render` /
+   `if signal: pass` / `throw NotImplemented` in the entry path is
+   never acceptable in main_entry.
+
+### The Deletion Test (use before submitting)
+
+For every reference, call argument, and call site you added in this
+phase, mentally delete the line and ask: **would runtime observable
+behavior change?**
+
+- If the deletion changes nothing → the line is decorative — rewrite
+  to real consumption or delete it.
+- If the deletion changes only that a static check no longer passes →
+  the line is gate-theatre — reject your own work and rewrite.
+
+This test is independent of language; apply it to every line you write.
+
+### Real consumption vs decorative reference
+
+A data-path string is **really consumed** only when its value flows
+into one of these abstract operations:
+
+| Category (matches `consume_call` enum) | Semantic |
+| -------------------------------------- | -------- |
+| `runtime_io_read` | Path is passed as an argument to a stdlib / runtime IO call that opens or reads the file at runtime |
+| `bundler_static_import` | Path appears in a language-level import / require / use / from / include statement that the build tool resolves |
+| `framework_loader_register` | Path is passed to a framework loader registration API |
+| `embedded_resource` | Path is declared in the project's build manifest for compile-time embedding (consumer source need not reference it directly) |
+| `streaming_read` | Path opens a stream that is then consumed sequentially |
+
+If the contract names a category, your consumer source must contain
+the path **at a call-site context** (preceded by `(` / `,` / inside an
+import-like statement). A bare top-level constant does NOT count.
+
+### Handler argument-flow rule (action handlers)
+
+Each `handler_must_call` symbol must be invoked with arguments derived
+from the action's runtime context (event payload, current state, the
+declarations the architect's contract names as relevant). Hard-coded
+literal arguments — except for true constants like enum tags or
+unit values — are rejected by reviewer.
+
+### Quantitative-constraint awareness
+
+Before you start any task in main_entry / implementation, **read
+`docs/requirement_contract.json#/quantitative_constraints[]`**. Each
+entry's `verifiable_via` expression is what the
+`quantitative_coverage` AUTO_GATE will measure. If your implementation
+won't satisfy it (e.g. constraint says "at least 50 X" and you're
+shipping 5), STOP and either:
+
+- raise it via `quantitative_constraint_blocked: <id>` in your response
+  so the architect / pm can adjust, OR
+- expand the implementation to meet the constraint.
+
+Do NOT silently ship a reduced count — the gate will reject and your
+producer retry budget will exhaust on the same task.
+
+### Domain-formula bit-for-bit rule
+
+When `behavioral_contract.json#/domain_invariants[]` is non-empty,
+each formula is a **contract**. Implement the operator chain exactly
+as written. A formula like `damage = max(0, atk - def)` becomes
+exactly that — do not "soften" by clamping to 1, do not "harden" by
+adding randomness, do not insert special-case branches. The
+verification phase generates one data-driven test per worked example;
+those tests will fail if you deviate.
+
+If you believe the formula is wrong, respond with
+`domain_invariant_dispute: <name>` and stop — the architect will revise
+in review. Never improvise.
 
 The minimal lifecycle pattern (Python example):
 

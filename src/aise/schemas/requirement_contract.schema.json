@@ -20,6 +20,16 @@
     "use_cases": {
       "type": "array",
       "items": { "$ref": "#/definitions/use_case" }
+    },
+    "quantitative_constraints": {
+      "type": "array",
+      "description": "Machine-readable register for every numeric/quantified rule found in docs/requirement.md (e.g. 'at least N', 'no more than M ms', 'coverage >= K%'). Downstream phases (architecture, implementation, verification) iterate this list to ensure each constraint is satisfied. Empty array is allowed only when the requirement document contains zero quantified rules.",
+      "items": { "$ref": "#/definitions/quantitative_constraint" }
+    },
+    "standard_formulas": {
+      "type": "array",
+      "description": "Domain algorithms / industry-standard formulas the requirement names. Captured here in pseudocode + worked examples so the architect locks them in behavioral_contract.domain_invariants[] and the developer must implement them bit-for-bit. Empty array is allowed when the requirement does not invoke any domain standard.",
+      "items": { "$ref": "#/definitions/standard_formula" }
     }
   },
   "additionalProperties": true,
@@ -59,6 +69,91 @@
         "covers_requirements": {
           "type": "array",
           "items": { "type": "string", "pattern": "^(FR|NFR)-\\d{2,4}$" }
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "quantitative_constraint": {
+      "type": "object",
+      "required": ["id", "owns_requirement", "operator", "target", "value"],
+      "description": "A single quantified rule extracted from a requirement. Language-agnostic: 'target' uses an abstract artifact descriptor (e.g. 'playable_units', 'persisted_record_kinds'), 'operator' is one of a fixed set, 'verifiable_via' is a reproducible expression downstream phases must satisfy.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(FR|NFR)-\\d{2,4}\\.q\\d+$",
+          "description": "Stable identifier: <owning requirement id>.q<n>"
+        },
+        "owns_requirement": {
+          "type": "string",
+          "pattern": "^(FR|NFR)-\\d{2,4}$"
+        },
+        "operator": {
+          "type": "string",
+          "enum": [
+            "min_count",
+            "max_count",
+            "min_value",
+            "max_value",
+            "ratio_at_least",
+            "ratio_at_most",
+            "equal_to"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Abstract artifact descriptor (free-form short identifier). Architect maps this to concrete fields in stack_contract / behavioral_contract."
+        },
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string",
+          "description": "Free-form unit label (e.g. 'level', 'ms', 'percent', 'mb'); kept as text for human readability."
+        },
+        "verifiable_via": {
+          "type": "string",
+          "description": "Reproducible expression naming the downstream artifact / count / value that satisfies this constraint. Examples: 'count(<glob>)', 'sum(<dotted.path>)', 'len(stack_contract.subsystems[name=X].components)'. Architect uses this to bind the constraint to a concrete measurable artifact."
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "standard_formula": {
+      "type": "object",
+      "required": ["name", "formula", "examples"],
+      "description": "A domain-standard formula the requirement names. 'formula' is single-line language-agnostic pseudocode using named operators (max/min/sum/round/clamp/abs). At least 2 worked examples are required, including at least one edge case (boundary / empty / overflow / clamp).",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "domain": {
+          "type": "string",
+          "description": "Free-form domain category (e.g. 'turn_based_combat', 'fees', 'physics_collision')."
+        },
+        "formula": {
+          "type": "string",
+          "minLength": 1
+        },
+        "examples": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["inputs", "expected_output"],
+            "properties": {
+              "inputs": { "type": "object" },
+              "expected_output": {},
+              "comment": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Why this exact form (and not a softer/harder variant). Critical for cases where domain semantics depend on edge handling."
         }
       },
       "additionalProperties": true

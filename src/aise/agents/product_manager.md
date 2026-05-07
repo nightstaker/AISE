@@ -180,6 +180,81 @@ After ``write_file`` on any document that contains Mermaid fences
 to validate every ```mermaid block and fix any syntax error before
 responding to the orchestrator.
 
+### Quantitative-constraint extraction (MANDATORY)
+
+Whenever the requirement text contains a **numeric / quantified rule** —
+"at least N", "no more than M", "coverage ≥ K%", "latency ≤ T units",
+"supports up to L concurrent X", and so on — you MUST register the same
+rule machine-readably in `docs/requirement_contract.json`'s
+`quantitative_constraints[]` array, in addition to the prose mention in
+`docs/requirement.md`. Downstream phases (architect, developer,
+qa_engineer) iterate this array; if a quantified rule is only in the
+prose, it silently disappears from the pipeline.
+
+Each entry uses this language-neutral shape:
+
+```json
+{
+  "id": "<owning-FR-or-NFR-id>.q<n>",
+  "owns_requirement": "<FR-/NFR-id>",
+  "operator": "min_count | max_count | min_value | max_value | ratio_at_least | ratio_at_most | equal_to",
+  "target": "<abstract artifact descriptor — short snake_case noun, free form>",
+  "value": <number>,
+  "unit": "<free-form unit label, e.g. 'item', 'ms', 'percent', 'mb'>",
+  "verifiable_via": "<reproducible expression>"
+}
+```
+
+`target` is an abstract noun describing what is being counted/measured —
+e.g. `"playable_units"`, `"persisted_record_kinds"`, `"endpoint_count"`,
+`"max_response_time"`. Don't bake stack-specific or
+project-specific terms into it.
+
+`verifiable_via` is a reproducible expression downstream phases will
+satisfy. Supported forms:
+
+- `count(<glob>)` — count files matching a project-relative glob
+- `len(<contract>.<dotted.path>)` — length of a list/string in stack /
+  behavioral / requirement / data_dependency / action contract
+- `sum(<contract>.<dotted.path>)` — sum of a numeric list
+
+If the requirement says **"at least 50 X"**, write
+`{operator: "min_count", target: "X", value: 50, verifiable_via: "count(...)"}`.
+If you can't pin down the exact verifiable expression at requirement
+time, write a placeholder like `count(<TBD by architect>)` and flag in
+the prose — the architect will refine it in phase 2.
+
+### Domain-formula extraction (MANDATORY when domain names invoked)
+
+Whenever the requirement names a **domain-standard algorithm or formula**
+("classic <domain> combat", "<industry> billing", "Elo rating",
+"Bresenham's line", and so on) — anything where there is an established
+formula the implementation is expected to follow — register it in
+`docs/requirement_contract.json`'s `standard_formulas[]` array:
+
+```json
+{
+  "name": "<short_id>",
+  "domain": "<domain category, free form>",
+  "formula": "<single-line pseudocode using named operators max/min/sum/round/clamp/abs>",
+  "examples": [
+    {"inputs": {<named args>}, "expected_output": <value>, "comment": "<edge case label>"},
+    {"inputs": {<named args>}, "expected_output": <value>, "comment": "<another case>"}
+  ],
+  "rationale": "<why this exact form (not a softer/harder variant)>"
+}
+```
+
+At least **2 examples**, including at least one **edge case**
+(boundary / clamp / overflow / empty / both-zero / negative). The
+architect will copy this verbatim into `behavioral_contract.domain_invariants[]`
+and the developer is required to implement the formula bit-for-bit.
+
+If you skip this, the developer's LLM will improvise a "safer-looking"
+variant (e.g. clamping to 1 instead of 0) and silently break the
+specified domain semantics. The point of `standard_formulas[]` is to
+short-circuit that improvisation.
+
 ### Delivery-report tasks
 
 When the orchestrator dispatches a task asking you to write
