@@ -44,7 +44,7 @@
     },
     "event_loop_owner": {
       "oneOf": [
-        { "$ref": "#/definitions/lifecycle_init" },
+        { "$ref": "#/definitions/event_loop_owner_def" },
         { "type": "null" }
       ]
     }
@@ -93,6 +93,20 @@
         "class": { "type": "string", "minLength": 1 },
         "module": { "type": "string", "minLength": 1 },
         "handler_method": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+
+    "event_loop_owner_def": {
+      "type": "object",
+      "description": "Designates the component instance that owns the runtime event-loop dispatch (UI frameworks, game engines, server frameworks with custom dispatch). The architect declares this so the entry-point file's main loop can forward every non-terminal event to <attr>.<handler_method>(...). Distinct from lifecycle_init because the relevant method here is the per-event handler (e.g. handle_event / update / on_message), NOT the one-time init method.",
+      "required": ["attr", "handler_method", "class", "module"],
+      "properties": {
+        "attr": { "type": "string", "minLength": 1 },
+        "handler_method": { "type": "string", "minLength": 1 },
+        "class": { "type": "string", "minLength": 1 },
+        "module": { "type": "string", "minLength": 1 },
+        "method": { "type": "string" }
       },
       "additionalProperties": true
     }

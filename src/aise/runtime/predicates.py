@@ -293,12 +293,62 @@ def _min_scenarios(arg: Any, ctx: PredicateContext) -> PredicateResult:
     return PredicateResult("min_scenarios", False, f"{n} < {arg}")
 
 
+_DISPATCH_LOOP_INDICATORS = (
+    # Iteration markers commonly used to walk lifecycle_inits[]
+    re.compile(r"for\s*\(?\s*(?:const|let|var)?\s*\w+\s+(?:of|in)\s+\w*[Ll]ifecycle"),
+    re.compile(r"for\s+\w+\s+in\s+\w*[Ll]ifecycle"),
+    re.compile(r"\.forEach\s*\(\s*\(?\s*\w+\s*\)?\s*=>"),
+    # Dynamic property access patterns that pair with the iteration:
+    # body[entry.attr] / target[entry["method"]] / .call(target) /
+    # getattr(self, entry["attr"]) / Reflect.get(...)
+    re.compile(r"\[\s*entry\s*[.\[]"),
+    re.compile(r"\[\s*[A-Za-z_]\w*\s*\]\s*\(\s*\)"),
+    re.compile(r"\.call\s*\(\s*\w+\s*\)"),
+    re.compile(r"getattr\s*\("),
+    re.compile(r"Reflect\.get\s*\("),
+)
+
+
+def _looks_like_dispatch_loop(body: str) -> bool:
+    """Heuristic: does the file body iterate ``lifecycle_inits`` (or a
+    similarly-named array) and dispatch a method dynamically through it?
+
+    Two signals required:
+    1. The literal token ``lifecycle_inits`` (or ``lifecycleInits`` —
+       camelCase naming is common in TS/JS) appears in the body.
+    2. At least one of ``_DISPATCH_LOOP_INDICATORS`` matches.
+
+    The pattern is the one ``developer.md`` officially recommends — a
+    single ``for`` over ``stack_contract.lifecycle_inits[]`` that
+    dynamically dispatches each ``initialize`` method. We accept it
+    here so the predicate doesn't force literal ``attr.method()`` calls
+    that duplicate the loop.
+    """
+    if not re.search(r"lifecycle[_]?[Ii]nits", body):
+        return False
+    for ind in _DISPATCH_LOOP_INDICATORS:
+        if ind.search(body):
+            return True
+    return False
+
+
 @register("contains_all_lifecycle_inits")
 def _contains_all_lifecycle_inits(arg: Any, ctx: PredicateContext) -> PredicateResult:
-    """Check the entry_point file body contains every lifecycle_init's
-    ``<attr>.<method>`` invocation (in any order). Used by phase 4
-    (main_entry) to enforce that Main.cs / main.py / etc. wires every
-    declared subsystem init.
+    """Check the entry_point file body wires every lifecycle_init.
+
+    A subsystem ``<attr>`` is considered wired when EITHER:
+    1. The literal call site ``attr.method(`` appears in the body, OR
+    2. A dispatch-loop pattern (a ``for`` over ``lifecycle_inits[]``
+       plus a dynamic property access) is present AND ``attr`` appears
+       as a quoted string literal in the body. The quoted literal is
+       the array entry that drives the dynamic dispatch.
+
+    Branch 2 was added because ``developer.md`` officially recommends
+    the dispatch-loop pattern to keep the entry file in lockstep with
+    the contract. The predicate originally enforced branch 1 only,
+    which made the recommended pattern fail AUTO_GATE — a real
+    regression observed in main_entry phase of the project_7 e2e on
+    2026-05-07.
     """
     if ctx.stack_contract is None:
         return PredicateResult("contains_all_lifecycle_inits", False, "stack_contract not loaded")
@@ -317,26 +367,38 @@ def _contains_all_lifecycle_inits(arg: Any, ctx: PredicateContext) -> PredicateR
             f"entry_point file missing: {ctx.deliverable_path}",
         )
     body = ctx.read_text()
+    has_dispatch_loop = _looks_like_dispatch_loop(body)
     missing: list[str] = []
     for init in inits:
         attr = init.get("attr", "")
         method = init.get("method", "")
         if not attr or not method:
             continue
-        # Match ``attr.method(`` allowing whitespace; case-sensitive.
-        pattern = rf"\b{re.escape(attr)}\s*\.\s*{re.escape(method)}\s*\("
-        if not re.search(pattern, body):
-            missing.append(f"{attr}.{method}")
+        # Branch 1: literal ``attr.method(`` call site.
+        literal_pattern = rf"\b{re.escape(attr)}\s*\.\s*{re.escape(method)}\s*\("
+        if re.search(literal_pattern, body):
+            continue
+        # Branch 2: dispatch loop covers it as long as attr appears as a
+        # quoted string literal somewhere in the body (typically inside
+        # the contract array literal).
+        if has_dispatch_loop:
+            quoted_pattern = rf"['\"]{re.escape(attr)}['\"]"
+            if re.search(quoted_pattern, body):
+                continue
+        missing.append(f"{attr}.{method}")
     if missing:
         return PredicateResult(
             "contains_all_lifecycle_inits",
             False,
             f"entry_point missing init calls: {missing}",
         )
+    detail = f"all {len(inits)} lifecycle_inits invoked"
+    if has_dispatch_loop:
+        detail += " (via dispatch loop)"
     return PredicateResult(
         "contains_all_lifecycle_inits",
         True,
-        f"all {len(inits)} lifecycle_inits invoked",
+        detail,
     )
 
 
