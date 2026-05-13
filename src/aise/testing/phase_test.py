@@ -46,6 +46,7 @@ Pipeline:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -475,17 +476,35 @@ def _run_single_phase(
     tools = make_dispatch_tools(session._ctx)
     dispatch_task = next(t for t in tools if t.name == "dispatch_task")
 
+    def _step_id_for(prompt: str, expected: list[str] | None) -> str:
+        # Mirrors ProjectSession._run_waterfall_v2._step_id_for so the
+        # web trace shape is identical for phase-test and production.
+        if expected is None:
+            return "review"
+        if "[FANOUT TASK]" in prompt:
+            m_sub = re.search(r"subsystem '([^']+)'", prompt)
+            m_comp = re.search(r"component '([^']+)'", prompt)
+            m_scen = re.search(r"scenario_id=(\w+)", prompt)
+            if m_comp and m_sub:
+                return f"impl:{m_sub.group(1)}.{m_comp.group(1)}"
+            if m_sub:
+                return f"impl:{m_sub.group(1)}"
+            if m_scen:
+                return f"scenario:{m_scen.group(1)}"
+            return "fanout"
+        return "produce"
+
     def _dispatch(role: str, prompt: str, expected: list[str] | None) -> str:
         # Mirror :meth:`ProjectSession._run_waterfall_v2`: phase carries the
-        # real phase id (taken from the test case), step_id is the role
-        # name. Keeps trace events consistent between phase-test runs and
-        # production web runs so the same UI / inspection code works for
-        # both.
+        # real phase id (taken from the test case), step_id is a task-kind
+        # label derived from the dispatch shape. Keeps trace events
+        # consistent between phase-test runs and production web runs so the
+        # same UI / inspection code works for both.
         raw = dispatch_task.invoke(
             {
                 "agent_name": role,
                 "task_description": prompt,
-                "step_id": role,
+                "step_id": _step_id_for(prompt, expected),
                 "phase": case.phase,
                 "expected_artifacts": list(expected) if expected else None,
             }

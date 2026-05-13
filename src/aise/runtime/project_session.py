@@ -24,6 +24,7 @@ Public surface (kept stable so existing tests/web code continue to work):
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -324,13 +325,45 @@ class ProjectSession:
                 current_phase = str(ev.get("phase_name") or "")
             self._ctx.emit(ev)
 
+        def _step_id_for(prompt: str, expected: list[str] | None) -> str:
+            """Derive a human-readable task label for the web UI.
+
+            The web task list shows ``payload.step`` next to the agent name,
+            so it must say what the task does, not just repeat the agent.
+            We infer the kind without changing the produce_fn/dispatch_reviewer
+            signatures (which would force every mock test fixture to be
+            edited) by looking at the call's shape:
+
+              * ``expected is None``     → reviewer call (review path passes
+                no expected_artifacts).
+              * ``[FANOUT TASK]`` marker → fan-out producer. Phase_executor
+                writes machine-readable hints into the prompt body
+                (``subsystem 'X'``, ``component 'Y'``, ``scenario_id=Z``);
+                pull them out for the label.
+              * otherwise                → single-writer producer.
+            """
+            if expected is None:
+                return "review"
+            if "[FANOUT TASK]" in prompt:
+                m_sub = re.search(r"subsystem '([^']+)'", prompt)
+                m_comp = re.search(r"component '([^']+)'", prompt)
+                m_scen = re.search(r"scenario_id=(\w+)", prompt)
+                if m_comp and m_sub:
+                    return f"impl:{m_sub.group(1)}.{m_comp.group(1)}"
+                if m_sub:
+                    return f"impl:{m_sub.group(1)}"
+                if m_scen:
+                    return f"scenario:{m_scen.group(1)}"
+                return "fanout"
+            return "produce"
+
         def _dispatch(role: str, prompt: str, expected: list[str] | None) -> str:
             phase_id = current_phase or "waterfall_v2"
             raw = dispatch_task.invoke(
                 {
                     "agent_name": role,
                     "task_description": prompt,
-                    "step_id": role,
+                    "step_id": _step_id_for(prompt, expected),
                     "phase": phase_id,
                     "expected_artifacts": list(expected) if expected else None,
                 }
