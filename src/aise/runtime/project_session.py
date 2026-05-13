@@ -307,13 +307,31 @@ class ProjectSession:
         tools = make_dispatch_tools(self._ctx)
         dispatch_task = next(t for t in tools if t.name == "dispatch_task")
 
+        # Track the actively running phase so each dispatch carries the
+        # real phase id (``requirements`` / ``architecture`` / ...) rather
+        # than the literal process-type token. The web UI's chip strip
+        # and per-task listing both consume ``payload.phase`` and
+        # ``payload.step``; emitting ``phase="waterfall_v2"`` here
+        # previously corrupted both (extra trailing "Waterfall" chip
+        # because ``waterfall_v2`` normalises to ``waterfall``, plus all
+        # task_request events landing under it because ``stage_update``
+        # rewrites the running stage in app.js).
+        current_phase = ""
+
+        def _emit_with_phase_tracking(ev: dict[str, Any]) -> None:
+            nonlocal current_phase
+            if ev.get("type") == "phase_start":
+                current_phase = str(ev.get("phase_name") or "")
+            self._ctx.emit(ev)
+
         def _dispatch(role: str, prompt: str, expected: list[str] | None) -> str:
+            phase_id = current_phase or "waterfall_v2"
             raw = dispatch_task.invoke(
                 {
                     "agent_name": role,
                     "task_description": prompt,
-                    "step_id": f"v2-{role}",
-                    "phase": "waterfall_v2",
+                    "step_id": role,
+                    "phase": phase_id,
                     "expected_artifacts": list(expected) if expected else None,
                 }
             )
@@ -341,9 +359,10 @@ class ProjectSession:
             dispatch_reviewer=reviewer_dispatch,
             # Forward phase_plan / phase_start / phase_complete events
             # through the project's ToolContext so the web UI's phase
-            # stepper renders correctly. Without this the UI sees only
-            # one fallback row because v2 used to be opaque.
-            on_event=self._ctx.emit,
+            # stepper renders correctly. The wrapper also captures the
+            # active phase id so each dispatch_task call below can tag
+            # its events with the real phase rather than the placeholder.
+            on_event=_emit_with_phase_tracking,
         )
         result = driver.run(requirement)
         if result.halted:

@@ -476,12 +476,17 @@ def _run_single_phase(
     dispatch_task = next(t for t in tools if t.name == "dispatch_task")
 
     def _dispatch(role: str, prompt: str, expected: list[str] | None) -> str:
+        # Mirror :meth:`ProjectSession._run_waterfall_v2`: phase carries the
+        # real phase id (taken from the test case), step_id is the role
+        # name. Keeps trace events consistent between phase-test runs and
+        # production web runs so the same UI / inspection code works for
+        # both.
         raw = dispatch_task.invoke(
             {
                 "agent_name": role,
                 "task_description": prompt,
-                "step_id": f"v2-phase-test-{role}",
-                "phase": "waterfall_v2",
+                "step_id": role,
+                "phase": case.phase,
                 "expected_artifacts": list(expected) if expected else None,
             }
         )
