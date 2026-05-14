@@ -917,7 +917,9 @@ class PhaseExecutor:
                     elif a.kind == "contains_all_lifecycle_inits":
                         lines.append(
                             "      entry_point body MUST invoke every "
-                            "<attr>.<method>() declared in stack_contract.lifecycle_inits"
+                            "<attr>.<method>() declared in stack_contract.lifecycle_inits "
+                            "(literal call sites OR a dispatch loop iterating "
+                            "lifecycle_inits[] with each attr quoted)"
                         )
                     elif a.kind == "mermaid_validates_via_skill":
                         lines.append(
@@ -955,8 +957,43 @@ class PhaseExecutor:
             # docs (architecture.md / requirement.md) not fanned-out
             # source code; if the user wants reviewer-driven re-fanout
             # they can rephrase the question to require it.
-            if not phase.has_fanout:
-                self._run_single_producer(phase, new_prompt)
+            if phase.has_fanout:
+                return
+            self._run_single_producer(phase, new_prompt)
+            # Re-run AUTO_GATE after the revise: the reviewer's REVISE
+            # round directs the producer to expand / restructure the
+            # output, but reviewer feedback is free-form and the
+            # producer can introduce schema-violating content (e.g. ID
+            # patterns, JSONPath in verifiable_via, malformed
+            # event_loop_owner) that AUTO_GATE would have caught the
+            # first time. Without this re-check, dirty data leaks into
+            # downstream phases (the ``passed_with_unresolved_review
+            # schema drift`` mode observed in project_5/6/7 e2e on
+            # 2026-05-06/07).
+            #
+            # Cap retry at 1 additional producer dispatch per revise
+            # round to bound the dispatch budget. If the second attempt
+            # still fails AUTO_GATE, the next reviewer round will see
+            # the broken state and presumably issue another REVISE.
+            reports = self._evaluate_deliverables(phase)
+            failures = [r for r in reports if not r.passed]
+            if not failures:
+                return
+            failure_text = "\n\n".join(r.summary() for r in failures)
+            logger.info(
+                "PhaseExecutor: phase=%s post-revise AUTO_GATE failed (%d failures); "
+                "retrying producer once with combined feedback",
+                phase.id,
+                len(failures),
+            )
+            combined_prompt = (
+                f"[AUTO-GATE FEEDBACK — your last revise broke the deliverable schema]\n"
+                f"{failure_text}\n\n"
+                f"You MUST fix the AUTO-GATE failures above AS WELL AS the reviewer's "
+                f"feedback below. Do not regress the schema while addressing the review.\n"
+                f"---\n\n" + new_prompt
+            )
+            self._run_single_producer(phase, combined_prompt)
 
         return run_review_loop(
             list(phase.reviewer),

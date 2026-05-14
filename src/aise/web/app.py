@@ -2125,7 +2125,16 @@ def create_app() -> FastAPI:
         project = service.get_project(project_id)
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
-        project_root = _Path(project.get("project_root") or project.get("root", ""))
+        # service.get_project() returns {"info": {...}, "runs": [...], ...};
+        # project_root lives inside info, not at the top level. Reading it
+        # off the top-level dict (the prior shape of this endpoint) silently
+        # returned an empty string, which Path("") resolves to the cwd —
+        # so is_halted() then checked the AISE working directory rather
+        # than the project root and rejected every halt.
+        info = project.get("info") if isinstance(project.get("info"), dict) else {}
+        project_root = _Path(
+            info.get("project_root") or info.get("root") or project.get("project_root") or project.get("root") or ""
+        )
         if not project_root.is_dir():
             raise HTTPException(
                 status_code=400,

@@ -274,10 +274,81 @@ class TestSchemaPredicate:
         )
         assert not r.passed and "files_glob" in r.detail
 
-    def test_event_loop_owner_object_still_valid(self, tmp_path: Path):
-        # Pygame / Qt-with-custom-loop projects fill in a real lifecycle_init
-        # object — the existing branch must keep working after we widen the
-        # schema to accept null.
+    def test_event_loop_owner_object_with_handler_method_valid(self, tmp_path: Path):
+        # Pygame / Qt-with-custom-loop / Phaser-with-update-loop projects
+        # fill in a real event_loop_owner object whose key field is the
+        # PER-EVENT handler (e.g. handle_event / update / on_message),
+        # NOT the one-shot init method. The schema's event_loop_owner_def
+        # therefore requires handler_method (and 'method' is optional);
+        # the older TS / Phaser e2e runs (project_4 through project_6)
+        # consistently failed when the schema demanded 'method' instead,
+        # because architect.md correctly tells the architect to write
+        # handler_method here.
+        contract = {
+            "language": "typescript",
+            "framework_backend": "",
+            "framework_frontend": "phaser",
+            "package_manager": "npm",
+            "test_runner": "vitest",
+            "entry_point": "src/main.ts",
+            "run_command": "npm run dev",
+            "subsystems": [
+                {
+                    "name": "ui",
+                    "src_dir": "src/ui",
+                    "components": [{"name": "main_menu", "file": "src/ui/main_menu.ts"}],
+                }
+            ],
+            "event_loop_owner": {
+                "attr": "mainMenu",
+                "handler_method": "update",
+                "class": "MainMenuScene",
+                "module": "src/ui/main_menu.ts",
+            },
+        }
+        (tmp_path / "stack_contract.json").write_text(json.dumps(contract), encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("schema", "schemas/stack_contract.schema.json"),
+            _ctx(tmp_path, "stack_contract.json"),
+        )
+        assert r.passed, r.detail
+
+    def test_event_loop_owner_missing_handler_method_rejected(self, tmp_path: Path):
+        # An object lacking handler_method (e.g. only attr/class/module
+        # or with the older 'method' field instead) is rejected.
+        contract = {
+            "language": "typescript",
+            "framework_backend": "",
+            "framework_frontend": "phaser",
+            "package_manager": "npm",
+            "test_runner": "vitest",
+            "entry_point": "src/main.ts",
+            "run_command": "npm run dev",
+            "subsystems": [
+                {
+                    "name": "ui",
+                    "src_dir": "src/ui",
+                    "components": [{"name": "main_menu", "file": "src/ui/main_menu.ts"}],
+                }
+            ],
+            "event_loop_owner": {
+                "attr": "mainMenu",
+                "method": "initialize",  # legacy / wrong shape
+                "class": "MainMenuScene",
+                "module": "src/ui/main_menu.ts",
+            },
+        }
+        (tmp_path / "stack_contract.json").write_text(json.dumps(contract), encoding="utf-8")
+        r = evaluate_predicate(
+            _pred("schema", "schemas/stack_contract.schema.json"),
+            _ctx(tmp_path, "stack_contract.json"),
+        )
+        assert not r.passed and "event_loop_owner" in r.detail
+
+    def test_lifecycle_inits_still_require_method(self, tmp_path: Path):
+        # lifecycle_inits[] entries are init methods (initialize / setup
+        # / start / etc) — they MUST keep requiring 'method' even after
+        # we split out event_loop_owner_def.
         contract = {
             "language": "python",
             "framework_backend": "pygame",
@@ -292,19 +363,21 @@ class TestSchemaPredicate:
                     "components": [{"name": "game", "file": "src/core/game.py"}],
                 }
             ],
-            "event_loop_owner": {
-                "attr": "dispatcher",
-                "method": "initialize",
-                "class": "EventDispatcher",
-                "module": "src/core/game.py",
-            },
+            "lifecycle_inits": [
+                {
+                    "attr": "dispatcher",
+                    "handler_method": "handle_event",  # missing required 'method'
+                    "class": "EventDispatcher",
+                    "module": "src/core/game.py",
+                }
+            ],
         }
         (tmp_path / "stack_contract.json").write_text(json.dumps(contract), encoding="utf-8")
         r = evaluate_predicate(
             _pred("schema", "schemas/stack_contract.schema.json"),
             _ctx(tmp_path, "stack_contract.json"),
         )
-        assert r.passed, r.detail
+        assert not r.passed and "method" in r.detail
 
 
 # -- qa_report.schema.json (added 2026-05-05) ---------------------------
