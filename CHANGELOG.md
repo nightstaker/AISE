@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Repository hygiene
+
+* Removed orphan `aise.reliability` package (circuit_breaker / retry_policy /
+  timeout_handler / reliability_wrapper) — superseded by `ProjectSession` and
+  no longer imported anywhere in `src/`.
+* Removed dead test directories: `tests/test_reliability/` (covered the
+  removed package) and `tests/test_e2e/` (its sole file
+  `test_system_integration.py` exercised the removed reliability classes plus
+  the also-orphan `aise.core.task_allocation` / `multi_skill_allocator` /
+  `agent_capability_learning`; those three modules remain and are flagged for
+  a follow-up cleanup).
+* Cleaned stale references from `pyproject.toml` testpaths and the
+  `tests/conftest.py` collection hook (`tests/test_e2e`,
+  `tests/test_langchain`, `tests/test_reliability`) and from the CI
+  workflow's `--ignore` list (`tests/test_whatsapp`) — none of those
+  directories exist.
+* Deleted `todo.md` (a stale "Deep Developer" task list from a long-retired
+  flow; all items checked, the remaining unchecked notes describe a missing
+  local Python environment, not project work).
+* Added `tests/fixtures/README.md` documenting the `v2_phase_io/` snapshot
+  policy so future contributors don't reformat or hand-edit those files.
+
+## 0.2.0 (waterfall_v2 milestone) — 2026-05-13
+
+Headline: the orchestration core moves off a hand-coded 7-phase tuple list
+onto a markdown-driven phase executor with explicit acceptance predicates,
+review gates, halt/resume, and per-role write ACLs. C++ joins the supported
+languages; csharp / cs / java are dropped. Includes follow-ups through PR
+\#147 (prompt-first quality controls).
+
 ### waterfall_v2 phase-executor PR (branch: `feat/waterfall-v2-phase-executor`)
 
 Replaces the hand-coded 7-phase tuple list in `project_session.py`

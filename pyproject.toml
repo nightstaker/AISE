@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aise"
-version = "0.1.0"
+version = "0.2.0"
 description = "Multi-Agent Software Development Team"
 requires-python = ">=3.11"
 dependencies = [
@@ -59,10 +59,7 @@ select = ["E", "F", "W", "I"]
 testpaths = [
     "tests/test_agents",
     "tests/test_core",
-    "tests/test_e2e",
     "tests/test_github",
-    "tests/test_langchain",
-    "tests/test_reliability",
     "tests/test_runtime",
     "tests/test_skills",
     "tests/test_system",

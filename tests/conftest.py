@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gc
-import importlib.util
 import json
 import os
 import re
@@ -21,7 +20,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--run-slow",
         action="store_true",
         default=False,
-        help="Run slow tests (e2e with sleep, reliability timing tests)",
+        help="Run slow tests (containing sleep/long waits)",
     )
 
 
@@ -41,9 +40,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool:
-    """Skip langchain tests when optional dependency is unavailable."""
-    if "tests/test_langchain" in str(collection_path):
-        return importlib.util.find_spec("langchain_core") is None
+    """Skip web tests unless AISE_ENABLE_WEB_TESTS=1 (avoids fastapi/httpx requirement in default CI)."""
     if "tests/test_web" in str(collection_path):
         return os.environ.get("AISE_ENABLE_WEB_TESTS", "").lower() not in {"1", "true", "yes"}
     return False
@@ -553,15 +550,4 @@ def mock_llm_for_non_llm_unit_tests(monkeypatch: pytest.MonkeyPatch, request: py
 
     yield
 
-    # Teardown: 清理线程资源，防止线程泄漏
     gc.collect()
-    # 强制回收未使用的 TimeoutHandler 实例（只有这些才有 _shutdown 标志）
-    from aise.reliability.timeout_handler import TimeoutHandler
-
-    for obj in gc.get_objects():
-        if isinstance(obj, TimeoutHandler):
-            try:
-                if hasattr(obj, "_shutdown") and not obj._shutdown:
-                    obj.shutdown(wait=False)
-            except Exception:
-                pass
