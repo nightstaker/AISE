@@ -304,19 +304,14 @@ def _apply_github_config(args: argparse.Namespace, config: ProjectConfig) -> Non
 
 
 def _load_cli_project_config(project_name: str) -> ProjectConfig:
-    candidates = [
-        Path("config/global_project_config.json"),
-        Path("global_project_config.json"),
-    ]
-    for path in candidates:
-        if not path.exists():
-            continue
+    path = Path("config/global_project_config.json")
+    if path.exists():
         try:
             config = ProjectConfig.from_json_file(path)
             config.project_name = project_name
             return config
         except Exception:
-            continue
+            pass
     return ProjectConfig(project_name=project_name)
 
 
