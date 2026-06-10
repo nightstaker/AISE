@@ -205,6 +205,12 @@ class LLMDefaults:
 
     min_max_tokens: int = DEFAULT_MIN_MAX_TOKENS
     max_retries: int = 1
+    # Model context window (input + output). Used to size ``max_tokens``
+    # per request from the actual input length so a long prompt no longer
+    # overflows the window. Per-model overrides go through
+    # ``ModelConfig.extra["context_window"]``. Default matches the 128K
+    # window of the qwen3.x-class models this project runs.
+    context_window: int = 131072
 
 
 # -- RuntimeConfig ---------------------------------------------------------

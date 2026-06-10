@@ -1,6 +1,6 @@
 """Tests for the provider-pluggable LLM factory."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -110,12 +110,36 @@ class TestIsLocalBaseUrl:
 
 
 class TestDefaults:
-    def test_min_max_tokens_applied_via_openai_builder(self):
+    def test_min_max_tokens_becomes_the_cap(self):
+        # ``min_max_tokens`` is the floor on the ceiling; the builder now
+        # carries it as ``aise_max_tokens_cap`` (the per-call budget is sized
+        # down from there). max(config.max_tokens=1024, floor=8000) -> 8000.
+        from aise.runtime.dynamic_llm import DynamicMaxTokensChatOpenAI
         from aise.runtime.llm_factory import _build_openai
 
         cfg = ModelConfig(provider="openai", model="gpt-4o", api_key="x", max_tokens=1024)
         defaults = LLMDefaults(min_max_tokens=8000)
-        with patch("langchain_openai.ChatOpenAI") as mock_cls:
-            _build_openai(cfg, defaults)
-            kwargs = mock_cls.call_args.kwargs
-            assert kwargs["max_tokens"] == 8000
+        llm = _build_openai(cfg, defaults)
+        assert isinstance(llm, DynamicMaxTokensChatOpenAI)
+        assert llm.aise_max_tokens_cap == 8000
+
+    def test_context_window_from_defaults(self):
+        from aise.runtime.llm_factory import _build_openai
+
+        cfg = ModelConfig(provider="openai", model="gpt-4o", api_key="x")
+        defaults = LLMDefaults(context_window=200000)
+        llm = _build_openai(cfg, defaults)
+        assert llm.aise_context_window == 200000
+
+    def test_context_window_per_model_override(self):
+        from aise.runtime.llm_factory import _build_local
+
+        cfg = ModelConfig(
+            provider="local",
+            model="qwen",
+            base_url="http://localhost:8000/v1",
+            extra={"context_window": 32768},
+        )
+        defaults = LLMDefaults(context_window=131072)
+        llm = _build_local(cfg, defaults)
+        assert llm.aise_context_window == 32768
