@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -131,6 +132,41 @@ class PhaseResult:
 
 
 _PRODUCER_AUTO_GATE_RETRIES = 3
+
+
+# -- Scenario-fanout toolchain preflight ---------------------------------
+# Before a scenario_parallel phase (e.g. verification/QA) fans out one
+# LLM agent per scenario, probe that the language runtime is actually on
+# PATH. A missing runtime (e.g. ``node`` not installed in the sandbox)
+# otherwise causes every scenario agent to independently rediscover the
+# broken toolchain and burn dozens of LLM calls hunting for it before
+# failing — observed as a 90-minute verification phase that produced
+# nothing. ``shutil.which`` reads the same PATH the agents' shell tool
+# (``subprocess(shell=True)``) inherits, so it faithfully predicts what
+# the agents will see, and it returns in microseconds.
+#
+# Fundamental runtime engine per language — the binary without which NO
+# test in that language can run. Deliberately conservative: languages we
+# can't reliably probe are absent here and skip the preflight (never
+# block). Test runners (jest/pytest) usually live in project-local dirs
+# (node_modules/.bin, venv) not on PATH, so we do NOT probe them — the
+# runtime is the high-signal, low-false-positive check.
+_PREFLIGHT_RUNTIME_TOOLS: dict[str, tuple[str, ...]] = {
+    "javascript": ("node",),
+    "typescript": ("node",),
+    "node": ("node",),
+    "python": ("python3",),
+    "go": ("go",),
+    "rust": ("cargo",),
+    "java": ("java",),
+    "ruby": ("ruby",),
+    "php": ("php",),
+}
+
+# Package managers that are real PATH binaries (so worth probing when the
+# contract declares one). ``pip`` is excluded: it is invoked as
+# ``python3 -m pip`` and a bare ``pip`` may legitimately be absent.
+_PREFLIGHT_PM_BINARIES = frozenset({"npm", "yarn", "pnpm", "bun", "cargo", "go", "composer", "bundler"})
 
 
 # -- Fan-out parallelism cap ---------------------------------------------
@@ -480,6 +516,23 @@ class PhaseExecutor:
         whether to halt the run (status=failed) or advance."""
         logger.info("PhaseExecutor: starting phase=%s producer=%s", phase.id, phase.producer)
 
+        # 0. TOOLCHAIN PREFLIGHT (scenario-fanout phases only). Halt fast
+        #    with a clear message instead of dispatching N scenario agents
+        #    that would each burn dozens of LLM calls on a broken toolchain.
+        preflight_failure = self._scenario_toolchain_preflight(phase)
+        if preflight_failure is not None:
+            logger.warning(
+                "PhaseExecutor: phase=%s toolchain preflight FAILED — halting before fanout: %s",
+                phase.id,
+                preflight_failure.replace("\n", " ")[:200],
+            )
+            return PhaseResult(
+                phase_id=phase.id,
+                status=PhaseStatus.FAILED,
+                producer_attempts=0,
+                failure_summary=preflight_failure,
+            )
+
         # 1. PRODUCE + AUTO_GATE loop (up to _PRODUCER_AUTO_GATE_RETRIES)
         producer_prompt = self._call_build_phase_prompt(phase, requirement)
         producer_attempts = 0
@@ -595,6 +648,48 @@ class PhaseExecutor:
                     except ValueError:
                         expected.append(str(resolved))
         return self.produce_fn(phase.producer, prompt, tuple(expected))
+
+    def _scenario_toolchain_preflight(self, phase: PhaseSpec) -> str | None:
+        """Probe that the language runtime needed by a scenario fanout is
+        on PATH. Returns a human-readable failure summary if a required
+        tool is missing (caller halts the phase), or ``None`` when the
+        toolchain is fine, the phase doesn't fan out scenarios, or the
+        language can't be reliably probed.
+        """
+        fanout = phase.fanout
+        if not (phase.has_fanout and fanout is not None and fanout.strategy == "scenario_parallel"):
+            return None
+
+        sc = self.stack_contract or {}
+        language = str(sc.get("language", "")).strip().lower()
+        required: list[str] = list(_PREFLIGHT_RUNTIME_TOOLS.get(language, ()))
+        if not required:
+            # Unknown / unprobeable language — never block on a guess.
+            return None
+
+        package_manager = str(sc.get("package_manager", "")).strip().lower()
+        if package_manager in _PREFLIGHT_PM_BINARIES and package_manager not in required:
+            required.append(package_manager)
+
+        missing = [tool for tool in required if shutil.which(tool) is None]
+        if not missing:
+            return None
+
+        scenarios = (self.behavioral_contract or {}).get("scenarios") or []
+        n_scenarios = len(scenarios)
+        test_runner = str(sc.get("test_runner", "")).strip() or "the test runner"
+        return (
+            "Scenario verification toolchain preflight FAILED.\n"
+            f"language={language}, test_runner={test_runner}: "
+            f"required tool(s) not found on PATH: {', '.join(missing)}.\n"
+            f"The {n_scenarios} scenario test(s) cannot run without "
+            f"{'them' if len(missing) > 1 else 'it'}, so this phase was halted "
+            "up front rather than dispatching one agent per scenario — each of "
+            "which would otherwise spend many minutes rediscovering the missing "
+            "toolchain before failing.\n"
+            f"Fix: install {', '.join(missing)} (or repair PATH) in the run "
+            "environment, then resume the project — it will pick up at this phase."
+        )
 
     def _run_fanout(self, phase: PhaseSpec, base_prompt: str) -> Any:
         assert phase.fanout is not None
