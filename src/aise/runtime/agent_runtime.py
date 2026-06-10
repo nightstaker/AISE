@@ -30,6 +30,7 @@ from langgraph.graph.state import CompiledStateGraph
 from ..utils.logging import get_logger
 from .agent_card import build_agent_card
 from .agent_md_parser import parse_agent_md
+from .context_compaction import SupersededReadCompactionMiddleware
 from .models import AgentCard, AgentDefinition, AgentState
 from .skill_loader import load_skills_from_directory
 
@@ -330,12 +331,19 @@ class AgentRuntime:
         )
 
         # 4. Build the deep agent
+        #
+        # ``SupersededReadCompactionMiddleware`` drops duplicate ``read_file``
+        # results from each model request (the same file read repeatedly is
+        # otherwise retained in full, every copy — 34% of the input on the
+        # dispatch that overflowed project_21). It is appended to (not a
+        # replacement for) deepagents' built-in stack.
         create_kwargs: dict[str, Any] = {
             "model": model,
             "tools": tools or None,
             "system_prompt": system_prompt or None,
             "name": self._definition.name,
             "checkpointer": checkpointer,
+            "middleware": [SupersededReadCompactionMiddleware()],
         }
         if backend is not None:
             create_kwargs["backend"] = backend
