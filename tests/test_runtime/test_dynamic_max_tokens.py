@@ -80,6 +80,9 @@ class TestDynamicMaxTokensChatOpenAI:
             max_tokens=65536,
             aise_context_window=131072,
             aise_max_tokens_cap=65536,
+            # factor 1.0 so these tests exercise the sizing math directly on
+            # the patched count; the calibration factor has its own tests.
+            aise_token_estimate_factor=1.0,
         )
         kwargs.update(over)
         return DynamicMaxTokensChatOpenAI(**kwargs)
@@ -117,3 +120,52 @@ class TestDynamicMaxTokensChatOpenAI:
         # room ~12768 -> 2**13 = 8192, and input + budget fits the 32K window.
         assert payload["max_completion_tokens"] == 8192
         assert 20000 + payload["max_completion_tokens"] <= 32768
+
+
+class TestTokenEstimateFactor:
+    """The calibration factor inflates the under-counted client estimate so a
+    long prompt no longer overflows the server's stricter tokenizer."""
+
+    def _model(self, factor, **over):
+        kwargs = dict(
+            model="qwen3.6-35b",
+            api_key="test-key",
+            max_tokens=65536,
+            aise_context_window=131072,
+            aise_max_tokens_cap=65536,
+            aise_token_estimate_factor=factor,
+        )
+        kwargs.update(over)
+        return DynamicMaxTokensChatOpenAI(**kwargs)
+
+    def test_regression_factor_prevents_overflow(self):
+        # The exact project_21 regression: the client (tiktoken) counted
+        # ~41.5K for an input the server saw as ~65.5K. With factor 1.0 the
+        # sizing wrongly hands out the full cap; with the 2.0 default it
+        # scales the budget down so input + budget fits the real window.
+        client_count = 41500
+        real_server_input = 65537
+        with patch.object(DynamicMaxTokensChatOpenAI, "_count_input_tokens", return_value=client_count):
+            naive = self._model(1.0)._get_request_payload([HumanMessage(content="hi")])
+            calibrated = self._model(2.0)._get_request_payload([HumanMessage(content="hi")])
+        assert naive["max_completion_tokens"] == 65536  # the bug: overflows
+        assert real_server_input + naive["max_completion_tokens"] > 131072
+        assert calibrated["max_completion_tokens"] == 32768  # fixed
+        assert real_server_input + calibrated["max_completion_tokens"] <= 131072
+
+    def test_factor_leaves_short_inputs_at_cap(self):
+        # Even inflated, a small input has ample room -> still the full cap.
+        with patch.object(DynamicMaxTokensChatOpenAI, "_count_input_tokens", return_value=5000):
+            payload = self._model(2.0)._get_request_payload([HumanMessage(content="hi")])
+        assert payload["max_completion_tokens"] == 65536
+
+    def test_factor_below_one_is_ignored(self):
+        # A misconfigured factor < 1 must not shrink the input below reality.
+        with patch.object(DynamicMaxTokensChatOpenAI, "_count_input_tokens", return_value=40000):
+            payload = self._model(0.5)._get_request_payload([HumanMessage(content="hi")])
+        # Clamped to 1.0: effective 40000 -> room ~89.7K -> capped at 64K.
+        assert payload["max_completion_tokens"] == 65536
+
+    def test_default_factor_is_two(self):
+        model = DynamicMaxTokensChatOpenAI(model="qwen3.6-35b", api_key="test-key")
+        assert model.aise_token_estimate_factor == 2.0
