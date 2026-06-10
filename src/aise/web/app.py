@@ -1006,11 +1006,19 @@ class WebProjectService:
                         run.failed_phase_idx = -1
                     run.failed_phase_name = str(event.get("phase_name", ""))
                 elif event_type == "phase_complete":
-                    # Phase cleared — if the next phase_start arrives we'll
-                    # overwrite these; if the session ends cleanly, the
-                    # final status=completed branch resets them anyway.
-                    run.failed_phase_idx = -1
-                    run.failed_phase_name = ""
+                    # Only a *successful* phase clears the failure marker.
+                    # waterfall_v2 emits ``phase_status: "failed"`` when a
+                    # phase halts; preserve failed_phase_idx in that case so
+                    # a retry resumes here instead of restarting from phase 0.
+                    # (Phases with no status are treated as success — the v1
+                    # waterfall loop only emits phase_complete after a phase
+                    # runs to the end.) A following phase_start overwrites
+                    # this; a clean session-end resets it in the completed
+                    # branch.
+                    phase_status = str(event.get("phase_status", "") or "")
+                    if phase_status not in ("failed", "halted"):
+                        run.failed_phase_idx = -1
+                        run.failed_phase_name = ""
                 elif event_type == "token_usage":
                     try:
                         run.total_input_tokens += int(event.get("input_tokens") or 0)
