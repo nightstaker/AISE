@@ -516,7 +516,13 @@ class ProjectSession:
             model_cfg.base_url = global_cfg.base_url
             model_cfg.extra = global_cfg.extra
 
-        llm = _factory_build_llm(model_cfg, LLMDefaults(min_max_tokens=self._config.llm.min_max_tokens))
+        llm = _factory_build_llm(
+            model_cfg,
+            LLMDefaults(
+                min_max_tokens=self._config.llm.min_max_tokens,
+                context_window=self._config.llm.context_window,
+            ),
+        )
 
         skills_dir = orchestrator_md.parent / "_runtime_skills"
         skills_dir.mkdir(exist_ok=True)
@@ -905,7 +911,13 @@ class ProjectSession:
                 model_cfg.base_url = gc.base_url
                 model_cfg.extra = gc.extra
 
-            llm = _factory_build_llm(model_cfg, LLMDefaults(min_max_tokens=self._config.llm.min_max_tokens))
+            llm = _factory_build_llm(
+                model_cfg,
+                LLMDefaults(
+                    min_max_tokens=self._config.llm.min_max_tokens,
+                    context_window=self._config.llm.context_window,
+                ),
+            )
             backend = make_policy_backend(
                 self._project_root,
                 layout=global_rt.definition.output_layout,

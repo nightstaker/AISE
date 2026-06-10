@@ -67,15 +67,31 @@ def _is_local_base_url(base_url: str) -> bool:
 # -- Built-in providers ----------------------------------------------------
 
 
-def _build_openai(config: ModelConfig, defaults: LLMDefaults) -> BaseChatModel:
-    from langchain_openai import ChatOpenAI
+def _context_window(config: ModelConfig, defaults: LLMDefaults) -> int:
+    """Per-model context window, falling back to the provider-agnostic
+    default. Overridable via ``ModelConfig.extra["context_window"]``."""
+    raw = config.extra.get("context_window")
+    try:
+        if raw is not None:
+            return int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        pass
+    return defaults.context_window
 
+
+def _build_openai(config: ModelConfig, defaults: LLMDefaults) -> BaseChatModel:
+    from .dynamic_llm import DynamicMaxTokensChatOpenAI
+
+    # ``effective_max_tokens`` is now the CEILING; the actual per-call budget
+    # is sized down from the input length (see dynamic_llm).
     effective_max_tokens = max(config.max_tokens, defaults.min_max_tokens)
     kwargs: dict[str, Any] = {
         "model": config.model,
         "temperature": config.temperature,
         "max_tokens": effective_max_tokens,
         "max_retries": defaults.max_retries,
+        "aise_context_window": _context_window(config, defaults),
+        "aise_max_tokens_cap": effective_max_tokens,
     }
 
     api_key = config.api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -84,12 +100,12 @@ def _build_openai(config: ModelConfig, defaults: LLMDefaults) -> BaseChatModel:
     if config.base_url:
         kwargs["base_url"] = config.base_url
 
-    return ChatOpenAI(**kwargs)
+    return DynamicMaxTokensChatOpenAI(**kwargs)
 
 
 def _build_local(config: ModelConfig, defaults: LLMDefaults) -> BaseChatModel:
     """Local OpenAI-compatible endpoint (vLLM/Ollama/LM Studio/etc.)."""
-    from langchain_openai import ChatOpenAI
+    from .dynamic_llm import DynamicMaxTokensChatOpenAI
 
     effective_max_tokens = max(config.max_tokens, defaults.min_max_tokens)
     kwargs: dict[str, Any] = {
@@ -97,6 +113,8 @@ def _build_local(config: ModelConfig, defaults: LLMDefaults) -> BaseChatModel:
         "temperature": config.temperature,
         "max_tokens": effective_max_tokens,
         "max_retries": defaults.max_retries,
+        "aise_context_window": _context_window(config, defaults),
+        "aise_max_tokens_cap": effective_max_tokens,
     }
 
     api_key = config.api_key or os.environ.get("AISE_LOCAL_OPENAI_API_KEY") or "local-no-key-required"
@@ -104,7 +122,7 @@ def _build_local(config: ModelConfig, defaults: LLMDefaults) -> BaseChatModel:
     if config.base_url:
         kwargs["base_url"] = config.base_url
 
-    return ChatOpenAI(**kwargs)
+    return DynamicMaxTokensChatOpenAI(**kwargs)
 
 
 register_provider("openai", _build_openai)
