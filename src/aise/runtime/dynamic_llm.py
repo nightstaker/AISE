@@ -49,6 +49,11 @@ DEFAULT_MIN_FLOOR = 256
 # overflow was an exact off-by-one). Scales with input so it stays
 # meaningful at large prompts; see ``_safety_margin_for``.
 MIN_SAFETY_MARGIN = 1024
+# Multiplier applied to the client token estimate to match the server's
+# tokenizer, which counts more tokens for the same text (measured ~1.6x for
+# qwen3.x vs tiktoken cl100k near the overflow boundary). See the field doc
+# on ``DynamicMaxTokensChatOpenAI.aise_token_estimate_factor``.
+DEFAULT_TOKEN_ESTIMATE_FACTOR = 2.0
 
 
 def _largest_power_of_two_at_most(value: int) -> int:
@@ -104,6 +109,17 @@ class DynamicMaxTokensChatOpenAI(ChatOpenAI):
     # Declared as pydantic fields so they survive model construction.
     aise_context_window: int = 131072
     aise_max_tokens_cap: int = DEFAULT_MAX_TOKENS_CAP
+    # Calibration: the client tokenizer (tiktoken cl100k) systematically
+    # UNDER-counts relative to the server's tokenizer. Measured on a qwen3.6
+    # dispatch (project_21, 2026-06-10): the server reported 1.39–2.8x the
+    # tiktoken count, ~1.56–1.61x in the boundary region (input 50–65K) where
+    # overflow actually happens. Without correction the sizing thinks there
+    # is ample room and keeps handing out the full 64K cap, so a long prompt
+    # still 400s. We inflate the counted input by this factor before sizing;
+    # 2.0 covers the boundary drift with headroom. Over-inflation only costs
+    # output budget on large inputs (where a smaller completion is fine),
+    # never correctness.
+    aise_token_estimate_factor: float = DEFAULT_TOKEN_ESTIMATE_FACTOR
 
     def _count_input_tokens(self, messages: Sequence[BaseMessage]) -> int:
         """Token count of the outgoing messages, with a char heuristic
@@ -131,12 +147,15 @@ class DynamicMaxTokensChatOpenAI(ChatOpenAI):
             messages = self._convert_input(input_).to_messages()
         except Exception:
             return None
-        input_tokens = self._count_input_tokens(messages)
+        # Inflate the (under-counted) client estimate to the server's scale
+        # before sizing — see ``aise_token_estimate_factor``.
+        counted = self._count_input_tokens(messages)
+        effective = int(counted * max(1.0, self.aise_token_estimate_factor))
         return compute_dynamic_max_tokens(
-            input_tokens,
+            effective,
             self.aise_context_window,
             self.aise_max_tokens_cap,
-            safety_margin=_safety_margin_for(input_tokens),
+            safety_margin=_safety_margin_for(effective),
         )
 
     def _get_request_payload(

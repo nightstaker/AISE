@@ -521,6 +521,7 @@ class ProjectSession:
             LLMDefaults(
                 min_max_tokens=self._config.llm.min_max_tokens,
                 context_window=self._config.llm.context_window,
+                token_estimate_factor=self._config.llm.token_estimate_factor,
             ),
         )
 

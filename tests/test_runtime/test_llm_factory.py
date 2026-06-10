@@ -143,3 +143,19 @@ class TestDefaults:
         defaults = LLMDefaults(context_window=131072)
         llm = _build_local(cfg, defaults)
         assert llm.aise_context_window == 32768
+
+    def test_token_estimate_factor_from_defaults(self):
+        from aise.runtime.llm_factory import _build_openai
+
+        cfg = ModelConfig(provider="openai", model="gpt-4o", api_key="x")
+        defaults = LLMDefaults(token_estimate_factor=1.7)
+        llm = _build_openai(cfg, defaults)
+        assert llm.aise_token_estimate_factor == 1.7
+
+    def test_token_estimate_factor_per_model_override(self):
+        from aise.runtime.llm_factory import _build_openai
+
+        cfg = ModelConfig(provider="openai", model="x", api_key="x", extra={"token_estimate_factor": 2.5})
+        defaults = LLMDefaults(token_estimate_factor=2.0)
+        llm = _build_openai(cfg, defaults)
+        assert llm.aise_token_estimate_factor == 2.5

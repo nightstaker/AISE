@@ -211,6 +211,11 @@ class LLMDefaults:
     # ``ModelConfig.extra["context_window"]``. Default matches the 128K
     # window of the qwen3.x-class models this project runs.
     context_window: int = 131072
+    # Multiplier applied to the client-side token estimate to match the
+    # server tokenizer (which counts more tokens for the same text). Without
+    # it, dynamic max_tokens under-counts the input and still overflows.
+    # Per-model overrides go through ``ModelConfig.extra["token_estimate_factor"]``.
+    token_estimate_factor: float = 2.0
 
 
 # -- RuntimeConfig ---------------------------------------------------------

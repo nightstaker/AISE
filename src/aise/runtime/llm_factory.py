@@ -79,6 +79,18 @@ def _context_window(config: ModelConfig, defaults: LLMDefaults) -> int:
     return defaults.context_window
 
 
+def _token_estimate_factor(config: ModelConfig, defaults: LLMDefaults) -> float:
+    """Per-model client→server tokenizer calibration factor, falling back to
+    the default. Overridable via ``ModelConfig.extra["token_estimate_factor"]``."""
+    raw = config.extra.get("token_estimate_factor")
+    try:
+        if raw is not None:
+            return float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        pass
+    return defaults.token_estimate_factor
+
+
 def _build_openai(config: ModelConfig, defaults: LLMDefaults) -> BaseChatModel:
     from .dynamic_llm import DynamicMaxTokensChatOpenAI
 
@@ -92,6 +104,7 @@ def _build_openai(config: ModelConfig, defaults: LLMDefaults) -> BaseChatModel:
         "max_retries": defaults.max_retries,
         "aise_context_window": _context_window(config, defaults),
         "aise_max_tokens_cap": effective_max_tokens,
+        "aise_token_estimate_factor": _token_estimate_factor(config, defaults),
     }
 
     api_key = config.api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -115,6 +128,7 @@ def _build_local(config: ModelConfig, defaults: LLMDefaults) -> BaseChatModel:
         "max_retries": defaults.max_retries,
         "aise_context_window": _context_window(config, defaults),
         "aise_max_tokens_cap": effective_max_tokens,
+        "aise_token_estimate_factor": _token_estimate_factor(config, defaults),
     }
 
     api_key = config.api_key or os.environ.get("AISE_LOCAL_OPENAI_API_KEY") or "local-no-key-required"
