@@ -287,7 +287,14 @@
     "token_usage_total": "累计 Token",
     "token_usage_calls": "LLM 调用次数",
     "token_usage_scaffolding": "环境准备阶段：输入 {{input}} / 输出 {{output}} / 调用 {{calls}} 次",
-    "token_usage_run_breakdown": "本次执行：输入 {{input}} / 输出 {{output}} / 调用 {{calls}} 次"
+    "token_usage_run_breakdown": "本次执行：输入 {{input}} / 输出 {{output}} / 调用 {{calls}} 次",
+    "action_view_files": "📁 项目文件",
+    "files_title": "项目文件",
+    "files_hint": "实时浏览项目工作目录：左侧为目录结构，点击文件可在右侧预览内容。每 4 秒自动刷新。",
+    "files_empty": "工作目录为空。",
+    "files_select_hint": "在左侧选择一个文件以预览其内容。",
+    "files_binary": "二进制文件，无法预览。",
+    "files_truncated": "文件过大，仅显示前 512 KB。"
   },
   "monitor": {
     "title": "Agent Monitor",

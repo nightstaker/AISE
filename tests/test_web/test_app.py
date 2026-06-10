@@ -384,6 +384,78 @@ class TestWebApi:
         assert "code_reviewer[*]" in implementation_agents
 
 
+class TestProjectFileBrowser:
+    """Live working-directory file explorer endpoints."""
+
+    def _make_active_project(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AISE_WEB_ENABLE_DEV_LOGIN", "true")
+        monkeypatch.chdir(tmp_path)
+        app = create_app()
+        service = app.state.web_service
+        _stub_scaffolding(service)
+        client = TestClient(app)
+        _login_dev(client)
+        create_resp = client.post(
+            "/api/projects",
+            json={"project_name": "Files", "development_mode": "local"},
+        )
+        assert create_resp.status_code == 200
+        project_id = create_resp.json()["project_id"]
+        _wait_for_scaffolding(service, project_id)
+        root = Path(service.project_manager.get_project(project_id).project_root)
+        return client, project_id, root
+
+    def test_requires_auth(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/api/projects/whatever/files", follow_redirects=False)
+        assert resp.status_code in (401, 303)
+
+    def test_list_and_read_files(self, monkeypatch, tmp_path):
+        client, project_id, root = self._make_active_project(monkeypatch, tmp_path)
+        (root / "src").mkdir(exist_ok=True)
+        (root / "src" / "main.py").write_text("print('hi')\n", encoding="utf-8")
+
+        # Root listing: directories sort first, ignored dirs (.git) excluded.
+        resp = client.get(f"/api/projects/{project_id}/files")
+        assert resp.status_code == 200
+        names = [e["name"] for e in resp.json()["entries"]]
+        assert "src" in names
+        assert ".git" not in names
+
+        # Nested directory listing.
+        sub = client.get(f"/api/projects/{project_id}/files", params={"path": "src"})
+        assert sub.status_code == 200
+        sub_names = [e["name"] for e in sub.json()["entries"]]
+        assert "main.py" in sub_names
+
+        # File preview.
+        preview = client.get(f"/api/projects/{project_id}/file", params={"path": "src/main.py"})
+        assert preview.status_code == 200
+        body = preview.json()
+        assert body["content"] == "print('hi')\n"
+        assert body["binary"] is False
+
+    def test_path_traversal_rejected(self, monkeypatch, tmp_path):
+        client, project_id, root = self._make_active_project(monkeypatch, tmp_path)
+        (tmp_path / "secret.txt").write_text("top secret\n", encoding="utf-8")
+        resp = client.get(
+            f"/api/projects/{project_id}/file",
+            params={"path": "../../secret.txt"},
+        )
+        assert resp.status_code == 400
+
+    def test_binary_file_flagged(self, monkeypatch, tmp_path):
+        client, project_id, root = self._make_active_project(monkeypatch, tmp_path)
+        (root / "blob.bin").write_bytes(b"\x00\x01\x02\xff")
+        resp = client.get(f"/api/projects/{project_id}/file", params={"path": "blob.bin"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["binary"] is True
+        assert body["content"] == ""
+
+
 class TestWebPersistence:
     def test_web_logger_has_dedicated_file(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)

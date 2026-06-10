@@ -287,7 +287,14 @@
     "token_usage_total": "Total tokens",
     "token_usage_calls": "LLM calls",
     "token_usage_scaffolding": "Scaffolding: in {{input}} / out {{output}} / {{calls}} calls",
-    "token_usage_run_breakdown": "This run: in {{input}} / out {{output}} / {{calls}} calls"
+    "token_usage_run_breakdown": "This run: in {{input}} / out {{output}} / {{calls}} calls",
+    "action_view_files": "📁 Project files",
+    "files_title": "Project files",
+    "files_hint": "Live view of the project working directory: the tree is on the left, click a file to preview it on the right. Auto-refreshes every 4s.",
+    "files_empty": "Working directory is empty.",
+    "files_select_hint": "Select a file on the left to preview its contents.",
+    "files_binary": "Binary file — preview not available.",
+    "files_truncated": "File is large; showing the first 512 KB only."
   },
   "monitor": {
     "title": "Agent Monitor",
