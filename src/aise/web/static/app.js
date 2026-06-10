@@ -123,6 +123,13 @@ function formatLocalTime(ts) {
     } catch { return String(ts); }
 }
 
+function formatBytes(bytes) {
+    const n = Number(bytes || 0);
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function setupDashboardReact() {
     const initial = readScriptJson("dashboard-initial-data", { projects: [], global_config_data: {} });
 
@@ -492,6 +499,121 @@ function setupProjectReact() {
     const initial = readScriptJson("project-initial-data", { project: null });
     if (!initial.project) return;
 
+    // Live working-directory explorer: left pane is a lazily-expanded
+    // directory tree, right pane previews the selected file. Both the
+    // expanded directories and the open file are re-fetched on a 4s timer so
+    // the view reflects files the agents write in real time.
+    function FileBrowser(props) {
+        const h = window.React.createElement;
+        const projectId = props.projectId;
+        const [dirs, setDirs] = window.React.useState({});      // path -> entries[]
+        const [expanded, setExpanded] = window.React.useState({}); // path -> bool
+        const [selected, setSelected] = window.React.useState("");
+        const [file, setFile] = window.React.useState(null);
+        const [error, setError] = window.React.useState("");
+        const [fileError, setFileError] = window.React.useState("");
+
+        // Refs let the polling timer read the latest expansion / selection
+        // without re-subscribing the interval on every change.
+        const expandedRef = window.React.useRef(expanded);
+        const selectedRef = window.React.useRef(selected);
+        expandedRef.current = expanded;
+        selectedRef.current = selected;
+
+        const loadDir = window.React.useCallback(async (path) => {
+            try {
+                const data = await fetchJson(`/api/projects/${encodeURIComponent(projectId)}/files?path=${encodeURIComponent(path)}`);
+                setDirs((prev) => ({ ...prev, [path]: Array.isArray(data.entries) ? data.entries : [] }));
+                setError("");
+            } catch (err) {
+                setError(err instanceof Error ? err.message : String(err));
+            }
+        }, [projectId]);
+
+        const loadFile = window.React.useCallback(async (path) => {
+            try {
+                const data = await fetchJson(`/api/projects/${encodeURIComponent(projectId)}/file?path=${encodeURIComponent(path)}`);
+                setFile(data);
+                setFileError("");
+            } catch (err) {
+                setFile(null);
+                setFileError(err instanceof Error ? err.message : String(err));
+            }
+        }, [projectId]);
+
+        function toggleDir(path) {
+            setExpanded((prev) => ({ ...prev, [path]: !prev[path] }));
+            if (!dirs[path]) loadDir(path);
+        }
+
+        function selectFile(path) {
+            setSelected(path);
+            loadFile(path);
+        }
+
+        window.React.useEffect(() => {
+            let active = true;
+            loadDir("");
+            const timer = window.setInterval(() => {
+                if (!active) return;
+                loadDir("");
+                Object.keys(expandedRef.current).forEach((p) => {
+                    if (expandedRef.current[p]) loadDir(p);
+                });
+                if (selectedRef.current) loadFile(selectedRef.current);
+            }, 4000);
+            return () => { active = false; window.clearInterval(timer); };
+        }, [loadDir, loadFile]);
+
+        function renderEntries(path, depth) {
+            const entries = dirs[path] || [];
+            const rows = [];
+            entries.forEach((entry) => {
+                const isDir = entry.type === "dir";
+                const isOpen = !!expanded[entry.path];
+                rows.push(h("div", {
+                    key: entry.path,
+                    className: "file-tree-row" + (selected === entry.path ? " active" : ""),
+                    style: { paddingLeft: `${depth * 14 + 8}px` },
+                    onClick: () => (isDir ? toggleDir(entry.path) : selectFile(entry.path)),
+                },
+                    h("span", { className: "file-tree-icon" }, isDir ? (isOpen ? "📂" : "📁") : "📄"),
+                    h("span", { className: "file-tree-name" }, entry.name),
+                    !isDir ? h("span", { className: "file-tree-size" }, formatBytes(entry.size)) : null,
+                ));
+                if (isDir && isOpen) {
+                    rows.push(...renderEntries(entry.path, depth + 1));
+                }
+            });
+            return rows;
+        }
+
+        const rootLoaded = Array.isArray(dirs[""]);
+        return h("section", { className: "card file-browser" },
+            h("div", { className: "file-browser-grid" },
+                h("div", { className: "file-tree-pane" },
+                    error ? h("p", { className: "warning", style: { padding: "8px" } }, error) : null,
+                    ...renderEntries("", 0),
+                    rootLoaded && dirs[""].length === 0 ? h("p", { className: "muted", style: { padding: "8px" } }, t("project.files_empty")) : null,
+                ),
+                h("div", { className: "file-preview-pane" },
+                    selected
+                        ? h("div", { className: "file-preview-inner" },
+                            h("div", { className: "file-preview-head" },
+                                h("code", null, selected),
+                                file ? h("span", { className: "muted", style: { fontSize: "12px" } }, formatBytes(file.size)) : null,
+                            ),
+                            fileError ? h("p", { className: "warning" }, fileError) : null,
+                            file && file.binary ? h("p", { className: "muted" }, t("project.files_binary")) : null,
+                            file && !file.binary ? h("pre", { className: "file-preview-content" }, file.content) : null,
+                            file && file.truncated ? h("p", { className: "muted", style: { fontSize: "12px" } }, t("project.files_truncated")) : null,
+                        )
+                        : h("p", { className: "muted", style: { padding: "16px" } }, t("project.files_select_hint")),
+                ),
+            ),
+        );
+    }
+
     function ProjectApp() {
         const h = window.React.createElement;
         const project = initial.project;
@@ -742,6 +864,16 @@ function setupProjectReact() {
                             },
                             t("project.action_view_latest_run")
                         ) : null,
+                        h(
+                            "button",
+                            {
+                                type: "button",
+                                className: "btn secondary",
+                                style: { fontSize: "1.1rem", padding: "12px 32px" },
+                                onClick: () => setView("files"),
+                            },
+                            t("project.action_view_files")
+                        ),
                     ),
                     h(
                         "section",
@@ -884,6 +1016,20 @@ function setupProjectReact() {
                         submitting ? t("common.submitting") : t("project.submit_run")
                     )
                 )
+            ) : null,
+            view === "files" ? h(
+                "div",
+                null,
+                h(
+                    "section",
+                    { className: "card" },
+                    h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+                        h("h2", { style: { margin: 0 } }, t("project.files_title")),
+                        h("button", { type: "button", className: "btn secondary", onClick: () => setView("default") }, "← " + t("common.back"))
+                    ),
+                    h("p", { className: "muted", style: { fontSize: "12px", marginTop: "8px", marginBottom: 0 } }, t("project.files_hint"))
+                ),
+                h(FileBrowser, { projectId: projectId })
             ) : null,
             view === "history" ? h(
                 "div",

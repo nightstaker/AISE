@@ -565,6 +565,131 @@ class WebProjectService:
                 return None
             return self._serialize_run(run)
 
+    # -- Working-directory file browser --------------------------------------
+    #
+    # Powers the live file explorer on the project page: the left pane lazily
+    # lists a directory's immediate children, the right pane previews a single
+    # file. Both are scoped strictly to the project's working directory —
+    # every requested path is resolved and checked with ``is_relative_to`` so a
+    # crafted ``path=../../etc/passwd`` cannot escape the project root (the
+    # same guard ``delete_project`` uses before ``shutil.rmtree``).
+
+    # Files larger than this are previewed truncated; the UI flags it.
+    _FILE_PREVIEW_MAX_BYTES = 512 * 1024
+    # Heavyweight / noise directories never shown in the tree. Listing them is
+    # both useless to the user and a performance hazard (node_modules can hold
+    # hundreds of thousands of entries).
+    _FILE_TREE_IGNORE: frozenset[str] = frozenset(
+        {
+            ".git",
+            "node_modules",
+            "__pycache__",
+            ".venv",
+            "venv",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".dart_tool",
+            ".idea",
+            ".gradle",
+            "dist",
+            "build",
+        }
+    )
+
+    def _project_root_path(self, project_id: str) -> Path:
+        """Resolve a project's on-disk working directory, or raise ValueError.
+
+        ``"not found"`` in the message is used by the route layer to map to a
+        404 (vs 400 for a bad path)."""
+        project = self.project_manager.get_project(project_id)
+        if project is None:
+            raise ValueError(f"Project {project_id} not found")
+        if not project.project_root:
+            raise ValueError("Project working directory not found on disk")
+        root = Path(project.project_root).resolve()
+        if not root.is_dir():
+            raise ValueError("Project working directory not found on disk")
+        return root
+
+    def _resolve_within_root(self, root: Path, rel_path: str) -> Path:
+        """Resolve ``rel_path`` under ``root``, rejecting any escape."""
+        rel = (rel_path or "").strip().lstrip("/")
+        candidate = (root / rel).resolve() if rel else root
+        if candidate != root and not candidate.is_relative_to(root):
+            raise ValueError("Path escapes project root")
+        return candidate
+
+    def list_project_files(self, project_id: str, rel_path: str = "") -> dict[str, Any]:
+        """List the immediate children of one directory in the project root.
+
+        Directories sort before files, each alphabetically. Ignored dirs
+        (see ``_FILE_TREE_IGNORE``) are omitted. ``rel_path=""`` lists the
+        project root itself."""
+        with self._lock:
+            root = self._project_root_path(project_id)
+        target = self._resolve_within_root(root, rel_path)
+        if not target.is_dir():
+            raise ValueError("Not a directory")
+        try:
+            children = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        except OSError as exc:
+            raise ValueError(f"Cannot read directory: {exc}") from exc
+        entries: list[dict[str, Any]] = []
+        for child in children:
+            is_dir = child.is_dir()
+            if is_dir and child.name in self._FILE_TREE_IGNORE:
+                continue
+            try:
+                size = 0 if is_dir else child.stat().st_size
+            except OSError:
+                size = 0
+            entries.append(
+                {
+                    "name": child.name,
+                    "path": child.relative_to(root).as_posix(),
+                    "type": "dir" if is_dir else "file",
+                    "size": size,
+                }
+            )
+        return {
+            "project_root": str(root),
+            "path": "" if target == root else target.relative_to(root).as_posix(),
+            "entries": entries,
+        }
+
+    def read_project_file(self, project_id: str, rel_path: str) -> dict[str, Any]:
+        """Return a single file's contents for preview.
+
+        Binary files (NUL byte or non-UTF-8) are reported with ``binary=True``
+        and empty content; oversize files are truncated to
+        ``_FILE_PREVIEW_MAX_BYTES`` with ``truncated=True``."""
+        with self._lock:
+            root = self._project_root_path(project_id)
+        if not (rel_path or "").strip():
+            raise ValueError("File path is required")
+        target = self._resolve_within_root(root, rel_path)
+        if not target.is_file():
+            raise ValueError("Not a file")
+        size = target.stat().st_size
+        with target.open("rb") as handle:
+            raw = handle.read(self._FILE_PREVIEW_MAX_BYTES)
+        truncated = size > self._FILE_PREVIEW_MAX_BYTES
+        binary = b"\x00" in raw
+        content = ""
+        if not binary:
+            try:
+                content = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                binary = True
+        return {
+            "path": target.relative_to(root).as_posix(),
+            "size": size,
+            "truncated": truncated,
+            "binary": binary,
+            "content": "" if binary else content,
+        }
+
     def delete_project(self, project_id: str) -> None:
         with self._lock:
             project = self.project_manager.get_project(project_id)
@@ -2086,6 +2211,28 @@ def create_app() -> FastAPI:
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
         return project
+
+    @app.get("/api/projects/{project_id}/files")
+    async def api_list_project_files(request: Request, project_id: str, path: str = "") -> dict[str, Any]:
+        """List one directory in the project's working tree (lazy load)."""
+        require_login(request)
+        try:
+            return service.list_project_files(project_id, path)
+        except ValueError as exc:
+            msg = str(exc)
+            status = 404 if "not found" in msg.lower() else 400
+            raise HTTPException(status_code=status, detail=msg) from exc
+
+    @app.get("/api/projects/{project_id}/file")
+    async def api_read_project_file(request: Request, project_id: str, path: str) -> dict[str, Any]:
+        """Preview a single file from the project's working tree."""
+        require_login(request)
+        try:
+            return service.read_project_file(project_id, path)
+        except ValueError as exc:
+            msg = str(exc)
+            status = 404 if "not found" in msg.lower() else 400
+            raise HTTPException(status_code=status, detail=msg) from exc
 
     @app.delete("/api/projects/{project_id}")
     async def api_delete_project(request: Request, project_id: str) -> dict[str, Any]:
