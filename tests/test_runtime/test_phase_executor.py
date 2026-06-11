@@ -366,6 +366,94 @@ class TestScenarioParallelFanout:
         assert "tests/scenarios/sc_1.py" in produced
 
 
+# -- Scenario-fanout toolchain preflight ----------------------------------
+
+
+def _js_stack_contract() -> dict:
+    return {
+        "language": "javascript",
+        "package_manager": "npm",
+        "test_runner": "jest",
+        "ui_required": True,
+    }
+
+
+class TestScenarioToolchainPreflight:
+    def test_halts_fast_when_runtime_missing(self, tmp_path: Path, monkeypatch):
+        """Missing ``node`` → verification halts before any scenario agent
+        is dispatched (regression for the 90-min broken-toolchain run)."""
+        spec = load_waterfall_v2(default_waterfall_v2_path())
+        ver = spec.phase_by_id("verification")
+        bc = {"scenarios": [{"id": f"sc_{i}"} for i in range(3)]}
+        dispatched: list[str] = []
+
+        def produce(role, prompt, expected):
+            dispatched.append(role)
+            return "ok"
+
+        monkeypatch.setattr("shutil.which", lambda tool: None)  # nothing on PATH
+        executor = PhaseExecutor(
+            spec=spec,
+            project_root=tmp_path,
+            produce_fn=produce,
+            dispatch_reviewer=lambda role, prompt: "PASS",
+            stack_contract=_js_stack_contract(),
+            behavioral_contract=bc,
+        )
+        result = executor.execute_phase(ver, "verify")
+        assert result.status == PhaseStatus.FAILED
+        assert result.producer_attempts == 0
+        assert "node" in result.failure_summary
+        # The whole point: no scenario agent was ever dispatched.
+        assert dispatched == []
+
+    def test_no_halt_when_runtime_present(self, tmp_path: Path, monkeypatch):
+        spec = load_waterfall_v2(default_waterfall_v2_path())
+        ver = spec.phase_by_id("verification")
+        bc = {"scenarios": [{"id": f"sc_{i}"} for i in range(3)]}
+        monkeypatch.setattr("shutil.which", lambda tool: "/usr/bin/" + tool)
+        executor = PhaseExecutor(
+            spec=spec,
+            project_root=tmp_path,
+            produce_fn=lambda *a: "ok",
+            dispatch_reviewer=lambda role, prompt: "PASS",
+            stack_contract=_js_stack_contract(),
+            behavioral_contract=bc,
+        )
+        assert executor._scenario_toolchain_preflight(ver) is None
+
+    def test_skips_unprobeable_language(self, tmp_path: Path, monkeypatch):
+        """A language we can't reliably probe must never block the phase."""
+        spec = load_waterfall_v2(default_waterfall_v2_path())
+        ver = spec.phase_by_id("verification")
+        monkeypatch.setattr("shutil.which", lambda tool: None)
+        executor = PhaseExecutor(
+            spec=spec,
+            project_root=tmp_path,
+            produce_fn=lambda *a: "ok",
+            dispatch_reviewer=lambda role, prompt: "PASS",
+            stack_contract={"language": "haskell", "test_runner": "hspec"},
+            behavioral_contract={"scenarios": [{"id": "sc_0"}, {"id": "sc_1"}]},
+        )
+        assert executor._scenario_toolchain_preflight(ver) is None
+
+    def test_only_scenario_fanout_is_gated(self, tmp_path: Path, monkeypatch):
+        """Non scenario_parallel phases are not toolchain-gated even when
+        the runtime is missing (the preflight targets QA scenario fanout)."""
+        spec = load_waterfall_v2(default_waterfall_v2_path())
+        impl = spec.phase_by_id("implementation")  # subsystem_dag fanout
+        monkeypatch.setattr("shutil.which", lambda tool: None)
+        executor = PhaseExecutor(
+            spec=spec,
+            project_root=tmp_path,
+            produce_fn=lambda *a: "ok",
+            dispatch_reviewer=lambda role, prompt: "PASS",
+            stack_contract=_js_stack_contract(),
+            behavioral_contract={"scenarios": [{"id": "sc_0"}, {"id": "sc_1"}]},
+        )
+        assert executor._scenario_toolchain_preflight(impl) is None
+
+
 # -- Wiring sanity --------------------------------------------------------
 
 
