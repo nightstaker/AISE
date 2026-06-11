@@ -224,6 +224,95 @@ class TestHaltAndResume:
         assert "requirements" not in called_phases
         assert "architecture" not in called_phases
 
+    def test_resume_via_start_phase_idx_without_halt_file(self, tmp_path: Path):
+        """Web-retry path: the prior run failed WITHOUT writing a
+        HALTED.json (crash / non-gate failure / manual stop), so resume
+        relies on ``start_phase_idx`` (computed from failed_phase_idx).
+        Earlier phases must be skipped, not re-run from phase 0.
+
+        Regression for project_21: retrying a run that halted at
+        verification restarted the whole pipeline from requirements.
+        """
+        assert not is_halted(tmp_path)  # no halt file — the whole point
+
+        # Stage the artifacts the earlier phases produced last time.
+        prod = _passing_produce(tmp_path)
+        prod("dev", "", ())
+
+        called_phases: list[str] = []
+
+        def tracking_produce(role, prompt, expected):
+            for e in expected:
+                if "main.py" in e:
+                    called_phases.append("main_entry")
+                elif "tests/scenarios" in e:
+                    called_phases.append("verification")
+                elif "delivery_report" in e:
+                    called_phases.append("delivery")
+                break
+            return "ok"
+
+        # verification is phase index 4 (requirements, architecture,
+        # implementation, main_entry, verification, delivery).
+        driver = WaterfallV2Driver(
+            project_root=tmp_path,
+            produce_fn=tracking_produce,
+            dispatch_reviewer=lambda role, prompt: "PASS",
+            start_phase_idx=4,
+        )
+        result = driver.run("x")
+
+        # Phases before the resume point were skipped, not re-executed.
+        assert "requirements" not in called_phases
+        assert "architecture" not in called_phases
+        assert "main_entry" not in called_phases  # phase 3 < 4
+        # The resumed phase actually ran.
+        assert "verification" in called_phases
+        # Skipped phases are reported as already completed.
+        assert result.completed_phases[:4] == (
+            "requirements",
+            "architecture",
+            "implementation",
+            "main_entry",
+        )
+
+    def test_halt_file_takes_priority_over_start_phase_idx(self, tmp_path: Path):
+        """When both a HALTED.json and ``start_phase_idx`` are present,
+        the halt file wins (it carries producer-attempt bookkeeping)."""
+        from aise.runtime.halt_resume import HaltState
+
+        save_halt_state(
+            tmp_path,
+            HaltState(
+                halted_at_phase="main_entry",  # index 3
+                halt_reason="prior_failure",
+                completed_phases=("requirements", "architecture", "implementation"),
+            ),
+        )
+        prod = _passing_produce(tmp_path)
+        prod("dev", "", ())
+
+        called_phases: list[str] = []
+
+        def tracking_produce(role, prompt, expected):
+            for e in expected:
+                if "main.py" in e:
+                    called_phases.append("main_entry")
+                break
+            return "ok"
+
+        driver = WaterfallV2Driver(
+            project_root=tmp_path,
+            produce_fn=tracking_produce,
+            dispatch_reviewer=lambda role, prompt: "PASS",
+            start_phase_idx=5,  # would skip main_entry — but halt wins
+        )
+        driver.run("x")
+        assert not is_halted(tmp_path)
+        # Halt file resumed at main_entry (3), so it ran despite
+        # start_phase_idx=5 asking to skip it.
+        assert "main_entry" in called_phases
+
     def test_failed_resume_leaves_new_halt(self, tmp_path: Path):
         """If a resumed phase fails, halt state is re-saved (NOT
         regressing back to phase 1). This test exercises the path:

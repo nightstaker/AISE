@@ -107,6 +107,15 @@ class WaterfallV2Driver:
     contracts_loader: Callable[[Path], dict[str, Any]] | None = None
     spec_path: Path | None = None
     spec: WaterfallV2Spec | None = None  # injectable for tests
+    # Zero-based phase index to resume at when no ``HALTED.json`` is
+    # present. The orchestrator (web retry) computes this from the prior
+    # run's ``failed_phase_idx`` and passes it through ProjectSession.
+    # A persisted halt file always takes priority (it also carries
+    # producer-attempt bookkeeping); this is the fallback for failures
+    # that never wrote a halt file (crashes, non-gate failures, manual
+    # stops). Earlier phases are treated as already completed — their
+    # on-disk artifacts (contracts, code) survive from the prior run.
+    start_phase_idx: int = 0
     # Optional event sink so the web UI / monitor can render the phase
     # stepper. The legacy v1 ``ProjectSession.run()`` emits ``phase_plan``
     # at start and ``phase_start`` / ``phase_complete`` per phase; the
@@ -143,6 +152,20 @@ class WaterfallV2Driver:
                 completed = existing.completed_phases
                 start_phase_idx = self.spec.phase_index(existing.halted_at_phase) or 0
                 clear_halt_state(self.project_root)
+        elif self.start_phase_idx > 0:
+            # No halt file, but the orchestrator asked to resume at a
+            # specific phase (web retry from ``failed_phase_idx``). Honor
+            # it so retries don't silently restart from phase 0 when the
+            # prior failure never wrote a HALTED.json.
+            start_phase_idx = min(self.start_phase_idx, len(self.spec.phases))
+            phases_to_run = self.spec.phases[start_phase_idx:]
+            completed = tuple(p.id for p in self.spec.phases[:start_phase_idx])
+            logger.info(
+                "Resuming at phase index %d (%d already completed) via "
+                "orchestrator start_phase_idx; no halt file present",
+                start_phase_idx,
+                len(completed),
+            )
         else:
             phases_to_run = self.spec.phases
             completed = ()

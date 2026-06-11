@@ -390,6 +390,12 @@ class ProjectSession:
             project_root=self._project_root,
             produce_fn=produce_fn,
             dispatch_reviewer=reviewer_dispatch,
+            # Resume point for web retries: when the prior run failed
+            # without writing a HALTED.json (crash, non-gate failure,
+            # manual stop), the driver falls back to this index instead
+            # of restarting from phase 0. A halt file, if present, still
+            # wins inside the driver.
+            start_phase_idx=self._start_phase_idx,
             # Forward phase_plan / phase_start / phase_complete events
             # through the project's ToolContext so the web UI's phase
             # stepper renders correctly. The wrapper also captures the
